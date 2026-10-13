@@ -1,5 +1,9 @@
 # htsfile
 
+[![CI](https://github.com/inful/htsfile/actions/workflows/ci.yml/badge.svg)](https://github.com/inful/htsfile/actions/workflows/ci.yml)
+[![Go Report Card](https://goreportcard.com/badge/github.com/inful/htsfile)](https://goreportcard.com/report/github.com/inful/htsfile)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
 file formats. It currently targets the **VCF v4.5** specification
 ([samtools/hts-specs](https://github.com/samtools/hts-specs)).
@@ -104,6 +108,23 @@ htsfile summary sample.vcf
 | Tandem repeats (RN/RUS/RUC/RB…)        |   🔜   |
 | Local alleles (LAA / LAD / LPL…)       |   🔜   |
 | BCF (binary counterpart)               |   ❌   |
+
+## Releases
+
+Tagged releases are published via [GoReleaser](https://goreleaser.com/):
+
+- linux/darwin × amd64/arm64 tar.gz archives
+- SHA-256 checksums
+- Auto-generated release notes from [Conventional Commits](https://www.conventionalcommits.org/)
+- The Go module is tagged as `github.com/inful/htsfile/v0.0.1`, `v0.1.0`, etc.
+
+To cut a release locally:
+
+```sh
+git tag -s v0.1.0 -m "Release v0.1.0"
+git push origin v0.1.0
+# GitHub Actions runs goreleaser and publishes the release.
+```
 
 ## Testing
 

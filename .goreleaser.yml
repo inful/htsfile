@@ -1,0 +1,141 @@
+# GoReleaser configuration for github.com/inful/htsfile.
+#
+# Builds the cmd/htsfile binary for linux + darwin on amd64 and arm64,
+# archives with tar.gz, generates SHA-256 checksums, and publishes a
+# GitHub release with auto-notes from conventional commits.
+
+version: 2
+
+project_name: htsfile
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: htsfile
+    main: ./cmd/htsfile
+    binary: htsfile
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.ShortCommit}}
+      - -X main.date={{.Date}}
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - linux
+      - darwin
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+      - goos: aix
+      - goos: illumos
+    mod_timestamp: '{{ .CommitTimestamp }}'
+
+archives:
+  - id: default
+    formats: [tar.gz]
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- title .Os }}_
+      {{- .Arch }}
+      {{- if .Arm }}v{{ .Arm }}{{ end }}
+    files:
+      - LICENSE
+      - README.md
+      - src: CHANGELOG.md
+        strip_parent: true
+        optional: true
+
+checksum:
+  name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
+  algorithm: sha256
+
+changelog:
+  use: git
+  filters:
+    exclude:
+      - "^docs:"
+      - "^test:"
+      - "^ci:"
+      - "^chore:"
+      - "^style:"
+      - "^Merge pull request"
+      - "^Merge branch"
+  groups:
+    - title: Features
+      regexp: '^.*feat(\([[:word:]]+\))??!?:'
+      order: 0
+    - title: Bug fixes
+      regexp: '^.*fix(\([[:word:]]+\))??!?:'
+      order: 1
+    - title: Performance
+      regexp: '^.*perf(\([[:word:]]+\))??!?:'
+      order: 2
+    - title: Refactoring
+      regexp: '^.*refactor(\([[:word:]]+\))??!?:'
+      order: 3
+    - title: Documentation
+      regexp: '^.*docs(\([[:word:]]+\))??!?:'
+      order: 4
+    - title: Tests
+      regexp: '^.*test(\([[:word:]]+\))??!?:'
+      order: 5
+    - title: CI / Build
+      regexp: '^.*(build|ci)(\([[:word:]]+\))??!?:'
+      order: 6
+    - title: Other
+      order: 999
+  sort: asc
+
+release:
+  github:
+    owner: inful
+    name: htsfile
+  prerelease: auto
+  draft: false
+  name_template: "{{ .ProjectName }} v{{ .Version }}"
+  header: |
+    ## htsfile {{ .Version }}
+
+    {{ if .Date }}Released {{ .Date | time.Format "2006-01-02" }}{{ end }}
+  footer: |
+    ## Verification
+
+    Verify the SHA-256 sums against `checksums.txt`:
+
+        sha256sum -c htsfile_{{ .Version }}_checksums.txt
+
+    ## Library
+
+    The Go module is also published as `github.com/inful/htsfile/vcf`.
+
+    See the [README](https://github.com/inful/htsfile#readme) for usage.
+
+brews:
+  - name: htsfile
+    repository:
+      owner: inful
+      name: homebrew-tap
+    description: "VCF parser/writer/validator"
+    homepage: "https://github.com/inful/htsfile"
+    license: MIT
+    dependencies: []
+    install: |
+      bin.install "htsfile" => "htsfile"
+    test: |
+      system "#{bin}/htsfile", "help"
+
+# Skip the heavy parts on dry-run; useful locally with `goreleaser --snapshot`.
+snapshot:
+  name_template: "{{ incpatch .Version }}-next"
+
+source:
+  format: zip
+  strip: false

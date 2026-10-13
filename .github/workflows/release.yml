@@ -1,0 +1,45 @@
+# Release workflow: triggered by a v* tag push. Runs GoReleaser to build
+# cross-platform archives, generate checksums, and publish a GitHub
+# release with auto-generated notes from conventional commits.
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+permissions:
+  contents: write
+  packages: write
+  pull-requests: write
+
+env:
+  GO_VERSION: stable
+  GORLEASER_VERSION: "~> v2"
+
+jobs:
+  release:
+    name: goreleaser (${{ github.ref_name }})
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+          cache: true
+
+      - name: Run GoReleaser
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: ${{ env.GORLEASER_VERSION }}
+          distribution: goreleaser
+          args: release --clean
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

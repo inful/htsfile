@@ -5,12 +5,14 @@
 //	htsfile check [--strict] [--crlf] file.vcf
 //	htsfile roundtrip [--crlf] file.vcf
 //	htsfile summary file.vcf
+//	htsfile version
 //
 // Subcommands:
 //
 //	check     parse and validate the file, exit non-zero on errors.
 //	roundtrip parse the file and re-emit it to stdout.
 //	summary   print a one-line summary of the file header.
+//	version   print the htsfile version (set via -ldflags at build time).
 package main
 
 import (
@@ -23,6 +25,18 @@ import (
 	"strings"
 
 	"github.com/inful/htsfile/vcf"
+)
+
+// Build-time variables. Populated via:
+//
+//	go build -ldflags "-X main.version=1.2.3 -X main.commit=$(git rev-parse HEAD) -X main.date=..." .
+//
+// Default values (when building locally without -ldflags) are intentionally
+// informational rather than empty so users see what they're running.
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
 )
 
 func main() {
@@ -40,6 +54,9 @@ func main() {
 		err = runRoundtrip(args)
 	case "summary":
 		err = runSummary(args)
+	case "version":
+		fmt.Printf("htsfile %s (commit %s, built %s)\n", version, commit, date)
+		return
 	case "-h", "--help", "help":
 		usage(os.Stdout)
 		return
@@ -64,7 +81,8 @@ Commands:
               --crlf       write output with CR+LF line endings
   roundtrip   Re-emit the file to stdout.
               --crlf       use CR+LF line endings
-  summary     Print a one-line summary of the file's header.`)
+  summary     Print a one-line summary of the file's header.
+  version     Print the htsfile version (set via -ldflags at build time).`)
 }
 
 // openFileOrStdin returns the named file, or os.Stdin if path is "-".
