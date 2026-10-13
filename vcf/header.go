@@ -1,6 +1,7 @@
 package vcf
 
 import (
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -19,7 +20,9 @@ func (f FileFormat) String() string {
 }
 
 // ParseFileFormat parses "VCFvMAJOR.MINOR" (case sensitive on "VCF", case
-// insensitive on the version digits).
+// insensitive on the version digits). The parser enforces major version
+// 4 only — VCFv3 and VCFv5+ require a separate code path that this
+// library does not implement.
 func ParseFileFormat(s string) (FileFormat, error) {
 	if !strings.HasPrefix(s, "VCFv") && !strings.HasPrefix(s, "vcfv") {
 		return FileFormat{}, &ParseError{Field: "fileformat", Msg: "missing 'VCFv' prefix in " + s}
@@ -36,6 +39,12 @@ func ParseFileFormat(s string) (FileFormat, error) {
 	minor, err := strconv.Atoi(rest[dot+1:])
 	if err != nil {
 		return FileFormat{}, &ParseError{Field: "fileformat", Msg: "non-numeric minor in " + s}
+	}
+	if major != 4 {
+		return FileFormat{}, &ParseError{
+			Field: "fileformat",
+			Msg:   fmt.Sprintf("unsupported VCF major version %d (only v4.x is supported)", major),
+		}
 	}
 	return FileFormat{Major: major, Minor: minor}, nil
 }

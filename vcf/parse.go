@@ -676,7 +676,7 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 		return nil, &ParseError{Line: lineNo, Msg: fmt.Sprintf(
 			"data line has %d fields; need at least 8", len(fields))}
 	}
-	rec := &Record{Info: map[string]InfoValue{}}
+	rec := &Record{Line: lineNo, Info: map[string]InfoValue{}}
 
 	// CHROM (col 1)
 	rec.Chrom = string(fields[0])

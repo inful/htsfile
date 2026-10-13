@@ -5,6 +5,12 @@ package vcf
 //
 // The zero value is not meaningful; obtain Records from [Decoder.Record].
 type Record struct {
+	// Line is the 1-based source line number where the data line was read.
+	// Useful for [Validator] issue messages and CLI tooling. It is set by
+	// [Decoder]; callers that construct Records programmatically should
+	// leave it zero (the validator will report "line 0").
+	Line int
+
 	// Chrom is the chromosome / contig name (column 1). It must match a
 	// declared ##contig ID when the header is present.
 	Chrom string

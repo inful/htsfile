@@ -343,14 +343,17 @@ func TestEncoder_EncodeSample_DroppedTrailingFields(t *testing.T) {
 	h := &Header{FileFormat: FileFormat{4, 5}, SampleNames: []string{"S"}}
 	rec := &Record{
 		Chrom: "1", Pos: 1, Ref: "A",
-		Format: []string{"GT", "DP"},
+		Format: []string{"GT", "DP", "HQ"},
 		Samples: []Genotype{
 			{
 				Fields: map[string]FieldValue{
 					"GT": {Type: TypeString, Strs: []string{"0/1"}},
-					// DP dropped — must emit "." for the dropped field
-					// only if GT is present; here GT is present so we
-					// emit "." for DP.
+					// DP and HQ dropped — they are NOT in Fields. Per
+					// spec §1.6.1, trailing fields may be dropped, and
+					// the encoder must NOT re-emit them as "." in the
+					// sample column. (The FORMAT column itself stays
+					// as GT:DP:HQ because other samples in the same
+					// record might still have all three.)
 				},
 			},
 		},
@@ -367,8 +370,11 @@ func TestEncoder_EncodeSample_DroppedTrailingFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := buf.String()
-	if !strings.Contains(out, "GT:DP\t0/1:.") {
-		t.Errorf("dropped trailing field should be '.':\n%s", out)
+	if !strings.Contains(out, "GT:DP:HQ\t0/1\n") {
+		t.Errorf("FORMAT column should reflect max keys, sample column should drop trailing fields:\n%s", out)
+	}
+	if strings.Contains(out, "0/1:.") {
+		t.Errorf("sample column must not have trailing '.':\n%s", out)
 	}
 }
 

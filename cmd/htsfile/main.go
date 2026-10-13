@@ -124,10 +124,13 @@ func runCheck(args []string) error {
 		return nil
 	}
 
-	// Sort by (record, severity, field) for stable output.
+	// Sort by (record, line, severity, field) for stable output.
 	sort.SliceStable(issues, func(i, j int) bool {
 		if issues[i].Record != issues[j].Record {
 			return issues[i].Record < issues[j].Record
+		}
+		if issues[i].Line != issues[j].Line {
+			return issues[i].Line < issues[j].Line
 		}
 		if issues[i].Severity != issues[j].Severity {
 			return issues[i].Severity < issues[j].Severity
@@ -143,8 +146,8 @@ func runCheck(args []string) error {
 		case vcf.SeverityWarning:
 			nWarn++
 		}
-		fmt.Printf("rec %d line ?  [%s] %s: %s\n",
-			iss.Record, iss.Severity, iss.Field, iss.Msg)
+		fmt.Printf("line %d rec %d  [%s] %s: %s\n",
+			iss.Line, iss.Record, iss.Severity, iss.Field, iss.Msg)
 	}
 	fmt.Printf("%s: %d error(s), %d warning(s)\n", fs.Arg(0), nErr, nWarn)
 	if nErr > 0 {

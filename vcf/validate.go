@@ -109,7 +109,7 @@ func (v *Validator) checkHeader(h *Header) []ValidationError {
 // checkRecord runs per-record checks.
 func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationError {
 	var issues []ValidationError
-	line := 0 // populated by the caller when lines are tracked
+	line := rec.Line
 
 	// CHROM may be required to match a declared contig. Spec says it's
 	// "recommended" for VCF and "required" for BCF; we emit a warning in
@@ -186,6 +186,7 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError {
 	var issues []ValidationError
 	altCount := len(rec.Alt)
+	line := rec.Line
 
 	for key := range rec.Info {
 		val := rec.Info[key]
@@ -194,6 +195,7 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 			iss := ValidationError{
 				Severity: SeverityWarning,
 				Record:   idx + 1,
+				Line:     line,
 				Field:    "INFO/" + key,
 				Msg:      "INFO key is not declared in the header",
 			}
@@ -212,7 +214,7 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 				// entries, but downstream tools might construct a Record
 				// programmatically.
 				issues = append(issues, ValidationError{
-					Severity: SeverityError, Record: idx + 1,
+					Severity: SeverityError, Record: idx + 1, Line: line,
 					Field: "INFO/" + key,
 					Msg:   "Flag field not marked present",
 				})
@@ -228,7 +230,7 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 		}
 		if want >= 0 && got != want {
 			issues = append(issues, ValidationError{
-				Severity: SeverityError, Record: idx + 1,
+				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "INFO/" + key,
 				Msg: fmt.Sprintf("expected %d value(s) for Number=%s, got %d",
 					want, def.Number, got),
@@ -239,7 +241,7 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 		for _, r := range val.Raw {
 			if !validTypedValue(def.Type, r) {
 				issues = append(issues, ValidationError{
-					Severity: SeverityError, Record: idx + 1,
+					Severity: SeverityError, Record: idx + 1, Line: line,
 					Field: "INFO/" + key,
 					Msg:   fmt.Sprintf("value %q does not match declared Type=%q", r, def.Type),
 				})
@@ -250,15 +252,27 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 }
 
 // checkFilter validates FILTER column values against declared filters.
+//
+// Per spec, "0" is reserved and must not be used as a filter string; we
+// flag it as an error in both modes.
 func (v *Validator) checkFilter(h *Header, rec *Record, idx int) []ValidationError {
 	var issues []ValidationError
+	line := rec.Line
 	for _, f := range rec.Filter {
 		if f == "PASS" || f == "." {
 			continue
 		}
+		if f == "0" {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "FILTER",
+				Msg:   `"0" is not a valid filter value (reserved)`,
+			})
+			continue
+		}
 		if _, ok := h.Filters[f]; !ok {
 			iss := ValidationError{
-				Severity: SeverityWarning, Record: idx + 1,
+				Severity: SeverityWarning, Record: idx + 1, Line: line,
 				Field: "FILTER",
 				Msg:   fmt.Sprintf("filter %q is not declared in any ##FILTER line", f),
 			}
@@ -274,6 +288,7 @@ func (v *Validator) checkFilter(h *Header, rec *Record, idx int) []ValidationErr
 // checkSamples validates the FORMAT column and per-sample values.
 func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationError {
 	var issues []ValidationError
+	line := rec.Line
 
 	if len(rec.Samples) == 0 {
 		return issues
@@ -283,7 +298,7 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 	for i, k := range rec.Format {
 		if k == "GT" && i != 0 {
 			issues = append(issues, ValidationError{
-				Severity: SeverityError, Record: idx + 1,
+				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "FORMAT",
 				Msg:   "GT must be the first FORMAT key when present",
 			})
@@ -295,7 +310,7 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 	for i, k := range rec.Format {
 		if k == "LAA" && i > 1 {
 			issues = append(issues, ValidationError{
-				Severity: SeverityError, Record: idx + 1,
+				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "FORMAT",
 				Msg:   "LAA must precede all FORMAT fields other than GT",
 			})
@@ -323,7 +338,7 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 					continue
 				}
 				issues = append(issues, ValidationError{
-					Severity: SeverityError, Record: idx + 1,
+					Severity: SeverityError, Record: idx + 1, Line: line,
 					Field: fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
 					Msg:   "FORMAT key missing from sample data",
 				})
@@ -334,6 +349,7 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 				iss := ValidationError{
 					Severity: SeverityWarning,
 					Record:   idx + 1,
+					Line:     line,
 					Field:    fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
 					Msg:      "FORMAT key is not declared in the header",
 				}
@@ -353,7 +369,7 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 			}
 			if want >= 0 && got != want {
 				issues = append(issues, ValidationError{
-					Severity: SeverityError, Record: idx + 1,
+					Severity: SeverityError, Record: idx + 1, Line: line,
 					Field: fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
 					Msg: fmt.Sprintf("expected %d value(s) for Number=%s, got %d",
 						want, def.Number, got),
@@ -363,7 +379,7 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 			for _, r := range fv.Raw {
 				if !validTypedValue(def.Type, r) {
 					issues = append(issues, ValidationError{
-						Severity: SeverityError, Record: idx + 1,
+						Severity: SeverityError, Record: idx + 1, Line: line,
 						Field: fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
 						Msg:   fmt.Sprintf("value %q does not match declared Type=%q", r, def.Type),
 					})
@@ -387,7 +403,7 @@ func (v *Validator) checkRecordsStrict(records []*Record) []ValidationError {
 		}
 		if prevPos >= 0 && rec.Pos < prevPos {
 			issues = append(issues, ValidationError{
-				Severity: SeverityError, Record: i + 1,
+				Severity: SeverityError, Record: i + 1, Line: rec.Line,
 				Field: "POS",
 				Msg: fmt.Sprintf("POS %d < previous POS %d within CHROM %s",
 					rec.Pos, prevPos, rec.Chrom),

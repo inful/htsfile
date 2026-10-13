@@ -576,14 +576,27 @@ func isFlagInfo(v *InfoValue) bool {
 	return len(v.Raw) == 0 && v.Type == TypeUnknown
 }
 
-// encodeSample emits one sample column for a record.
+// encodeSample emits one sample column for a record. It honours the
+// spec §1.6.1 "trailing fields can be dropped" rule: keys past the last
+// present FORMAT key are not emitted at all (the absence is implicit).
 func encodeSample(b *bytes.Buffer, format []string, s Genotype) {
+	// Find the index of the last FORMAT key that has a present value in
+	// this sample. Keys beyond it are dropped and must not be emitted.
+	lastPresent := -1
 	for i, key := range format {
+		if _, ok := s.Fields[key]; ok {
+			lastPresent = i
+		}
+	}
+	for i, key := range format {
+		if i > lastPresent {
+			break
+		}
 		if i > 0 {
 			b.WriteByte(':')
 		}
-		v, present := s.Fields[key]
-		if !present || v.Missing {
+		v := s.Fields[key]
+		if v.Missing {
 			b.WriteByte('.')
 			continue
 		}

@@ -13,13 +13,13 @@ func TestParseFileFormat(t *testing.T) {
 	}{
 		{"VCFv4.5", FileFormat{4, 5}, false},
 		{"VCFv4.4", FileFormat{4, 4}, false},
-		{"VCFv5.0", FileFormat{5, 0}, false},
-		{"VCFv10.20", FileFormat{10, 20}, false},
-		{"vcfv4.5", FileFormat{4, 5}, false}, // case insensitive on prefix
-		{"BCFv2.2", FileFormat{}, true},      // wrong prefix
-		{"VCFv4", FileFormat{}, true},        // missing minor
-		{"VCFv4.", FileFormat{}, true},       // empty minor
-		{"VCFvx.y", FileFormat{}, true},      // non-numeric major
+		{"VCFv5.0", FileFormat{5, 0}, true},            // major != 4
+		{"VCFv10.20", FileFormat{10, 20}, true},        // major != 4
+		{"vcfv4.5", FileFormat{4, 5}, false},           // case insensitive on prefix
+		{"BCFv2.2", FileFormat{}, true},                // wrong prefix
+		{"VCFv4", FileFormat{}, true},                  // missing minor
+		{"VCFv4.", FileFormat{}, true},                 // empty minor
+		{"VCFvx.y", FileFormat{}, true},                // non-numeric major
 	}
 	for _, c := range cases {
 		t.Run(c.in, func(t *testing.T) {
