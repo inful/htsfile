@@ -69,6 +69,24 @@ for _, iss := range issues {
 }
 ```
 
+## CLI
+
+A small command-line tool ships in `cmd/htsfile`:
+
+```sh
+# Validate a file
+htsfile check sample.vcf                  # default mode (warns on issues)
+htsfile check --strict sample.vcf         # strict spec-compliance checks
+htsfile check --strict --warnings file.vcf   # exit non-zero on warnings too
+
+# Re-emit a file (verifies round-trip)
+htsfile roundtrip sample.vcf > out.vcf
+htsfile roundtrip --crlf sample.vcf       # CR+LF line endings
+
+# Print a header summary
+htsfile summary sample.vcf
+```
+
 ## Status
 
 | Feature                                | Status |
