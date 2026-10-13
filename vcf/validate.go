@@ -450,37 +450,39 @@ func validAltAllele(a string) bool {
 }
 
 // isBreakend reports whether a is a breakend replacement string of one of
-// the four forms: t]p], t[p[, ]p]t, [p[t (t and p may be empty).
+// the four forms: t]p], t[p[, ]p]t, [p[t. Per VCFv4.5 §1.6.5.1, the
+// position specifier is bracketed by two of the same kind of bracket character
+// (`[` or `]`). Leading/trailing base strings ("t") are optional.
+//
+// We do a structural check: the string must contain two matching brackets
+// of the same kind and the substring between them must include a colon
+// (the position specifier uses "chr:pos" form).
 func isBreakend(a string) bool {
-	if len(a) < 2 {
+	if len(a) < 4 {
 		return false
 	}
-	open, close := a[0], a[len(a)-1]
-	if open != '[' && open != ']' {
+	// Find the first bracket character.
+	start := -1
+	for i := 0; i < len(a); i++ {
+		if a[i] == '[' || a[i] == ']' {
+			start = i
+			break
+		}
+	}
+	if start < 0 || start+2 >= len(a) {
 		return false
 	}
-	if close != '[' && close != ']' {
-		return false
-	}
-	// Find the matching inner open/close character: it's the same as the
-	// outer opener if the string contains that character twice (positions
-	// 0 and somewhere later).
-	for i := 1; i < len(a)-1; i++ {
+	open := a[start]
+	// Find the matching closer (same bracket character) at a later position.
+	for i := start + 1; i < len(a); i++ {
 		if a[i] == open {
-			// Valid breakend requires the position specifier (between
-			// the two same characters) to contain "chr:pos" or
-			// "<contig>:<pos>".
-			inner := a[i+1 : len(a)-1]
-			return looksLikePosition(inner)
+			// Position specifier sits between start+1 and i (exclusive).
+			inner := a[start+1 : i]
+			return strings.Contains(inner, ":")
 		}
 	}
 	return false
 }
-
-// looksLikePosition reports whether s looks like a "chr:pos" position
-// specifier — the form used in breakend replacements. We don't try to be
-// strict; just look for a colon.
-func looksLikePosition(s string) bool { return strings.Contains(s, ":") }
 
 // validTypedValue reports whether s is a valid representation of a value
 // of the declared type.
