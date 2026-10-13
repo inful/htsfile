@@ -51,7 +51,6 @@ archives:
       - README.md
       - src: CHANGELOG.md
         strip_parent: true
-        optional: true
 
 checksum:
   name_template: '{{ .ProjectName }}_{{ .Version }}_checksums.txt'
@@ -118,24 +117,9 @@ release:
 
     See the [README](https://github.com/inful/htsfile#readme) for usage.
 
-brews:
-  - name: htsfile
-    repository:
-      owner: inful
-      name: homebrew-tap
-    description: "VCF parser/writer/validator"
-    homepage: "https://github.com/inful/htsfile"
-    license: MIT
-    dependencies: []
-    install: |
-      bin.install "htsfile" => "htsfile"
-    test: |
-      system "#{bin}/htsfile", "help"
+# Homebrew tap target is intentionally omitted; v2 has split it into
+# a paid feature. Once the inful/homebrew-tap repo exists, add a
+# `homebrew_casks`/`homebrew_brews` block here and re-enable.
 
 # Skip the heavy parts on dry-run; useful locally with `goreleaser --snapshot`.
-snapshot:
-  name_template: "{{ incpatch .Version }}-next"
-
-source:
-  format: zip
-  strip: false
+# snapshot customization removed: name_template is deprecated.
