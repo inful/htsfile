@@ -2,7 +2,6 @@ package vcf
 
 import (
 	"fmt"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -188,7 +187,8 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 	var issues []ValidationError
 	altCount := len(rec.Alt)
 
-	for key, val := range rec.Info {
+	for key := range rec.Info {
+		val := rec.Info[key]
 		def, declared := h.Infos[key]
 		if !declared {
 			iss := ValidationError{
@@ -525,18 +525,4 @@ func ploidyFromGT(g Genotype) int {
 		}
 	}
 	return count + 1
-}
-
-// sortIssues sorts issues in (Record, Severity, Field) order for stable
-// output. Mutates the input slice.
-func sortIssues(issues []ValidationError) {
-	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Record != issues[j].Record {
-			return issues[i].Record < issues[j].Record
-		}
-		if issues[i].Severity != issues[j].Severity {
-			return issues[i].Severity < issues[j].Severity
-		}
-		return issues[i].Field < issues[j].Field
-	})
 }

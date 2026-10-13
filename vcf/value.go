@@ -29,7 +29,7 @@ type InfoValue struct {
 }
 
 // HasValue reports whether v represents a present, non-missing value.
-func (v InfoValue) HasValue() bool {
+func (v *InfoValue) HasValue() bool {
 	if v.Missing {
 		return false
 	}
@@ -42,7 +42,7 @@ func (v InfoValue) HasValue() bool {
 // String returns the first string value, or "" if no string values are
 // present. Intended for Callers that know the field is Number=1 and
 // Type=String.
-func (v InfoValue) String() string {
+func (v *InfoValue) String() string {
 	if len(v.Strs) == 0 {
 		return ""
 	}
@@ -50,7 +50,7 @@ func (v InfoValue) String() string {
 }
 
 // Int returns the first integer value, or 0 if no integer values are present.
-func (v InfoValue) Int() int64 {
+func (v *InfoValue) Int() int64 {
 	if len(v.Ints) == 0 {
 		return 0
 	}
@@ -58,7 +58,7 @@ func (v InfoValue) Int() int64 {
 }
 
 // Float returns the first float value, or 0 if no float values are present.
-func (v InfoValue) Float() float64 {
+func (v *InfoValue) Float() float64 {
 	if len(v.Floats) == 0 {
 		return 0
 	}
@@ -80,11 +80,11 @@ type FieldValue struct {
 }
 
 // HasValue reports whether v represents a present, non-missing value.
-func (v FieldValue) HasValue() bool { return !v.Missing }
+func (v *FieldValue) HasValue() bool { return !v.Missing }
 
 // String returns the first string value, or "" if no string values are
 // present.
-func (v FieldValue) String() string {
+func (v *FieldValue) String() string {
 	if len(v.Strs) == 0 {
 		return ""
 	}
@@ -92,7 +92,7 @@ func (v FieldValue) String() string {
 }
 
 // Int returns the first integer value, or 0 if no integer values are present.
-func (v FieldValue) Int() int64 {
+func (v *FieldValue) Int() int64 {
 	if len(v.Ints) == 0 {
 		return 0
 	}
@@ -100,7 +100,7 @@ func (v FieldValue) Int() int64 {
 }
 
 // Float returns the first float value, or 0 if no float values are present.
-func (v FieldValue) Float() float64 {
+func (v *FieldValue) Float() float64 {
 	if len(v.Floats) == 0 {
 		return 0
 	}

@@ -55,7 +55,7 @@ func main() {
 }
 
 func usage(w io.Writer) {
-	fmt.Fprintln(w, `Usage: htsfile <command> [flags] file.vcf
+	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] file.vcf
 
 Commands:
   check       Validate the file. Exits non-zero if any errors are found.
@@ -72,6 +72,7 @@ func openFileOrStdin(path string) (io.ReadCloser, error) {
 	if path == "-" {
 		return io.NopCloser(os.Stdin), nil
 	}
+	//nolint:gosec // path comes from CLI args; user controls the input
 	return os.Open(path)
 }
 
@@ -93,7 +94,7 @@ func runCheck(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // best-effort close
 
 	mode := vcf.ModeDefault
 	if *strict {
@@ -170,7 +171,7 @@ func runRoundtrip(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // best-effort close
 
 	dec := vcf.NewDecoder(f)
 	hdr, err := dec.Header()
@@ -220,7 +221,7 @@ func runSummary(args []string) error {
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // best-effort close
 
 	dec := vcf.NewDecoder(f)
 	hdr, err := dec.Header()
@@ -249,6 +250,6 @@ func runSummary(args []string) error {
 	fmt.Fprintf(&b, "  ALT defs:   %d\n", len(hdr.Alts))
 	fmt.Fprintf(&b, "  samples:    %d\n", len(hdr.SampleNames))
 	fmt.Fprintf(&b, "  records:    %d\n", nRec)
-	fmt.Fprint(os.Stdout, b.String())
+	_, _ = fmt.Fprint(os.Stdout, b.String())
 	return nil
 }

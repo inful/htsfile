@@ -5,8 +5,6 @@ import (
 	"testing"
 )
 
-func ptr64(v float64) *float64 { return &v }
-
 func TestValidator_CleanSpecExample(t *testing.T) {
 	t.Parallel()
 	hdr, recs := parseFile(t, "testdata/spec_example.vcf")

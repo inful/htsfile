@@ -10,7 +10,8 @@ func TestInfoValue_Accessors(t *testing.T) {
 		if got := v.String(); got != "hello" {
 			t.Errorf("String() = %q; want %q", got, "hello")
 		}
-		if (InfoValue{}).String() != "" {
+		zero := InfoValue{}
+		if zero.String() != "" {
 			t.Error("zero-value should yield empty string")
 		}
 	})
@@ -20,7 +21,8 @@ func TestInfoValue_Accessors(t *testing.T) {
 		if got := v.Int(); got != 42 {
 			t.Errorf("Int() = %d; want 42", got)
 		}
-		if (InfoValue{}).Int() != 0 {
+		zero := InfoValue{}
+		if zero.Int() != 0 {
 			t.Error("zero-value should yield 0")
 		}
 	})
@@ -30,7 +32,8 @@ func TestInfoValue_Accessors(t *testing.T) {
 		if got := v.Float(); got != 3.14 {
 			t.Errorf("Float() = %v; want 3.14", got)
 		}
-		if (InfoValue{}).Float() != 0 {
+		zero := InfoValue{}
+		if zero.Float() != 0 {
 			t.Error("zero-value should yield 0")
 		}
 	})

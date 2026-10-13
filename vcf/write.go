@@ -81,7 +81,7 @@ func (e *Encoder) EncodeHeader(h *Header) error {
 		if !e.shouldEmitFromMeta(m, h) {
 			continue
 		}
-		if _, err := e.writeRawMetaLine(m.Key, m.Value); err != nil {
+		if err := e.writeRawMetaLine(m.Key, m.Value); err != nil {
 			return err
 		}
 		metaSeen[m.Key] = true
@@ -90,27 +90,27 @@ func (e *Encoder) EncodeHeader(h *Header) error {
 	// 3. Emit common unstructured typed fields if non-empty and not
 	// already emitted.
 	if h.FileDate != "" && !metaSeen["fileDate"] {
-		if _, err := e.writeRawMetaLine("fileDate", h.FileDate); err != nil {
+		if err := e.writeRawMetaLine("fileDate", h.FileDate); err != nil {
 			return err
 		}
 	}
 	if h.Source != "" && !metaSeen["source"] {
-		if _, err := e.writeRawMetaLine("source", h.Source); err != nil {
+		if err := e.writeRawMetaLine("source", h.Source); err != nil {
 			return err
 		}
 	}
 	if h.Reference != "" && !metaSeen["reference"] {
-		if _, err := e.writeRawMetaLine("reference", h.Reference); err != nil {
+		if err := e.writeRawMetaLine("reference", h.Reference); err != nil {
 			return err
 		}
 	}
 	if h.Assembly != "" && !metaSeen["assembly"] {
-		if _, err := e.writeRawMetaLine("assembly", h.Assembly); err != nil {
+		if err := e.writeRawMetaLine("assembly", h.Assembly); err != nil {
 			return err
 		}
 	}
 	if h.PedigreeDB != "" && !metaSeen["pedigreeDB"] {
-		if _, err := e.writeRawMetaLine("pedigreeDB", h.PedigreeDB); err != nil {
+		if err := e.writeRawMetaLine("pedigreeDB", h.PedigreeDB); err != nil {
 			return err
 		}
 	}
@@ -188,21 +188,21 @@ func (e *Encoder) shouldEmitFromMeta(m MetaLine, h *Header) bool {
 }
 
 // writeRawMetaLine writes "##key=value\n" verbatim.
-func (e *Encoder) writeRawMetaLine(key, value string) (int, error) {
+func (e *Encoder) writeRawMetaLine(key, value string) error {
 	if _, err := e.w.WriteString("##"); err != nil {
-		return 0, err
+		return err
 	}
 	if _, err := e.w.WriteString(key); err != nil {
-		return 0, err
+		return err
 	}
 	if _, err := e.w.WriteString("="); err != nil {
-		return 0, err
+		return err
 	}
 	if _, err := e.w.WriteString(value); err != nil {
-		return 0, err
+		return err
 	}
 	_, err := e.w.Write(e.lineEnding)
-	return 0, err
+	return err
 }
 
 // emitContig writes a ##contig=<ID=...,length=...,...> line.
@@ -226,12 +226,13 @@ func (e *Encoder) emitContig(c *Contig) error {
 
 // emitInfo writes a ##INFO=<Id=...,Number=...,Type=...,Description=...,...> line.
 func (e *Encoder) emitInfo(d *InfoDef) error {
-	pairs := [][2]string{
-		{"ID", quoteIfNeeded(d.ID)},
-		{"Number", d.Number.String()},
-		{"Type", d.Type.String()},
-		{"Description", strconv.Quote(d.Description)},
-	}
+	pairs := make([][2]string, 0, 4+len(d.Other))
+	pairs = append(pairs,
+		[2]string{"ID", quoteIfNeeded(d.ID)},
+		[2]string{"Number", d.Number.String()},
+		[2]string{"Type", d.Type.String()},
+		[2]string{"Description", strconv.Quote(d.Description)},
+	)
 	if d.Source != "" {
 		pairs = append(pairs, [2]string{"Source", strconv.Quote(d.Source)})
 	}
@@ -246,10 +247,11 @@ func (e *Encoder) emitInfo(d *InfoDef) error {
 
 // emitFilter writes a ##FILTER=<ID=...,Description=...> line.
 func (e *Encoder) emitFilter(d *FilterDef) error {
-	pairs := [][2]string{
-		{"ID", quoteIfNeeded(d.ID)},
-		{"Description", strconv.Quote(d.Description)},
-	}
+	pairs := make([][2]string, 0, 2+len(d.Other))
+	pairs = append(pairs,
+		[2]string{"ID", quoteIfNeeded(d.ID)},
+		[2]string{"Description", strconv.Quote(d.Description)},
+	)
 	for k, v := range d.Other {
 		pairs = append(pairs, [2]string{k, strconv.Quote(v)})
 	}
@@ -258,12 +260,13 @@ func (e *Encoder) emitFilter(d *FilterDef) error {
 
 // emitFormat writes a ##FORMAT=<ID=...,Number=...,Type=...,Description=...> line.
 func (e *Encoder) emitFormat(d *FormatDef) error {
-	pairs := [][2]string{
-		{"ID", quoteIfNeeded(d.ID)},
-		{"Number", d.Number.String()},
-		{"Type", d.Type.String()},
-		{"Description", strconv.Quote(d.Description)},
-	}
+	pairs := make([][2]string, 0, 4+len(d.Other))
+	pairs = append(pairs,
+		[2]string{"ID", quoteIfNeeded(d.ID)},
+		[2]string{"Number", d.Number.String()},
+		[2]string{"Type", d.Type.String()},
+		[2]string{"Description", strconv.Quote(d.Description)},
+	)
 	for k, v := range d.Other {
 		pairs = append(pairs, [2]string{k, strconv.Quote(v)})
 	}
@@ -272,10 +275,11 @@ func (e *Encoder) emitFormat(d *FormatDef) error {
 
 // emitAlt writes a ##ALT=<ID=...,Description=...> line.
 func (e *Encoder) emitAlt(d *AltDef) error {
-	pairs := [][2]string{
-		{"ID", quoteIfNeeded(d.ID)},
-		{"Description", strconv.Quote(d.Description)},
-	}
+	pairs := make([][2]string, 0, 2+len(d.Other))
+	pairs = append(pairs,
+		[2]string{"ID", quoteIfNeeded(d.ID)},
+		[2]string{"Description", strconv.Quote(d.Description)},
+	)
 	for k, v := range d.Other {
 		pairs = append(pairs, [2]string{k, strconv.Quote(v)})
 	}
@@ -313,7 +317,7 @@ func (e *Encoder) emitSample(s *Sample) error {
 		{"ID", quoteIfNeeded(s.ID)},
 	}
 	if len(s.Genomes) > 0 {
-		var inner [][2]string
+		inner := make([][2]string, 0, len(s.Genomes))
 		for k, v := range s.Genomes {
 			inner = append(inner, [2]string{k, strconv.Quote(v)})
 		}
@@ -321,7 +325,7 @@ func (e *Encoder) emitSample(s *Sample) error {
 		pairs = append(pairs, [2]string{"Genomes", buildStructuredBody(inner)})
 	}
 	if len(s.MolConvs) > 0 {
-		var inner [][2]string
+		inner := make([][2]string, 0, len(s.MolConvs))
 		for k, v := range s.MolConvs {
 			inner = append(inner, [2]string{k, strconv.Quote(v)})
 		}
@@ -417,58 +421,7 @@ func (e *Encoder) EncodeRecord(rec *Record) error {
 	}
 	var b bytes.Buffer
 
-	// CHROM
-	b.WriteString(rec.Chrom)
-	b.WriteByte('\t')
-
-	// POS
-	b.WriteString(strconv.FormatInt(rec.Pos, 10))
-	b.WriteByte('\t')
-
-	// ID
-	if len(rec.ID) == 0 {
-		b.WriteByte('.')
-	} else {
-		b.WriteString(strings.Join(rec.ID, ";"))
-	}
-	b.WriteByte('\t')
-
-	// REF — never percent-encode; only ACGTN bases (and the padding base
-	// for symbolic SVs) are allowed here.
-	b.WriteString(rec.Ref)
-	b.WriteByte('\t')
-
-	// ALT — never percent-encode. The spec example for breakends uses
-	// literal ':' in position specifiers, and ',' is the only character
-	// with structural meaning here. Values inside <...> symbolic alleles
-	// are likewise raw.
-	if len(rec.Alt) == 0 {
-		b.WriteByte('.')
-	} else {
-		for i, a := range rec.Alt {
-			if i > 0 {
-				b.WriteByte(',')
-			}
-			b.WriteString(a)
-		}
-	}
-	b.WriteByte('\t')
-
-	// QUAL
-	if rec.Qual == nil {
-		b.WriteByte('.')
-	} else {
-		b.WriteString(formatVCFFloat(*rec.Qual))
-	}
-	b.WriteByte('\t')
-
-	// FILTER
-	if len(rec.Filter) == 0 {
-		b.WriteByte('.')
-	} else {
-		b.WriteString(strings.Join(rec.Filter, ";"))
-	}
-	b.WriteByte('\t')
+	encodeFixedColumns(&b, rec)
 
 	// INFO
 	if len(rec.Info) == 0 {
@@ -480,58 +433,7 @@ func (e *Encoder) EncodeRecord(rec *Record) error {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		first := true
-		for _, k := range keys {
-			v := rec.Info[k]
-			if !first {
-				b.WriteByte(';')
-			}
-			first = false
-			b.WriteString(k)
-			if isFlagInfo(v) {
-				continue
-			}
-			b.WriteByte('=')
-			if v.Missing {
-				b.WriteByte('.')
-				continue
-			}
-			switch v.Type {
-			case TypeInteger:
-				for i, n := range v.Ints {
-					if i > 0 {
-						b.WriteByte(',')
-					}
-					b.WriteString(strconv.FormatInt(n, 10))
-				}
-			case TypeFloat:
-				for i, f := range v.Floats {
-					if i > 0 {
-						b.WriteByte(',')
-					}
-					b.WriteString(formatVCFFloat(f))
-				}
-			case TypeString:
-				for i, s := range v.Strs {
-					if i > 0 {
-						b.WriteByte(',')
-					}
-					b.WriteString(percentEncode(s))
-				}
-			case TypeCharacter:
-				if len(v.Chars) > 0 {
-					b.WriteByte(v.Chars[0])
-				}
-			default:
-				// Unknown type — emit raw if available.
-				for i, s := range v.Raw {
-					if i > 0 {
-						b.WriteByte(',')
-					}
-					b.WriteString(s)
-				}
-			}
-		}
+		writeInfoColumn(&b, keys, rec.Info)
 	}
 
 	// FORMAT + sample columns
@@ -557,9 +459,115 @@ func (e *Encoder) EncodeRecord(rec *Record) error {
 	return err
 }
 
+// encodeFixedColumns writes CHROM..FILTER into b. Extracted from
+// EncodeRecord to keep the cognitive complexity manageable.
+func encodeFixedColumns(b *bytes.Buffer, rec *Record) {
+	// CHROM
+	b.WriteString(rec.Chrom)
+	b.WriteByte('\t')
+	// POS
+	b.WriteString(strconv.FormatInt(rec.Pos, 10))
+	b.WriteByte('\t')
+	// ID
+	if len(rec.ID) == 0 {
+		b.WriteByte('.')
+	} else {
+		b.WriteString(strings.Join(rec.ID, ";"))
+	}
+	b.WriteByte('\t')
+	// REF — never percent-encode; only ACGTN bases (and the padding base
+	// for symbolic SVs) are allowed here.
+	b.WriteString(rec.Ref)
+	b.WriteByte('\t')
+	// ALT — never percent-encode. The spec example for breakends uses
+	// literal ':' in position specifiers, and ',' is the only character
+	// with structural meaning here. Values inside <...> symbolic alleles
+	// are likewise raw.
+	if len(rec.Alt) == 0 {
+		b.WriteByte('.')
+	} else {
+		for i, a := range rec.Alt {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(a)
+		}
+	}
+	b.WriteByte('\t')
+	// QUAL
+	if rec.Qual == nil {
+		b.WriteByte('.')
+	} else {
+		b.WriteString(formatVCFFloat(*rec.Qual))
+	}
+	b.WriteByte('\t')
+	// FILTER
+	if len(rec.Filter) == 0 {
+		b.WriteByte('.')
+	} else {
+		b.WriteString(strings.Join(rec.Filter, ";"))
+	}
+	b.WriteByte('\t')
+}
+
+// writeInfoColumn writes the INFO column contents to b. keys should already
+// be in the desired order.
+func writeInfoColumn(b *bytes.Buffer, keys []string, info map[string]InfoValue) {
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteByte(';')
+		}
+		v := info[k]
+		b.WriteString(k)
+		if isFlagInfo(&v) {
+			continue
+		}
+		b.WriteByte('=')
+		if v.Missing {
+			b.WriteByte('.')
+			continue
+		}
+		switch v.Type {
+		case TypeInteger:
+			for j, n := range v.Ints {
+				if j > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(strconv.FormatInt(n, 10))
+			}
+		case TypeFloat:
+			for j, f := range v.Floats {
+				if j > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(formatVCFFloat(f))
+			}
+		case TypeString:
+			for j, s := range v.Strs {
+				if j > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(percentEncode(s))
+			}
+		case TypeCharacter:
+			if len(v.Chars) > 0 {
+				b.WriteByte(v.Chars[0])
+			}
+		default:
+			// Unknown type — emit raw if available.
+			for j, s := range v.Raw {
+				if j > 0 {
+					b.WriteByte(',')
+				}
+				b.WriteString(s)
+			}
+		}
+	}
+}
+
 // isFlagInfo reports whether v should be emitted as a key-only Flag token
 // (no "=value").
-func isFlagInfo(v InfoValue) bool {
+func isFlagInfo(v *InfoValue) bool {
 	if v.Type == TypeFlag {
 		return v.Flag
 	}

@@ -22,7 +22,6 @@ func TestParseFileFormat(t *testing.T) {
 		{"VCFvx.y", FileFormat{}, true},      // non-numeric major
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.in, func(t *testing.T) {
 			t.Parallel()
 			got, err := ParseFileFormat(c.in)

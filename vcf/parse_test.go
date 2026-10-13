@@ -33,11 +33,11 @@ func parseAll(t *testing.T, src string) (*Header, []*Record) {
 // helper: parse from a file path
 func parseFile(t *testing.T, path string) (*Header, []*Record) {
 	t.Helper()
-	f, err := os.Open(path)
+	f, err := os.Open(path) //nolint:gosec // path is test-controlled
 	if err != nil {
 		t.Fatalf("open %s: %v", path, err)
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // test helper
 	dec := NewDecoder(f)
 	hdr, err := dec.Header()
 	if err != nil {
@@ -445,7 +445,6 @@ func TestDecoder_Errors(t *testing.T) {
 		},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			dec := NewDecoder(strings.NewReader(c.src))

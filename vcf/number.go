@@ -28,6 +28,8 @@ type Number struct {
 type Symbol int8
 
 const (
+	// SymbolNone is the zero value of [Symbol]; it indicates the [Number]
+	// is a literal count rather than a symbolic cardinality.
 	SymbolNone Symbol = iota
 	// SymbolA — one value per alternate allele. The values must appear in
 	// the same order as the ALT column.

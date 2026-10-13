@@ -118,8 +118,10 @@ func TestEncoder_RoundTripSpecExample(t *testing.T) {
 			continue
 		}
 		for j := range recs[i].Samples {
-			gt := recs[i].Samples[j].Fields["GT"].String()
-			gt2 := recs2[i].Samples[j].Fields["GT"].String()
+			g1 := recs[i].Samples[j].Fields["GT"]
+			g2 := recs2[i].Samples[j].Fields["GT"]
+			gt := g1.String()
+			gt2 := g2.String()
 			if gt != gt2 {
 				t.Errorf("rec%d sample%d GT: %q vs %q", i, j, gt, gt2)
 			}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"sort"
 	"strconv"
 	"strings"
 )
@@ -211,7 +210,8 @@ func (h *Header) parseFirstLine(raw []byte, lineNo int) error {
 	val := string(raw[len(prefix):])
 	ff, err := ParseFileFormat(val)
 	if err != nil {
-		if pe, ok := err.(*ParseError); ok {
+		var pe *ParseError
+		if errors.As(err, &pe) {
 			pe.Line = lineNo
 			pe.Field = "fileformat"
 			return pe
@@ -763,10 +763,8 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 				Msg: "empty FORMAT column"}
 		}
 		rec.Format = strings.Split(formatStr, ":")
-		if len(rec.Format) == 0 || rec.Format[0] != "GT" {
-			// GT must be first when present per spec.
-			// (We don't enforce GT-presence, only GT-first.)
-		}
+		// GT-first is enforced by the validator, not here, so the parser
+		// remains useful for inspecting malformed files.
 		// We require exactly len(SampleNames) sample columns.
 		wantSamples := len(h.SampleNames)
 		gotSamples := len(fields) - 9
@@ -777,7 +775,7 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 		}
 		rec.Samples = make([]Genotype, gotSamples)
 		for i := 0; i < gotSamples; i++ {
-			rec.Samples[i] = parseSample(fields[9+i], rec.Format, h, lineNo)
+			rec.Samples[i] = parseSample(fields[9+i], rec.Format, h)
 		}
 	} else if len(h.SampleNames) > 0 {
 		return nil, &ParseError{Line: lineNo, Field: "FORMAT",
@@ -916,20 +914,26 @@ func validInfoKey(s string) bool {
 	if s == "" {
 		return false
 	}
-	c := s[0]
-	if !(c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+	if !isKeyStart(s[0]) {
 		return false
 	}
 	for i := 1; i < len(s); i++ {
-		c := s[i]
-		if !(c == '_' || c == '.' ||
-			(c >= '0' && c <= '9') ||
-			(c >= 'A' && c <= 'Z') ||
-			(c >= 'a' && c <= 'z')) {
+		if !isKeyCont(s[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func isKeyStart(c byte) bool {
+	return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')
+}
+
+func isKeyCont(c byte) bool {
+	return c == '_' || c == '.' ||
+		(c >= '0' && c <= '9') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= 'a' && c <= 'z')
 }
 
 // decodeInfoValue converts the raw string values for one INFO entry to
@@ -940,7 +944,7 @@ func decodeInfoValue(def *InfoDef, raw []string) (InfoValue, error) {
 
 	if def.Type == TypeFlag {
 		if len(raw) > 0 {
-			return v, fmt.Errorf("Flag field must not have values; got %d",
+			return v, fmt.Errorf("flag field must not have values; got %d",
 				len(raw))
 		}
 		v.Flag = true
@@ -1001,7 +1005,7 @@ func decodeInfoValue(def *InfoDef, raw []string) (InfoValue, error) {
 }
 
 // parseSample splits a sample column into per-FORMAT-key FieldValues.
-func parseSample(raw []byte, format []string, h *Header, lineNo int) Genotype {
+func parseSample(raw []byte, format []string, h *Header) Genotype {
 	fields := bytes.Split(raw, []byte{':'})
 	out := Genotype{Fields: map[string]FieldValue{}}
 
@@ -1075,16 +1079,4 @@ func decodeFieldValue(def *FormatDef, raw []string) FieldValue {
 		// TypeUnknown: leave Raw set.
 	}
 	return v
-}
-
-// sortMetaLines sorts the meta lines by (Key, Value) for stable output. The
-// encoder uses this to produce deterministic output when the original order
-// is not preserved.
-func sortMetaLines(ml []MetaLine) {
-	sort.SliceStable(ml, func(i, j int) bool {
-		if ml[i].Key != ml[j].Key {
-			return ml[i].Key < ml[j].Key
-		}
-		return ml[i].Value < ml[j].Value
-	})
 }

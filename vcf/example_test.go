@@ -18,7 +18,7 @@ func ExampleNewDecoder() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // test helper
 
 	dec := vcf.NewDecoder(f)
 	hdr, err := dec.Header()
@@ -183,7 +183,7 @@ func Example_roundTrip() {
 		fmt.Println("error:", err)
 		return
 	}
-	defer f.Close()
+	defer f.Close() //nolint:errcheck // test helper
 
 	dec := vcf.NewDecoder(f)
 	hdr, err := dec.Header()

@@ -2,6 +2,7 @@ package vcf
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"testing"
@@ -23,7 +24,7 @@ func BenchmarkParseSpecExample(b *testing.B) {
 		}
 		for {
 			_, err := dec.Record()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {
@@ -50,7 +51,7 @@ func BenchmarkRoundTripSpecExample(b *testing.B) {
 		var recs []*Record
 		for {
 			rec, err := dec.Record()
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if err != nil {
@@ -85,7 +86,7 @@ func BenchmarkValidateSpecExample(b *testing.B) {
 	var recs []*Record
 	for {
 		rec, err := dec.Record()
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {

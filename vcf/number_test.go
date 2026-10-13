@@ -34,7 +34,6 @@ func TestParseNumber(t *testing.T) {
 		{"1.5", Number{}, true},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.in, func(t *testing.T) {
 			t.Parallel()
 			got, err := ParseNumber(c.in)
@@ -105,7 +104,6 @@ func TestNumberCardinality(t *testing.T) {
 		{"LA unknown LAA", Number{Fixed: SymbolLA}, 3, 0, -1},
 	}
 	for _, c := range cases {
-		c := c
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
 			if got := c.n.Cardinality(c.alts, c.ploidy); got != c.want {
