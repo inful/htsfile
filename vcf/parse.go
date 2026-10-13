@@ -1,0 +1,1090 @@
+package vcf
+
+import (
+	"bufio"
+	"bytes"
+	"errors"
+	"fmt"
+	"io"
+	"math"
+	"sort"
+	"strconv"
+	"strings"
+)
+
+// Decoder reads a VCF document incrementally.
+//
+// Typical usage:
+//
+//	dec := vcf.NewDecoder(r)
+//	hdr, err := dec.Header()
+//	for {
+//	    rec, err := dec.Record()
+//	    if errors.Is(err, io.EOF) { break }
+//	    // ...
+//	}
+//
+// A [Decoder] is not safe for concurrent use; create one per goroutine.
+type Decoder struct {
+	r *bufio.Reader
+
+	// line is the 1-based line number of the most recently read line.
+	line int
+
+	// hdr is cached after the first successful [Decoder.Header] call.
+	hdr *Header
+	// hdrErr, when non-nil, is returned by every subsequent [Decoder.Header]
+	// call. We surface header parse failures persistently so callers don't
+	// re-read malformed input and end up with different results.
+	hdrErr error
+	// hdrParsed is true once Header() has run to completion (with or without
+	// success). It prevents re-parsing.
+	hdrParsed bool
+
+	// eof is true once the underlying reader has been exhausted.
+	eof bool
+}
+
+// NewDecoder wraps r in a [Decoder]. The decoder buffers input with a
+// [bufio.Reader] unless r is already one.
+func NewDecoder(r io.Reader) *Decoder {
+	br, ok := r.(*bufio.Reader)
+	if !ok {
+		br = bufio.NewReaderSize(r, 64*1024)
+	}
+	return &Decoder{r: br}
+}
+
+// Header parses the VCF header. The first call reads ##meta lines until the
+// #CHROM header line is seen; subsequent calls return the same [*Header]
+// without re-reading the stream.
+func (d *Decoder) Header() (*Header, error) {
+	if d.hdrParsed {
+		return d.hdr, d.hdrErr
+	}
+	d.hdrParsed = true
+	h, err := d.parseHeader()
+	d.hdr = h
+	d.hdrErr = err
+	return h, err
+}
+
+// Record returns the next data record. When no more records are available,
+// it returns (nil, [io.EOF]). Calling Record after EOF is allowed and
+// continues to return (nil, [io.EOF]).
+func (d *Decoder) Record() (*Record, error) {
+	if !d.hdrParsed {
+		if _, err := d.Header(); err != nil {
+			return nil, err
+		}
+	}
+	for {
+		raw, lineNo, err := d.readLine()
+		if errors.Is(err, io.EOF) {
+			return nil, io.EOF
+		}
+		if err != nil {
+			return nil, err
+		}
+		// Allow empty lines in the data section.
+		if len(raw) == 0 {
+			continue
+		}
+		rec, err := parseRecord(raw, lineNo, d.hdr)
+		if err != nil {
+			return nil, err
+		}
+		return rec, nil
+	}
+}
+
+// readLine reads one line from the underlying reader. The returned slice
+// includes the trailing newline (if present) but not a preceding BOM if one
+// was present (the BOM is consumed and an error is raised — VCF files must
+// not contain a BOM per the spec).
+func (d *Decoder) readLine() (raw []byte, lineNo int, err error) {
+	if d.eof {
+		return nil, d.line, io.EOF
+	}
+	lineNo = d.line + 1
+
+	// BOM detection: a UTF-8 BOM (EF BB BF) is illegal per spec.
+	if d.line == 0 {
+		peek, _ := d.r.Peek(3)
+		if len(peek) >= 3 && bytes.Equal(peek, []byte{0xEF, 0xBB, 0xBF}) {
+			return nil, lineNo, &ParseError{Line: lineNo, Field: "<BOM>",
+				Msg: "VCF files must not contain a UTF-8 byte order mark"}
+		}
+	}
+
+	line, err := d.r.ReadBytes('\n')
+	if errors.Is(err, io.EOF) && len(line) == 0 {
+		d.eof = true
+		d.line = lineNo
+		return nil, d.line, io.EOF
+	}
+	if err != nil && !errors.Is(err, io.EOF) {
+		d.line = lineNo
+		return nil, lineNo, &ParseError{Line: lineNo, Msg: err.Error()}
+	}
+	if errors.Is(err, io.EOF) {
+		d.eof = true
+	}
+	d.line = lineNo
+
+	// Strip trailing newline (and CR) for parsing, but remember which
+	// terminator we saw for any callers that care about the original line
+	// length. For now we don't expose that distinction — [Encoder] writes
+	// "\n" and round-trips rely on that.
+	stripped := line
+	if n := len(stripped); n > 0 && stripped[n-1] == '\n' {
+		stripped = stripped[:n-1]
+		if m := len(stripped); m > 0 && stripped[m-1] == '\r' {
+			stripped = stripped[:m-1]
+		}
+	}
+	return stripped, lineNo, nil
+}
+
+// parseHeader reads ## meta lines and the #CHROM header line.
+func (d *Decoder) parseHeader() (*Header, error) {
+	h := &Header{
+		Infos:   map[string]*InfoDef{},
+		Filters: map[string]*FilterDef{},
+		Formats: map[string]*FormatDef{},
+		Alts:    map[string]*AltDef{},
+	}
+
+	// First line must be ##fileformat=...
+	firstLine, lineNo, err := d.readLine()
+	if err != nil {
+		if errors.Is(err, io.EOF) {
+			return nil, &ParseError{Line: lineNo, Msg: "empty document"}
+		}
+		return nil, err
+	}
+	if err := h.parseFirstLine(firstLine, lineNo); err != nil {
+		return nil, err
+	}
+
+	// Subsequent ## / # lines.
+	for {
+		raw, ln, err := d.readLine()
+		if errors.Is(err, io.EOF) {
+			return nil, &ParseError{Line: ln, Field: "header",
+				Msg: "expected #CHROM header line before end of file"}
+		}
+		if err != nil {
+			return nil, err
+		}
+		if len(raw) == 0 {
+			// Allow blank lines in the meta section.
+			continue
+		}
+		if bytes.HasPrefix(raw, []byte("##")) {
+			if err := h.parseMetaLine(raw, ln); err != nil {
+				return nil, err
+			}
+			continue
+		}
+		if bytes.HasPrefix(raw, []byte("#")) && !bytes.HasPrefix(raw, []byte("##")) {
+			// Header line.
+			if err := h.parseHeaderLine(raw, ln); err != nil {
+				return nil, err
+			}
+			break
+		}
+		return nil, &ParseError{Line: ln,
+			Msg: "expected '##' or '#CHROM' line, got: " + string(raw)}
+	}
+
+	return h, nil
+}
+
+// parseFirstLine parses the mandatory first ##fileformat line.
+func (h *Header) parseFirstLine(raw []byte, lineNo int) error {
+	const prefix = "##fileformat="
+	if !bytes.HasPrefix(raw, []byte(prefix)) {
+		return &ParseError{Line: lineNo, Field: "fileformat",
+			Msg: "first line must be '##fileformat=...', got: " + string(raw)}
+	}
+	val := string(raw[len(prefix):])
+	ff, err := ParseFileFormat(val)
+	if err != nil {
+		if pe, ok := err.(*ParseError); ok {
+			pe.Line = lineNo
+			pe.Field = "fileformat"
+			return pe
+		}
+		return &ParseError{Line: lineNo, Field: "fileformat", Msg: err.Error()}
+	}
+	h.FileFormat = ff
+	h.MetaLines = append(h.MetaLines, MetaLine{Key: "fileformat", Value: val, Raw: string(raw)})
+	return nil
+}
+
+// parseMetaLine dispatches a single ##key=value or ##key=<...> line.
+func (h *Header) parseMetaLine(raw []byte, lineNo int) error {
+	rest := string(raw[2:]) // strip "##"
+
+	// Split on first '='.
+	eq := strings.IndexByte(rest, '=')
+	if eq < 0 {
+		return &ParseError{Line: lineNo, Msg: "##meta line missing '=': " + rest}
+	}
+	key := rest[:eq]
+	value := rest[eq+1:]
+
+	if key == "" {
+		return &ParseError{Line: lineNo, Msg: "##meta line has empty key"}
+	}
+
+	// Common case: "fileformat" is only legal as the first line; reject
+	// duplicates here.
+	if key == "fileformat" {
+		return &ParseError{Line: lineNo, Field: "fileformat",
+			Msg: "duplicate ##fileformat line"}
+	}
+
+	if !strings.HasPrefix(value, "<") {
+		// Unstructured line. Value must be non-empty and not start with '<'.
+		if value == "" {
+			return &ParseError{Line: lineNo, Field: key, Msg: "empty value"}
+		}
+		if strings.HasPrefix(value, "<") {
+			return &ParseError{Line: lineNo, Field: key,
+				Msg: "unstructured ##meta value may not start with '<'"}
+		}
+		switch key {
+		case "fileDate":
+			h.FileDate = value
+		case "source":
+			h.Source = value
+		case "reference":
+			h.Reference = value
+		case "assembly":
+			h.Assembly = value
+		case "pedigreeDB":
+			h.PedigreeDB = value
+		case "PEDIGREE":
+			// Disambiguator: PEDIGREE is usually structured but is
+			// reserved as a key in both forms by the spec. We accept only
+			// the structured form below; reject this case.
+			return &ParseError{Line: lineNo, Field: "PEDIGREE",
+				Msg: "##PEDIGREE must be structured (<...>)"}
+		default:
+			// Generic meta line: just record it.
+		}
+		h.MetaLines = append(h.MetaLines, MetaLine{Key: key, Value: value, Raw: string(raw)})
+		return nil
+	}
+
+	// Structured line: <...>
+	if !strings.HasSuffix(value, ">") {
+		return &ParseError{Line: lineNo, Field: key,
+			Msg: "structured ##meta line missing closing '>'"}
+	}
+	inner := value[1 : len(value)-1]
+
+	pairs, err := parseStructuredBody(inner)
+	if err != nil {
+		return &ParseError{Line: lineNo, Field: key, Msg: err.Error()}
+	}
+
+	h.MetaLines = append(h.MetaLines, MetaLine{Key: key, Value: value, Raw: string(raw)})
+	return h.applyStructured(key, pairs, lineNo)
+}
+
+// parseHeaderLine parses "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO[\tFORMAT[\t...samples]]".
+func (h *Header) parseHeaderLine(raw []byte, lineNo int) error {
+	fields := bytes.Split(raw, []byte{'\t'})
+	if len(fields) < 8 {
+		return &ParseError{Line: lineNo, Field: "header",
+			Msg: fmt.Sprintf("header line has %d fields; need at least 8", len(fields))}
+	}
+	expected := []string{"#CHROM", "POS", "ID", "REF", "ALT", "QUAL", "FILTER", "INFO"}
+	for i, want := range expected {
+		if string(fields[i]) != want {
+			return &ParseError{Line: lineNo, Field: want,
+				Msg: fmt.Sprintf("expected %q at column %d, got %q", want, i+1, fields[i])}
+		}
+	}
+	if len(fields) == 8 {
+		return nil
+	}
+	if string(fields[8]) != "FORMAT" {
+		return &ParseError{Line: lineNo, Field: "FORMAT",
+			Msg: fmt.Sprintf("expected FORMAT at column 9, got %q", fields[8])}
+	}
+	samples := make([]string, 0, len(fields)-9)
+	seen := map[string]bool{}
+	for i := 9; i < len(fields); i++ {
+		name := string(fields[i])
+		if name == "" {
+			return &ParseError{Line: lineNo, Field: "FORMAT",
+				Msg: fmt.Sprintf("empty sample name at column %d", i+1)}
+		}
+		if seen[name] {
+			return &ParseError{Line: lineNo, Field: "FORMAT",
+				Msg: fmt.Sprintf("duplicate sample name %q", name)}
+		}
+		seen[name] = true
+		samples = append(samples, name)
+	}
+	h.SampleNames = samples
+	return nil
+}
+
+// applyStructured decodes the key=value pairs of a structured meta line into
+// the corresponding header field.
+func (h *Header) applyStructured(key string, pairs []fieldPair, lineNo int) error {
+	switch key {
+	case "contig":
+		c := &Contig{Other: map[string]string{}}
+		for _, p := range pairs {
+			switch p.key {
+			case "ID":
+				c.ID = unquote(p.value)
+			case "length":
+				n, err := strconv.ParseInt(p.value, 10, 64)
+				if err != nil {
+					return &ParseError{Line: lineNo, Field: "contig/length",
+						Msg: "invalid length: " + p.value}
+				}
+				c.Length = n
+			case "md5":
+				c.MD5 = unquote(p.value)
+			case "URL":
+				c.URL = unquote(p.value)
+			default:
+				c.Other[p.key] = unquote(p.value)
+			}
+		}
+		if c.ID == "" {
+			return &ParseError{Line: lineNo, Field: "contig",
+				Msg: "missing required ID"}
+		}
+		h.Contigs = append(h.Contigs, c)
+
+	case "INFO":
+		d := &InfoDef{Other: map[string]string{}}
+		for _, p := range pairs {
+			switch p.key {
+			case "ID":
+				d.ID = unquote(p.value)
+			case "Number":
+				n, err := ParseNumber(p.value)
+				if err != nil {
+					return &ParseError{Line: lineNo, Field: "INFO/Number", Msg: err.Error()}
+				}
+				d.Number = n
+			case "Type":
+				t, err := ParseFieldType(p.value)
+				if err != nil {
+					return &ParseError{Line: lineNo, Field: "INFO/Type", Msg: err.Error()}
+				}
+				d.Type = t
+			case "Description":
+				d.Description = unquote(p.value)
+			case "Source":
+				d.Source = unquote(p.value)
+			case "Version":
+				d.Version = unquote(p.value)
+			default:
+				d.Other[p.key] = unquote(p.value)
+			}
+		}
+		if d.ID == "" {
+			return &ParseError{Line: lineNo, Field: "INFO", Msg: "missing required ID"}
+		}
+		if _, exists := h.Infos[d.ID]; exists {
+			return &ParseError{Line: lineNo, Field: "INFO",
+				Msg: "duplicate ID " + d.ID}
+		}
+		if d.Type == TypeFlag && d.Number.Number != 0 {
+			return &ParseError{Line: lineNo, Field: "INFO/Number",
+				Msg: "Flag fields must have Number=0"}
+		}
+		h.Infos[d.ID] = d
+
+	case "FILTER":
+		d := &FilterDef{Other: map[string]string{}}
+		for _, p := range pairs {
+			switch p.key {
+			case "ID":
+				d.ID = unquote(p.value)
+			case "Description":
+				d.Description = unquote(p.value)
+			default:
+				d.Other[p.key] = unquote(p.value)
+			}
+		}
+		if d.ID == "" {
+			return &ParseError{Line: lineNo, Field: "FILTER",
+				Msg: "missing required ID"}
+		}
+		if _, exists := h.Filters[d.ID]; exists {
+			return &ParseError{Line: lineNo, Field: "FILTER",
+				Msg: "duplicate ID " + d.ID}
+		}
+		h.Filters[d.ID] = d
+
+	case "FORMAT":
+		d := &FormatDef{Other: map[string]string{}}
+		for _, p := range pairs {
+			switch p.key {
+			case "ID":
+				d.ID = unquote(p.value)
+			case "Number":
+				n, err := ParseNumber(p.value)
+				if err != nil {
+					return &ParseError{Line: lineNo, Field: "FORMAT/Number", Msg: err.Error()}
+				}
+				d.Number = n
+			case "Type":
+				t, err := ParseFieldType(p.value)
+				if err != nil {
+					return &ParseError{Line: lineNo, Field: "FORMAT/Type", Msg: err.Error()}
+				}
+				d.Type = t
+			case "Description":
+				d.Description = unquote(p.value)
+			default:
+				d.Other[p.key] = unquote(p.value)
+			}
+		}
+		if d.ID == "" {
+			return &ParseError{Line: lineNo, Field: "FORMAT",
+				Msg: "missing required ID"}
+		}
+		if _, exists := h.Formats[d.ID]; exists {
+			return &ParseError{Line: lineNo, Field: "FORMAT",
+				Msg: "duplicate ID " + d.ID}
+		}
+		h.Formats[d.ID] = d
+
+	case "ALT":
+		d := &AltDef{Other: map[string]string{}}
+		for _, p := range pairs {
+			switch p.key {
+			case "ID":
+				d.ID = unquote(p.value)
+			case "Description":
+				d.Description = unquote(p.value)
+			default:
+				d.Other[p.key] = unquote(p.value)
+			}
+		}
+		if d.ID == "" {
+			return &ParseError{Line: lineNo, Field: "ALT",
+				Msg: "missing required ID"}
+		}
+		if _, exists := h.Alts[d.ID]; exists {
+			return &ParseError{Line: lineNo, Field: "ALT",
+				Msg: "duplicate ID " + d.ID}
+		}
+		h.Alts[d.ID] = d
+
+	case "PEDIGREE":
+		d := &Pedigree{Other: map[string]string{}}
+		for _, p := range pairs {
+			switch p.key {
+			case "ID":
+				d.ID = unquote(p.value)
+			case "Original":
+				d.Original = unquote(p.value)
+			case "Father":
+				d.Father = unquote(p.value)
+			case "Mother":
+				d.Mother = unquote(p.value)
+			default:
+				if strings.HasPrefix(p.key, "Name_") {
+					d.Names = append(d.Names, unquote(p.value))
+					continue
+				}
+				d.Other[p.key] = unquote(p.value)
+			}
+		}
+		if d.ID == "" {
+			return &ParseError{Line: lineNo, Field: "PEDIGREE",
+				Msg: "missing required ID"}
+		}
+		h.Pedigrees = append(h.Pedigrees, d)
+
+	case "SAMPLE":
+		d := &Sample{Other: map[string]string{}}
+		for _, p := range pairs {
+			switch p.key {
+			case "ID":
+				d.ID = unquote(p.value)
+			case "Genomes":
+				d.Genomes = map[string]string{}
+				inner, _ := parseStructuredBody(p.value)
+				for _, ip := range inner {
+					d.Genomes[ip.key] = unquote(ip.value)
+				}
+			case "MolConvs":
+				d.MolConvs = map[string]string{}
+				inner, _ := parseStructuredBody(p.value)
+				for _, ip := range inner {
+					d.MolConvs[ip.key] = unquote(ip.value)
+				}
+			case "Description":
+				d.Description = unquote(p.value)
+			case "DOI":
+				d.DOI = unquote(p.value)
+			default:
+				d.Other[p.key] = unquote(p.value)
+			}
+		}
+		if d.ID == "" {
+			return &ParseError{Line: lineNo, Field: "SAMPLE",
+				Msg: "missing required ID"}
+		}
+		h.Samples = append(h.Samples, d)
+
+	default:
+		// Unknown structured line — already recorded in MetaLines.
+	}
+	return nil
+}
+
+// fieldPair is one key=value entry extracted from a structured meta body.
+type fieldPair struct {
+	key, value string
+}
+
+// parseStructuredBody parses the inner text of a structured meta line — a
+// comma-separated list of key=value pairs, where values may be enclosed in
+// double quotes and contain escaped characters (\" → ", \\ → \).
+//
+// Quoting is preserved in the returned value strings (including the
+// surrounding double quotes, if any); [unquote] strips them.
+func parseStructuredBody(body string) ([]fieldPair, error) {
+	var out []fieldPair
+	var current strings.Builder
+	var key string
+	var seenEquals bool
+	inQuotes := false
+	escape := false
+	fieldStart := true
+
+	flush := func() {
+		out = append(out, fieldPair{key: key, value: current.String()})
+		key = ""
+		current.Reset()
+		seenEquals = false
+		fieldStart = true
+	}
+
+	for i := 0; i < len(body); i++ {
+		c := body[i]
+		if escape {
+			current.WriteByte(c)
+			escape = false
+			continue
+		}
+		if inQuotes {
+			if c == '\\' {
+				escape = true
+				continue
+			}
+			if c == '"' {
+				inQuotes = false
+				current.WriteByte(c)
+				continue
+			}
+			current.WriteByte(c)
+			continue
+		}
+		switch c {
+		case '"':
+			inQuotes = true
+			current.WriteByte(c)
+			fieldStart = false
+		case ',':
+			flush()
+		case '=':
+			if !seenEquals {
+				key = current.String()
+				current.Reset()
+				seenEquals = true
+				fieldStart = false
+			} else {
+				current.WriteByte(c)
+			}
+		default:
+			if fieldStart && (c == ' ' || c == '\t') {
+				continue
+			}
+			fieldStart = false
+			current.WriteByte(c)
+		}
+	}
+	if inQuotes {
+		return nil, fmt.Errorf("unterminated quoted value")
+	}
+	if current.Len() > 0 || key != "" {
+		flush()
+	}
+	if len(out) == 0 {
+		return nil, fmt.Errorf("empty structured body")
+	}
+	return out, nil
+}
+
+// unquote strips surrounding double quotes from a structured-body value and
+// reverses the backslash escapes the spec mandates.
+//
+// Inputs that are not quoted are returned verbatim; that handles values
+// like "1" (unquoted Number) or "Integer" (unquoted Type).
+func unquote(s string) string {
+	if len(s) < 2 || s[0] != '"' || s[len(s)-1] != '"' {
+		return s
+	}
+	inner := s[1 : len(s)-1]
+	var b strings.Builder
+	b.Grow(len(inner))
+	escape := false
+	for i := 0; i < len(inner); i++ {
+		c := inner[i]
+		if escape {
+			switch c {
+			case '"', '\\':
+				b.WriteByte(c)
+			default:
+				b.WriteByte('\\')
+				b.WriteByte(c)
+			}
+			escape = false
+			continue
+		}
+		if c == '\\' {
+			escape = true
+			continue
+		}
+		b.WriteByte(c)
+	}
+	return b.String()
+}
+
+// parseRecord parses one tab-delimited data line using the header context
+// to look up INFO/FORMAT key declarations and typed value decoding.
+func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
+	fields := bytes.Split(raw, []byte{'\t'})
+	if len(fields) < 8 {
+		return nil, &ParseError{Line: lineNo, Msg: fmt.Sprintf(
+			"data line has %d fields; need at least 8", len(fields))}
+	}
+	rec := &Record{Info: map[string]InfoValue{}}
+
+	// CHROM (col 1)
+	rec.Chrom = string(fields[0])
+	if rec.Chrom == "" {
+		return nil, &ParseError{Line: lineNo, Field: "CHROM",
+			Msg: "empty chromosome"}
+	}
+
+	// POS (col 2)
+	pos, err := strconv.ParseInt(string(fields[1]), 10, 64)
+	if err != nil {
+		return nil, &ParseError{Line: lineNo, Field: "POS",
+			Msg: "non-numeric position: " + string(fields[1])}
+	}
+	rec.Pos = pos
+
+	// ID (col 3) — semicolon-separated
+	idStr := string(fields[2])
+	if idStr != "." {
+		for _, id := range strings.Split(idStr, ";") {
+			if strings.ContainsAny(id, " \t;") {
+				return nil, &ParseError{Line: lineNo, Field: "ID",
+					Msg: "identifier contains whitespace or ';': " + id}
+			}
+			rec.ID = append(rec.ID, id)
+		}
+	}
+
+	// REF (col 4) — never percent-decode; the spec allows only A/C/G/T/N
+	// bases here, plus the leading base for symbolic SV padding. Percent
+	// encoding only applies inside INFO/FORMAT values.
+	rec.Ref = string(fields[3])
+	if rec.Ref == "" {
+		return nil, &ParseError{Line: lineNo, Field: "REF",
+			Msg: "empty reference allele"}
+	}
+
+	// ALT (col 5) — comma-separated. We do not percent-decode alleles:
+	// the spec lists : as a reserved character, but the spec example for
+	// breakends uses literal ':' in position specifiers (e.g. "T[chrA:5[")
+	// without encoding, and REF/ALT allele strings are not value strings.
+	altStr := string(fields[4])
+	if altStr != "." {
+		rec.Alt = splitAlleles(altStr)
+	}
+
+	// QUAL (col 6)
+	qualStr := string(fields[5])
+	if qualStr != "." {
+		q, err := parseVCFFloat(qualStr)
+		if err != nil {
+			return nil, &ParseError{Line: lineNo, Field: "QUAL",
+				Msg: err.Error()}
+		}
+		rec.Qual = &q
+	}
+
+	// FILTER (col 7)
+	filterStr := string(fields[6])
+	if filterStr != "." {
+		for _, f := range strings.Split(filterStr, ";") {
+			if strings.ContainsAny(f, " \t;") {
+				return nil, &ParseError{Line: lineNo, Field: "FILTER",
+					Msg: "filter contains whitespace or ';': " + f}
+			}
+			rec.Filter = append(rec.Filter, f)
+		}
+	}
+
+	// INFO (col 8)
+	infoStr := string(fields[7])
+	if infoStr != "." {
+		rec.Info, err = parseInfoColumn(infoStr, h, lineNo)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	// Optional FORMAT (col 9) + sample columns.
+	if len(fields) > 8 {
+		formatStr := string(fields[8])
+		if formatStr == "" {
+			return nil, &ParseError{Line: lineNo, Field: "FORMAT",
+				Msg: "empty FORMAT column"}
+		}
+		rec.Format = strings.Split(formatStr, ":")
+		if len(rec.Format) == 0 || rec.Format[0] != "GT" {
+			// GT must be first when present per spec.
+			// (We don't enforce GT-presence, only GT-first.)
+		}
+		// We require exactly len(SampleNames) sample columns.
+		wantSamples := len(h.SampleNames)
+		gotSamples := len(fields) - 9
+		if wantSamples != gotSamples {
+			return nil, &ParseError{Line: lineNo, Field: "FORMAT",
+				Msg: fmt.Sprintf("expected %d sample columns, got %d",
+					wantSamples, gotSamples)}
+		}
+		rec.Samples = make([]Genotype, gotSamples)
+		for i := 0; i < gotSamples; i++ {
+			rec.Samples[i] = parseSample(fields[9+i], rec.Format, h, lineNo)
+		}
+	} else if len(h.SampleNames) > 0 {
+		return nil, &ParseError{Line: lineNo, Field: "FORMAT",
+			Msg: "header declares sample columns but record has no FORMAT column"}
+	}
+
+	return rec, nil
+}
+
+// splitAlleles splits a comma-separated ALT string while respecting
+// breakend brackets.
+//
+// Breakend replacement strings (VCFv4.5 §1.6.5) are encoded as one of:
+//
+//	t[p[   piece extending right of p is joined before t
+//	]p]t   piece extending left of p is joined before t
+//	t]p]   piece extending right of p is joined after t
+//	[p[t   piece extending left of p is joined after t
+//
+// Each form opens and closes with the same bracket character (`[` or `]`).
+// The opener enters the sequence; a comma outside any breakend is an allele
+// delimiter. Commas inside a breakend (e.g. inside a contig reference) are
+// preserved.
+func splitAlleles(s string) []string {
+	var out []string
+	var current strings.Builder
+	depth := 0               // 0 = outside any breakend, 1 = inside one
+	expectedClose := byte(0) // the bracket that will close the current breakend
+
+	flush := func() {
+		out = append(out, current.String())
+		current.Reset()
+	}
+
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		switch c {
+		case '[', ']':
+			if depth == 0 {
+				depth = 1
+				expectedClose = c
+			} else if c == expectedClose {
+				// Closing bracket — exit the breakend.
+				depth = 0
+				expectedClose = 0
+			}
+			// Any other bracket inside an open breakend is unusual; we
+			// keep it as data and let downstream parsing complain if
+			// needed.
+			current.WriteByte(c)
+		case ',':
+			if depth == 0 {
+				flush()
+				continue
+			}
+			current.WriteByte(c)
+		default:
+			current.WriteByte(c)
+		}
+	}
+	flush()
+	return out
+}
+
+// parseVCFFloat parses a Float value, accepting "INF", "INFINITY", "NAN"
+// case-insensitively in addition to the standard regular expression.
+func parseVCFFloat(s string) (float64, error) {
+	switch strings.ToUpper(s) {
+	case "INF", "INFINITY":
+		return positiveInf, nil
+	case "-INF", "-INFINITY":
+		return negativeInf, nil
+	case "NAN":
+		return nanValue, nil
+	}
+	return strconv.ParseFloat(s, 32)
+}
+
+// positiveInf, negativeInf, and nanValue use math.Inf / math.NaN so they
+// work at compile time.
+var (
+	positiveInf = math.Inf(+1)
+	negativeInf = math.Inf(-1)
+	nanValue    = math.NaN()
+)
+
+// parseInfoColumn parses the contents of the INFO column into a typed map
+// keyed by INFO ID. The declaration in h.Infos is consulted for type and
+// cardinality.
+func parseInfoColumn(s string, h *Header, lineNo int) (map[string]InfoValue, error) {
+	out := map[string]InfoValue{}
+	for _, entry := range strings.Split(s, ";") {
+		if entry == "" {
+			continue
+		}
+		key := entry
+		var rawValues []string
+		if eq := strings.IndexByte(entry, '='); eq >= 0 {
+			key = entry[:eq]
+			rawValues = strings.Split(entry[eq+1:], ",")
+		}
+		if !validInfoKey(key) {
+			return nil, &ParseError{Line: lineNo, Field: "INFO",
+				Msg: "invalid key: " + key}
+		}
+		def, declared := h.LookupInfo(key)
+		if !declared {
+			// Unknown INFO keys are permitted by the spec but with
+			// TypeUnknown. We still store the raw values.
+			v := InfoValue{
+				Type: TypeUnknown,
+				Raw:  rawValues,
+			}
+			if len(rawValues) == 0 {
+				v.Flag = true
+			}
+			out[key] = v
+			continue
+		}
+		v, err := decodeInfoValue(def, rawValues)
+		if err != nil {
+			return nil, &ParseError{Line: lineNo, Field: "INFO/" + key,
+				Msg: err.Error()}
+		}
+		out[key] = v
+	}
+	return out, nil
+}
+
+// validInfoKey matches the regex ^([A-Za-z_][0-9A-Za-z_.]*|1000G)$ from
+// the spec.
+func validInfoKey(s string) bool {
+	if s == "1000G" {
+		return true
+	}
+	if s == "" {
+		return false
+	}
+	c := s[0]
+	if !(c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z')) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		c := s[i]
+		if !(c == '_' || c == '.' ||
+			(c >= '0' && c <= '9') ||
+			(c >= 'A' && c <= 'Z') ||
+			(c >= 'a' && c <= 'z')) {
+			return false
+		}
+	}
+	return true
+}
+
+// decodeInfoValue converts the raw string values for one INFO entry to
+// typed slices based on the declared FieldType. Flag entries must have
+// no values (Number == 0); other entries may have any number.
+func decodeInfoValue(def *InfoDef, raw []string) (InfoValue, error) {
+	v := InfoValue{Type: def.Type, Raw: raw}
+
+	if def.Type == TypeFlag {
+		if len(raw) > 0 {
+			return v, fmt.Errorf("Flag field must not have values; got %d",
+				len(raw))
+		}
+		v.Flag = true
+		return v, nil
+	}
+
+	if len(raw) == 1 && raw[0] == "." {
+		v.Missing = true
+		return v, nil
+	}
+
+	switch def.Type {
+	case TypeInteger:
+		for _, r := range raw {
+			if r == "." {
+				v.Ints = append(v.Ints, 0)
+				continue
+			}
+			n, err := strconv.ParseInt(r, 10, 32)
+			if err != nil {
+				// Lenient: keep raw but mark type mismatch for the
+				// validator to surface. The parser never rejects on
+				// type errors so that semantically-broken VCFs can be
+				// inspected.
+				v.Ints = append(v.Ints, 0)
+				continue
+			}
+			v.Ints = append(v.Ints, n)
+		}
+	case TypeFloat:
+		for _, r := range raw {
+			if r == "." {
+				v.Floats = append(v.Floats, 0)
+				continue
+			}
+			f, err := parseVCFFloat(r)
+			if err != nil {
+				v.Floats = append(v.Floats, 0)
+				continue
+			}
+			v.Floats = append(v.Floats, f)
+		}
+	case TypeString:
+		for _, r := range raw {
+			v.Strs = append(v.Strs, percentDecode(r))
+		}
+	case TypeCharacter:
+		if len(raw) == 1 {
+			s := percentDecode(raw[0])
+			if len(s) == 1 {
+				v.Chars = []byte{s[0]}
+			}
+		}
+	default:
+		// TypeUnknown — keep raw only.
+	}
+	return v, nil
+}
+
+// parseSample splits a sample column into per-FORMAT-key FieldValues.
+func parseSample(raw []byte, format []string, h *Header, lineNo int) Genotype {
+	fields := bytes.Split(raw, []byte{':'})
+	out := Genotype{Fields: map[string]FieldValue{}}
+
+	// Trailing fields may be dropped (except GT, when present). We do not add
+	// dropped fields to the Fields map — the validator distinguishes "dropped"
+	// from "explicitly missing" by checking whether the FORMAT key is past the
+	// last present field.
+	n := min(len(fields), len(format))
+	for i := 0; i < n; i++ {
+		key := format[i]
+		rawVals := strings.Split(string(fields[i]), ",")
+		def, declared := h.LookupFormat(key)
+		var v FieldValue
+		if !declared {
+			v = FieldValue{Type: TypeUnknown, Raw: rawVals}
+		} else {
+			v = decodeFieldValue(def, rawVals)
+		}
+		out.Fields[key] = v
+	}
+	return out
+}
+
+func decodeFieldValue(def *FormatDef, raw []string) FieldValue {
+	v := FieldValue{Type: def.Type, Raw: raw}
+
+	if len(raw) == 1 && raw[0] == "." {
+		v.Missing = true
+		return v
+	}
+
+	switch def.Type {
+	case TypeInteger:
+		for _, r := range raw {
+			if r == "." {
+				v.Ints = append(v.Ints, 0)
+				continue
+			}
+			n, err := strconv.ParseInt(r, 10, 32)
+			if err != nil {
+				// Surface as zero; validator will report.
+				v.Ints = append(v.Ints, 0)
+				continue
+			}
+			v.Ints = append(v.Ints, n)
+		}
+	case TypeFloat:
+		for _, r := range raw {
+			if r == "." {
+				v.Floats = append(v.Floats, 0)
+				continue
+			}
+			f, err := parseVCFFloat(r)
+			if err != nil {
+				v.Floats = append(v.Floats, 0)
+				continue
+			}
+			v.Floats = append(v.Floats, f)
+		}
+	case TypeString:
+		for _, r := range raw {
+			v.Strs = append(v.Strs, percentDecode(r))
+		}
+	case TypeCharacter:
+		if len(raw) == 1 && len(raw[0]) == 1 {
+			v.Chars = []byte{raw[0][0]}
+		} else if len(raw) == 1 && raw[0] == "." {
+			v.Missing = true
+		}
+	default:
+		// TypeUnknown: leave Raw set.
+	}
+	return v
+}
+
+// sortMetaLines sorts the meta lines by (Key, Value) for stable output. The
+// encoder uses this to produce deterministic output when the original order
+// is not preserved.
+func sortMetaLines(ml []MetaLine) {
+	sort.SliceStable(ml, func(i, j int) bool {
+		if ml[i].Key != ml[j].Key {
+			return ml[i].Key < ml[j].Key
+		}
+		return ml[i].Value < ml[j].Value
+	})
+}

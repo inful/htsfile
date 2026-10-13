@@ -1,0 +1,30 @@
+# Compiled binaries
+/bin/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binaries / artifacts
+*.test
+*.out
+coverage.txt
+coverage.html
+profile.out
+
+# Go workspace files
+go.work
+go.work.sum
+
+# IDE / editor
+.idea/
+.vscode/
+*.iml
+.DS_Store
+
+# Dependency dirs (vendoring, if used)
+# vendor/
+
+# Generated docs
+docs/
