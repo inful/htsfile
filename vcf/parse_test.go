@@ -397,6 +397,83 @@ func equalStrings(a, b []string) bool {
 	return true
 }
 
+// TestDecoder_PedigreeNamePrefix pins the spec rule that any
+// key starting with "Name_" in ##PEDIGREE is appended to the Names
+// slice in order, while other unknown keys fall through to Other.
+func TestDecoder_PedigreeNamePrefix(t *testing.T) {
+	t.Parallel()
+	src := "##fileformat=VCFv4.5\n" +
+		"##PEDIGREE=<ID=T,Original=GermlineID,Father=FatherID," +
+		"Mother=MotherID,Name_1=A1,Name_2=A2,CustomX=z>\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	hdr, _ := parseAll(t, src)
+	if len(hdr.Pedigrees) != 1 {
+		t.Fatalf("len(Pedigrees) = %d; want 1", len(hdr.Pedigrees))
+	}
+	ped := hdr.Pedigrees[0]
+	if ped.ID != "T" || ped.Original != "GermlineID" ||
+		ped.Father != "FatherID" || ped.Mother != "MotherID" {
+		t.Errorf("ped fields = %+v", ped)
+	}
+	wantNames := []string{"A1", "A2"}
+	if !equalStrings(ped.Names, wantNames) {
+		t.Errorf("ped.Names = %v; want %v", ped.Names, wantNames)
+	}
+	if got := ped.Other["CustomX"]; got != "z" {
+		t.Errorf("ped.Other[CustomX] = %q; want z", got)
+	}
+}
+
+// TestDecoder_SampleNestedBodies pins the nested ##SAMPLE behaviour:
+// Genomes and MolConvs values are themselves structured bodies
+// (comma-separated key=value pairs), and we parse them into inner
+// maps. Description, DOI, and unknown keys go to their usual slots.
+func TestDecoder_SampleNestedBodies(t *testing.T) {
+	t.Parallel()
+	src := "##fileformat=VCFv4.5\n" +
+		`##SAMPLE=<ID=NA12878,` +
+		`Genomes=GRCh38="/path/to.fa",` +
+		`MolConvs=b37_to_b38="lifted",Description="European",DOI=10.1/foo,Custom=zzz>` + "\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	hdr, _ := parseAll(t, src)
+	if len(hdr.Samples) != 1 {
+		t.Fatalf("len(Samples) = %d; want 1", len(hdr.Samples))
+	}
+	s := hdr.Samples[0]
+	if s.ID != "NA12878" || s.Description != "European" || s.DOI != "10.1/foo" {
+		t.Errorf("s.ID/Description/DOI = %q/%q/%q", s.ID, s.Description, s.DOI)
+	}
+	if got := s.Genomes["GRCh38"]; got != "/path/to.fa" {
+		t.Errorf("Genomes[GRCh38] = %q; want /path/to.fa", got)
+	}
+	if got := s.MolConvs["b37_to_b38"]; got != "lifted" {
+		t.Errorf("MolConvs[b37_to_b38] = %q; want lifted", got)
+	}
+	if got := s.Other["Custom"]; got != "zzz" {
+		t.Errorf("Other[Custom] = %q; want zzz", got)
+	}
+}
+
+// TestDecoder_FlagInfoNumberConstraint pins the rule that ##INFO
+// entries of Type=Flag must have Number=0 (Flag entries have no values).
+func TestDecoder_FlagInfoNumberConstraint(t *testing.T) {
+	t.Parallel()
+	src := "##fileformat=VCFv4.5\n" +
+		"##INFO=<ID=DB,Number=0,Type=Flag,Description=\"dbSNP\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	hdr, _ := parseAll(t, src)
+	db, ok := hdr.Infos["DB"]
+	if !ok {
+		t.Fatal("DB INFO missing")
+	}
+	if db.Type != TypeFlag {
+		t.Errorf("DB.Type = %v; want TypeFlag", db.Type)
+	}
+	if db.Number.Number != 0 {
+		t.Errorf("DB.Number.Number = %d; want 0", db.Number.Number)
+	}
+}
+
 func TestDecoder_Errors(t *testing.T) {
 	t.Parallel()
 	cases := []struct {
@@ -426,6 +503,64 @@ func TestDecoder_Errors(t *testing.T) {
 		{
 			"structured line missing required ID",
 			"##fileformat=VCFv4.5\n##INFO=<Number=1,Type=Integer,Description=\"d\">\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"duplicate INFO ID",
+			"##fileformat=VCFv4.5\n" +
+				"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"d\">\n" +
+				"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"d\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"duplicate FILTER ID",
+			"##fileformat=VCFv4.5\n" +
+				"##FILTER=<ID=PASS,Description=\"ok\">\n" +
+				"##FILTER=<ID=PASS,Description=\"ok\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"duplicate FORMAT ID",
+			"##fileformat=VCFv4.5\n" +
+				"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+				"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n" +
+				"1\t2\t.\tA\tC\t.\t.\t.\tGT\t0/1\n",
+		},
+		{
+			"INFO Flag with non-zero Number",
+			"##fileformat=VCFv4.5\n" +
+				"##INFO=<ID=DB,Number=1,Type=Flag,Description=\"dbSNP\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"contig with non-numeric length",
+			"##fileformat=VCFv4.5\n" +
+				"##contig=<ID=chr1,length=not_a_number>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"PEDIGREE missing required ID",
+			"##fileformat=VCFv4.5\n" +
+				"##PEDIGREE=<Original=GermlineID>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"SAMPLE missing required ID",
+			"##fileformat=VCFv4.5\n" +
+				"##SAMPLE=<Genomes=GRCh38,Description=\"x\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"ALT missing required ID",
+			"##fileformat=VCFv4.5\n" +
+				"##ALT=<Description=\"deletion\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"contig missing required ID",
+			"##fileformat=VCFv4.5\n" +
+				"##contig=<length=1000>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
 		},
 		{
 			"data line too few columns",
