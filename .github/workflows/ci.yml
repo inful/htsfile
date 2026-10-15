@@ -1,18 +1,5 @@
-# GitHub Actions CI for htsfile.
-#
-# Runs on push to main and on every PR. Tests on a Go × OS matrix with
-# race detection and full lint pass. Uploads coverage to Codecov (no-op
-# if the CODECOV_TOKEN secret is absent).
-
 name: CI
 
-# The `on:` key is the standard way to declare triggers in a GitHub
-# Actions workflow, but YAML 1.1 (and some parsers' backwards-compat
-# fallbacks) interpret the bareword `on` as the boolean `true` (from
-# the Norwegian "on" = "yes" in the YAML spec), which yields None
-# when round-tripped and trips up workflow loaders. Quoting forces a
-# string parse, sidestepping the ambiguity. See:
-#   https://github.com/orgs/community/discussions/12345 (and many others)
 "on":
   push:
     branches: [main]
@@ -43,13 +30,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
-          # `cache: true` uses go.mod/go.sum to key the build cache
-          # automatically. We omit a manual cache step because
-          # `setup-go` already covers it, and a separate
-          # `actions/cache@v4` step complaining about a missing
-          # go.sum would fail this workflow before tests run.
-          cache: true
-          cache-dependency-path: go.mod
 
       - name: Verify modules
         run: go mod verify
@@ -84,7 +64,7 @@ jobs:
         run: go tool cover -func=coverage.txt | tail -n 1
 
   lint:
-    name: lint (golangci-lint ${{ env.GOLANGCI_LINT_VERSION }})
+    name: lint
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -94,7 +74,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: stable
-          cache: true
 
       - name: Run golangci-lint
         uses: golangci/golangci-lint-action@v6
@@ -103,7 +82,7 @@ jobs:
           args: --timeout=5m
 
   build:
-    name: build (verify canary)
+    name: build
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -113,7 +92,6 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: stable
-          cache: true
 
       - name: Build CLI binary
         run: go build -trimpath -o htsfile ./cmd/htsfile
