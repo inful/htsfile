@@ -16,7 +16,6 @@ permissions:
   contents: read
 
 env:
-  GO_BUILDCACHE_VERSION: v4
   GOLANGCI_LINT_VERSION: v2.1.6
 
 jobs:
@@ -37,15 +36,13 @@ jobs:
         uses: actions/setup-go@v5
         with:
           go-version: ${{ matrix.go-version }}
+          # `cache: true` uses go.mod/go.sum to key the build cache
+          # automatically. We omit a manual cache step because
+          # `setup-go` already covers it, and a separate
+          # `actions/cache@v4` step complaining about a missing
+          # go.sum would fail this workflow before tests run.
           cache: true
-
-      - name: Cache Go build cache
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cache/go-build
-            ~/Library/Caches/go-build
-          key: ${{ runner.os }}-go-build-${{ env.GO_BUILDCACHE_VERSION }}-${{ matrix.go-version }}-${{ hashFiles('**/go.sum', '**/go.mod') }}
+          cache-dependency-path: go.mod
 
       - name: Verify modules
         run: go mod verify
