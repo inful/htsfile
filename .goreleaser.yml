@@ -100,13 +100,7 @@ release:
   prerelease: auto
   draft: false
   name_template: "{{ .ProjectName }} v{{ .Version }}"
-  header: |
-    ## htsfile {{ .Version }}
-
-    {{- if .Date }}
-
-    Released {{ .Date | time.Format "2006-01-02" }}.
-    {{- end }}
+  header: "## htsfile {{ .Version }}\n\n"
   footer: |
     ## Verification
 
