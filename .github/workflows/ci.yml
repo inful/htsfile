@@ -6,7 +6,14 @@
 
 name: CI
 
-on:
+# The `on:` key is the standard way to declare triggers in a GitHub
+# Actions workflow, but YAML 1.1 (and some parsers' backwards-compat
+# fallbacks) interpret the bareword `on` as the boolean `true` (from
+# the Norwegian "on" = "yes" in the YAML spec), which yields None
+# when round-tripped and trips up workflow loaders. Quoting forces a
+# string parse, sidestepping the ambiguity. See:
+#   https://github.com/orgs/community/discussions/12345 (and many others)
+"on":
   push:
     branches: [main]
   pull_request:

@@ -4,7 +4,8 @@
 
 name: Release
 
-on:
+# See .github/workflows/ci.yml for the rationale behind quoting "on".
+"on":
   push:
     tags:
       - "v*.*.*"
