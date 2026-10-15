@@ -886,8 +886,7 @@ func parseInfoColumn(s string, h *Header, lineNo int) (map[string]InfoValue, err
 			// Unknown INFO keys are permitted by the spec but with
 			// TypeUnknown. We still store the raw values.
 			v := InfoValue{
-				Type: TypeUnknown,
-				Raw:  rawValues,
+				typedCore: typedCore{Type: TypeUnknown, Raw: rawValues},
 			}
 			if len(rawValues) == 0 {
 				v.Flag = true
@@ -936,11 +935,62 @@ func isKeyCont(c byte) bool {
 		(c >= 'a' && c <= 'z')
 }
 
+// decodeTyped populates the typed slices on c from raw according to c.Type.
+// It handles the "." missing sentinel and the Integer / Float / String
+// cases. Flag, Character, and Unknown have type-specific semantics that
+// callers ([decodeInfoValue], [decodeFieldValue]) handle themselves.
+//
+// Decoding is lenient: a token that fails to parse (e.g. "abc" for an
+// Integer field) is recorded as a zero in the typed slice while the raw
+// token remains in c.Raw for the validator to surface. The parser never
+// rejects on type errors so semantically-broken VCFs can still be
+// inspected.
+func decodeTyped(c *typedCore, raw []string) {
+	if len(raw) == 1 && raw[0] == "." {
+		c.Missing = true
+		return
+	}
+	switch c.Type {
+	case TypeInteger:
+		for _, r := range raw {
+			if r == "." {
+				c.Ints = append(c.Ints, 0)
+				continue
+			}
+			n, err := strconv.ParseInt(r, 10, 32)
+			if err != nil {
+				// Lenient: keep raw but mark type mismatch for the
+				// validator to surface.
+				c.Ints = append(c.Ints, 0)
+				continue
+			}
+			c.Ints = append(c.Ints, n)
+		}
+	case TypeFloat:
+		for _, r := range raw {
+			if r == "." {
+				c.Floats = append(c.Floats, 0)
+				continue
+			}
+			f, err := parseVCFFloat(r)
+			if err != nil {
+				c.Floats = append(c.Floats, 0)
+				continue
+			}
+			c.Floats = append(c.Floats, f)
+		}
+	case TypeString:
+		for _, r := range raw {
+			c.Strs = append(c.Strs, percentDecode(r))
+		}
+	}
+}
+
 // decodeInfoValue converts the raw string values for one INFO entry to
 // typed slices based on the declared FieldType. Flag entries must have
 // no values (Number == 0); other entries may have any number.
 func decodeInfoValue(def *InfoDef, raw []string) (InfoValue, error) {
-	v := InfoValue{Type: def.Type, Raw: raw}
+	v := InfoValue{typedCore: typedCore{Type: def.Type, Raw: raw}}
 
 	if def.Type == TypeFlag {
 		if len(raw) > 0 {
@@ -951,55 +1001,16 @@ func decodeInfoValue(def *InfoDef, raw []string) (InfoValue, error) {
 		return v, nil
 	}
 
-	if len(raw) == 1 && raw[0] == "." {
-		v.Missing = true
-		return v, nil
-	}
+	decodeTyped(&v.typedCore, raw)
 
-	switch def.Type {
-	case TypeInteger:
-		for _, r := range raw {
-			if r == "." {
-				v.Ints = append(v.Ints, 0)
-				continue
-			}
-			n, err := strconv.ParseInt(r, 10, 32)
-			if err != nil {
-				// Lenient: keep raw but mark type mismatch for the
-				// validator to surface. The parser never rejects on
-				// type errors so that semantically-broken VCFs can be
-				// inspected.
-				v.Ints = append(v.Ints, 0)
-				continue
-			}
-			v.Ints = append(v.Ints, n)
+	// INFO Character values are percent-decoded per the spec; FORMAT
+	// Character values are not (see decodeFieldValue). The "." case is
+	// already handled by decodeTyped setting Missing.
+	if def.Type == TypeCharacter && len(raw) == 1 {
+		s := percentDecode(raw[0])
+		if len(s) == 1 {
+			v.Chars = []byte{s[0]}
 		}
-	case TypeFloat:
-		for _, r := range raw {
-			if r == "." {
-				v.Floats = append(v.Floats, 0)
-				continue
-			}
-			f, err := parseVCFFloat(r)
-			if err != nil {
-				v.Floats = append(v.Floats, 0)
-				continue
-			}
-			v.Floats = append(v.Floats, f)
-		}
-	case TypeString:
-		for _, r := range raw {
-			v.Strs = append(v.Strs, percentDecode(r))
-		}
-	case TypeCharacter:
-		if len(raw) == 1 {
-			s := percentDecode(raw[0])
-			if len(s) == 1 {
-				v.Chars = []byte{s[0]}
-			}
-		}
-	default:
-		// TypeUnknown — keep raw only.
 	}
 	return v, nil
 }
@@ -1020,7 +1031,7 @@ func parseSample(raw []byte, format []string, h *Header) Genotype {
 		def, declared := h.LookupFormat(key)
 		var v FieldValue
 		if !declared {
-			v = FieldValue{Type: TypeUnknown, Raw: rawVals}
+			v = FieldValue{typedCore: typedCore{Type: TypeUnknown, Raw: rawVals}}
 		} else {
 			v = decodeFieldValue(def, rawVals)
 		}
@@ -1030,53 +1041,15 @@ func parseSample(raw []byte, format []string, h *Header) Genotype {
 }
 
 func decodeFieldValue(def *FormatDef, raw []string) FieldValue {
-	v := FieldValue{Type: def.Type, Raw: raw}
+	v := FieldValue{typedCore: typedCore{Type: def.Type, Raw: raw}}
 
-	if len(raw) == 1 && raw[0] == "." {
-		v.Missing = true
-		return v
-	}
+	decodeTyped(&v.typedCore, raw)
 
-	switch def.Type {
-	case TypeInteger:
-		for _, r := range raw {
-			if r == "." {
-				v.Ints = append(v.Ints, 0)
-				continue
-			}
-			n, err := strconv.ParseInt(r, 10, 32)
-			if err != nil {
-				// Surface as zero; validator will report.
-				v.Ints = append(v.Ints, 0)
-				continue
-			}
-			v.Ints = append(v.Ints, n)
-		}
-	case TypeFloat:
-		for _, r := range raw {
-			if r == "." {
-				v.Floats = append(v.Floats, 0)
-				continue
-			}
-			f, err := parseVCFFloat(r)
-			if err != nil {
-				v.Floats = append(v.Floats, 0)
-				continue
-			}
-			v.Floats = append(v.Floats, f)
-		}
-	case TypeString:
-		for _, r := range raw {
-			v.Strs = append(v.Strs, percentDecode(r))
-		}
-	case TypeCharacter:
-		if len(raw) == 1 && len(raw[0]) == 1 {
-			v.Chars = []byte{raw[0][0]}
-		} else if len(raw) == 1 && raw[0] == "." {
-			v.Missing = true
-		}
-	default:
-		// TypeUnknown: leave Raw set.
+	// FORMAT Character values are NOT percent-decoded (see decodeInfoValue
+	// for the INFO counterpart). The "." case is already handled by
+	// decodeTyped setting Missing, so only the single-char branch remains.
+	if def.Type == TypeCharacter && len(raw) == 1 && len(raw[0]) == 1 {
+		v.Chars = []byte{raw[0][0]}
 	}
 	return v
 }

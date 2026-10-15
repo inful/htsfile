@@ -17,15 +17,16 @@ package vcf
 // decoding. For Number=1 fields the slice has length 1; for Number=A and
 // similar it has length matching the ALT allele count (or fewer if some
 // values are missing).
+//
+// Type, Ints, Floats, Strs, Chars, Missing, and Raw are inherited from
+// the unexported [typedCore] so that INFO and FORMAT values share their
+// coercion logic; Flag is INFO-only. See [FieldValue] for the FORMAT
+// counterpart.
 type InfoValue struct {
-	Type    FieldType
-	Ints    []int64
-	Floats  []float64
-	Strs    []string
-	Chars   []byte
-	Flag    bool
-	Missing bool
-	Raw     []string
+	typedCore
+	// Flag records that a [TypeFlag] key was present in the record. It
+	// is only meaningful when Type == TypeFlag.
+	Flag bool
 }
 
 // HasValue reports whether v represents a present, non-missing value.
@@ -69,14 +70,11 @@ func (v *InfoValue) Float() float64 {
 // single sample. Its fields parallel those of [InfoValue] except that no
 // Flag type is permitted for FORMAT columns (a FORMAT field is always
 // present per-sample; absence is encoded by [Missing] = true or ".").
+//
+// Type, Ints, Floats, Strs, Chars, Missing, and Raw are inherited from
+// the unexported [typedCore]; Flag is INFO-only.
 type FieldValue struct {
-	Type    FieldType
-	Ints    []int64
-	Floats  []float64
-	Strs    []string
-	Chars   []byte
-	Missing bool
-	Raw     []string
+	typedCore
 }
 
 // HasValue reports whether v represents a present, non-missing value.
@@ -105,4 +103,21 @@ func (v *FieldValue) Float() float64 {
 		return 0
 	}
 	return v.Floats[0]
+}
+
+// typedCore is the type-tagged value storage shared by [InfoValue] and
+// [FieldValue]. It exists so the decoder ([decodeTyped]) and the encoder
+// ([writeTyped]) each operate on a single [FieldType] switch instead of
+// four parallel ones — one for INFO-decoding, one for FORMAT-decoding,
+// one for INFO-encoding, one for FORMAT-encoding. Callers that need to
+// read or write the typed slices go through the InfoValue / FieldValue
+// wrappers, where the fields are promoted.
+type typedCore struct {
+	Type    FieldType
+	Ints    []int64
+	Floats  []float64
+	Strs    []string
+	Chars   []byte
+	Missing bool
+	Raw     []string
 }

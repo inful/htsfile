@@ -54,7 +54,7 @@ func TestEncoder_Minimal(t *testing.T) {
 	}
 	rec := &Record{
 		Chrom: "1", Pos: 100, Ref: "A",
-		Info: map[string]InfoValue{"DP": {Type: TypeInteger, Ints: []int64{10}}},
+		Info: map[string]InfoValue{"DP": {typedCore: typedCore{Type: TypeInteger, Ints: []int64{10}}}},
 	}
 	hdr2, recs := encodeDecode(t, h, []*Record{rec})
 	if hdr2.FileFormat.String() != "VCFv4.5" {
@@ -207,7 +207,7 @@ func TestEncoder_PercentEncoding(t *testing.T) {
 	rec := &Record{
 		Chrom: "1", Pos: 1, Ref: "A",
 		Info: map[string]InfoValue{
-			"NOTE": {Type: TypeString, Strs: []string{"a;b=c,d%"}},
+			"NOTE": {typedCore: typedCore{Type: TypeString, Strs: []string{"a;b=c,d%"}}},
 		},
 	}
 	_, recs := encodeDecode(t, h, []*Record{rec})
@@ -347,7 +347,7 @@ func TestEncoder_EncodeSample_DroppedTrailingFields(t *testing.T) {
 		Samples: []Genotype{
 			{
 				Fields: map[string]FieldValue{
-					"GT": {Type: TypeString, Strs: []string{"0/1"}},
+					"GT": {typedCore: typedCore{Type: TypeString, Strs: []string{"0/1"}}},
 					// DP and HQ dropped — they are NOT in Fields. Per
 					// spec §1.6.1, trailing fields may be dropped, and
 					// the encoder must NOT re-emit them as "." in the
@@ -388,7 +388,7 @@ func TestEncoder_EncodeSample_TypeFallback(t *testing.T) {
 		Samples: []Genotype{
 			{
 				Fields: map[string]FieldValue{
-					"ZZ": {Type: TypeUnknown, Raw: []string{"hello"}},
+					"ZZ": {typedCore: typedCore{Type: TypeUnknown, Raw: []string{"hello"}}},
 				},
 			},
 		},

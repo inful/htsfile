@@ -510,6 +510,55 @@ func encodeFixedColumns(b *bytes.Buffer, rec *Record) {
 	b.WriteByte('\t')
 }
 
+// writeTyped writes v's value list to b as a comma-separated sequence,
+// honouring the Missing sentinel and per-type formatting. It does NOT
+// emit any leading separator — callers control "key=" vs ":" framing —
+// nor handle the Flag sentinel (callers check [isFlagInfo] first). For
+// TypeUnknown it falls back to the raw tokens; if those are empty,
+// nothing is emitted and the caller is responsible for the resulting
+// framing.
+func writeTyped(b *bytes.Buffer, v *typedCore) {
+	if v.Missing {
+		b.WriteByte('.')
+		return
+	}
+	switch v.Type {
+	case TypeInteger:
+		for j, n := range v.Ints {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.FormatInt(n, 10))
+		}
+	case TypeFloat:
+		for j, f := range v.Floats {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(formatVCFFloat(f))
+		}
+	case TypeString:
+		for j, s := range v.Strs {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(percentEncode(s))
+		}
+	case TypeCharacter:
+		if len(v.Chars) > 0 {
+			b.WriteByte(v.Chars[0])
+		}
+	default:
+		// Unknown type — emit raw if available.
+		for j, s := range v.Raw {
+			if j > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(s)
+		}
+	}
+}
+
 // writeInfoColumn writes the INFO column contents to b. keys should already
 // be in the desired order.
 func writeInfoColumn(b *bytes.Buffer, keys []string, info map[string]InfoValue) {
@@ -523,45 +572,7 @@ func writeInfoColumn(b *bytes.Buffer, keys []string, info map[string]InfoValue) 
 			continue
 		}
 		b.WriteByte('=')
-		if v.Missing {
-			b.WriteByte('.')
-			continue
-		}
-		switch v.Type {
-		case TypeInteger:
-			for j, n := range v.Ints {
-				if j > 0 {
-					b.WriteByte(',')
-				}
-				b.WriteString(strconv.FormatInt(n, 10))
-			}
-		case TypeFloat:
-			for j, f := range v.Floats {
-				if j > 0 {
-					b.WriteByte(',')
-				}
-				b.WriteString(formatVCFFloat(f))
-			}
-		case TypeString:
-			for j, s := range v.Strs {
-				if j > 0 {
-					b.WriteByte(',')
-				}
-				b.WriteString(percentEncode(s))
-			}
-		case TypeCharacter:
-			if len(v.Chars) > 0 {
-				b.WriteByte(v.Chars[0])
-			}
-		default:
-			// Unknown type — emit raw if available.
-			for j, s := range v.Raw {
-				if j > 0 {
-					b.WriteByte(',')
-				}
-				b.WriteString(s)
-			}
-		}
+		writeTyped(b, &v.typedCore)
 	}
 }
 
@@ -596,49 +607,15 @@ func encodeSample(b *bytes.Buffer, format []string, s Genotype) {
 			b.WriteByte(':')
 		}
 		v := s.Fields[key]
-		if v.Missing {
+		// Preserve the original behaviour for the degenerate
+		// TypeUnknown-with-no-Raw case: emit a "." rather than leaving
+		// the field empty. writeTyped handles Missing and the typed
+		// cases; this guard covers the fallback.
+		if v.Type == TypeUnknown && len(v.Raw) == 0 && !v.Missing {
 			b.WriteByte('.')
 			continue
 		}
-		switch v.Type {
-		case TypeInteger:
-			for j, n := range v.Ints {
-				if j > 0 {
-					b.WriteByte(',')
-				}
-				b.WriteString(strconv.FormatInt(n, 10))
-			}
-		case TypeFloat:
-			for j, f := range v.Floats {
-				if j > 0 {
-					b.WriteByte(',')
-				}
-				b.WriteString(formatVCFFloat(f))
-			}
-		case TypeString:
-			for j, s := range v.Strs {
-				if j > 0 {
-					b.WriteByte(',')
-				}
-				b.WriteString(percentEncode(s))
-			}
-		case TypeCharacter:
-			if len(v.Chars) > 0 {
-				b.WriteByte(v.Chars[0])
-			}
-		default:
-			// Unknown or missing decoded type — fall back to raw.
-			if len(v.Raw) > 0 {
-				for j, s := range v.Raw {
-					if j > 0 {
-						b.WriteByte(',')
-					}
-					b.WriteString(s)
-				}
-			} else {
-				b.WriteByte('.')
-			}
-		}
+		writeTyped(b, &v.typedCore)
 	}
 }
 

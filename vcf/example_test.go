@@ -69,20 +69,28 @@ func ExampleNewEncoder() {
 		return
 	}
 
+	dp := vcf.InfoValue{}
+	dp.Type = vcf.TypeInteger
+	dp.Ints = []int64{42}
+	gt := vcf.FieldValue{}
+	gt.Type = vcf.TypeString
+	gt.Strs = []string{"0/1"}
+	dpSamp := vcf.FieldValue{}
+	dpSamp.Type = vcf.TypeInteger
+	dpSamp.Ints = []int64{20}
+
 	q := 30.0
 	if err := enc.EncodeRecord(&vcf.Record{
 		Chrom: "1", Pos: 100, Ref: "A",
 		Alt:    []string{"G"},
 		Qual:   &q,
 		Filter: []string{"PASS"},
-		Info: map[string]vcf.InfoValue{
-			"DP": {Type: vcf.TypeInteger, Ints: []int64{42}},
-		},
+		Info:   map[string]vcf.InfoValue{"DP": dp},
 		Format: []string{"GT", "DP"},
 		Samples: []vcf.Genotype{
 			{Fields: map[string]vcf.FieldValue{
-				"GT": {Type: vcf.TypeString, Strs: []string{"0/1"}},
-				"DP": {Type: vcf.TypeInteger, Ints: []int64{20}},
+				"GT": gt,
+				"DP": dpSamp,
 			}},
 		},
 	}); err != nil {
@@ -159,9 +167,10 @@ func ExampleDecoder_Record_modify() {
 
 	// Promote the call to PASS and add a depth INFO field.
 	rec.Filter = []string{"PASS"}
-	rec.Info = map[string]vcf.InfoValue{
-		"DP": {Type: vcf.TypeInteger, Ints: []int64{42}},
-	}
+	dpInfo := vcf.InfoValue{}
+	dpInfo.Type = vcf.TypeInteger
+	dpInfo.Ints = []int64{42}
+	rec.Info = map[string]vcf.InfoValue{"DP": dpInfo}
 
 	var buf strings.Builder
 	enc := vcf.NewEncoder(&buf)

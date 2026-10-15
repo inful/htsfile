@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Internal refactor — value-type coercion.** `InfoValue` and `FieldValue`
+  now embed an unexported `typedCore` so the four near-identical
+  `FieldType` switches (decode/encode × INFO/FORMAT) collapse to two:
+  `decodeTyped` in `parse.go` and `writeTyped` in `write.go`. Type-coercion
+  rules are now defined in one place; a future change (e.g. how `NaN` is
+  formatted, how percent-encoding round-trips a new edge case) is fixed
+  once instead of four times.
+
+  **API impact:** because Go does not allow promoted fields in struct
+  literals, callers that construct `InfoValue` / `FieldValue` directly via
+  `{Type: X, Strs: Y}` must switch to `{typedCore: typedCore{...}}`. As
+  `typedCore` is unexported, external callers use field-by-field
+  assignment:
+
+  ```go
+  v := vcf.InfoValue{}
+  v.Type  = vcf.TypeInteger
+  v.Ints  = []int64{42}
+  ```
+
+  Reads (`v.Ints`, `v.HasValue()`, `v.Int()`, `v.Float()`, `v.String()`)
+  are unchanged — field promotion handles them transparently. The
+  godoc example in `ExampleNewEncoder` was updated to reflect the new
+  construction style. Behaviour is byte-for-byte identical: the
+  `TestEncoder_RoundTripSpecExample` / `TestEncoder_RoundTripSVExample`
+  corpus tests and the CLI's `roundtrip` subcommand both pass unchanged.
+
 ## [0.0.1] — 2026-10-13
 
 ### Added
