@@ -103,7 +103,10 @@ release:
   header: |
     ## htsfile {{ .Version }}
 
-    {{ if .Date }}Released {{ .Date | time.Format "2006-01-02" }}{{ end }}
+    {{- if .Date }}
+
+    Released {{ .Date | time.Format "2006-01-02" }}.
+    {{- end }}
   footer: |
     ## Verification
 
