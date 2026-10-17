@@ -5,23 +5,32 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
-file formats. It currently targets the **VCF v4.5** specification
-([samtools/hts-specs](https://github.com/samtools/hts-specs)).
+file formats. It currently targets two specifications from
+[samtools/hts-specs](https://github.com/samtools/hts-specs):
+
+- **VCF v4.5** — Variant Call Format
+- **BED v1** — Browser Extensible Data (UCSC-derived, BED3 through BED12)
 
 The implementation aims to be:
 
-- **Spec-compliant** — covers the v4.5 grammar for core records, INFO/FORMAT
-  metadata, symbolic structural variants, and breakend notation. Base
-  modifications (`M*` fields), tandem repeats (`RUS/RUL/RUC/RB/...`), and local
-  allele encoding (`LAA/LAD/LPL/LGL/...`) are deferred to a follow-up release.
+- **Spec-compliant** — covers the v4.5 VCF grammar for core records, INFO/FORMAT
+  metadata, symbolic structural variants, and breakend notation; and the BED v1
+  grammar for BED3 through BED12 with auto-detected column counts, track lines,
+  and block invariants. Base modifications (`M*` fields), tandem repeats
+  (`RUS/RUL/RUC/RB/...`), and local allele encoding (`LAA/LAD/LPL/LGL/...`) are
+  deferred to a follow-up release for VCF. BEDGraph, narrowPeak, broadPeak, and
+  GFF/GTF are out of scope for v1; BED-derivatives with column-count extension
+  may be added later.
 - **Streaming** — `Decoder` reads headers and records incrementally from any
   `io.Reader`. No buffering of the whole file.
-- **Round-trippable** — reading a VCF and writing it back produces output that
-  round-trips through `Decode` again. Field ordering inside structured
-  meta-information lines is preserved when known.
+- **Round-trippable** — reading a VCF or BED file and writing it back produces
+  output that re-parses into the same logical content. Track lines and structured
+  meta-information fields are preserved verbatim when possible.
 - **Validating** — `Validator` runs header-declared cardinality (`Number=1/A/R/G/...`)
   and type (`Integer/Float/Flag/Character/String`) checks against every record
-  and surfaces every issue it finds, not just the first.
+  and surfaces every issue it finds, not just the first. For BED, the validator
+  additionally enforces column-count consistency, coordinate sanity, the score
+  range `[0, 1000]`, strand value, RGB range, and BED12 block invariants.
 
 ## Install
 
@@ -73,22 +82,48 @@ for _, iss := range issues {
 }
 ```
 
+### BED Parsing
+
+The `bed` package mirrors the VCF streaming API:
+
+```go
+dec := bed.NewDecoder(r)
+track, _ := dec.Track()    // optional; nil if absent
+for {
+    rec, err := dec.Record()
+    if errors.Is(err, io.EOF) { break }
+    // rec.Chrom, rec.ChromStart, rec.ChromEnd, ...
+    // Optional fields (Name, Score, Strand, ItemRgb, ...) are pointers.
+}
+```
+
+The decoder auto-detects BED3 through BED12 by column count. Track
+lines are parsed and round-tripped; browser lines are skipped. See
+`bed.ExampleNewDecoder` for a full runnable example.
+
 ## CLI
 
-A small command-line tool ships in `cmd/htsfile`:
+A small command-line tool ships in `cmd/htsfile`. Format is
+auto-detected from the file extension (`.vcf`, `.bed`); for stdin
+(`-`) or unknown extensions, the first non-empty line is sniffed
+(`##fileformat` → VCF; `track`, `browser`, or a tab-separated
+`chrom\tstart\tend` triple → BED).
 
 ```sh
 # Validate a file
 htsfile check sample.vcf                  # default mode (warns on issues)
 htsfile check --strict sample.vcf         # strict spec-compliance checks
 htsfile check --strict --warnings file.vcf   # exit non-zero on warnings too
+htsfile check peaks.bed                   # BED is auto-detected by extension
 
 # Re-emit a file (verifies round-trip)
 htsfile roundtrip sample.vcf > out.vcf
 htsfile roundtrip --crlf sample.vcf       # CR+LF line endings
+htsfile roundtrip peaks.bed > out.bed     # BED round-trip
 
 # Print a header summary
 htsfile summary sample.vcf
+htsfile summary peaks.bed                 # BED summary: track, type, records, chroms
 ```
 
 ## Status

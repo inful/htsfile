@@ -7,6 +7,30 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **BED format support.** A new `bed` package (`github.com/inful/htsfile/bed`)
+  mirrors the VCF API: streaming `Decoder`, round-trippable `Encoder`, and a
+  per-record `Validator` with `ModeDefault` and `ModeStrict`. Supports
+  BED3 through BED12 with auto-detected column counts, optional track
+  lines (preserved verbatim for round-trip), and the standard BED12 block
+  invariants (blockCount ↔ array length, first blockStart is 0, sum
+  invariant, no overlaps, all blockSizes > 0). Browser lines (`browser
+  position ...`) are skipped during parse and not preserved. The
+  `cmd/htsfile` CLI auto-dispatches by extension (`.vcf` / `.bed`) and
+  sniffs the first line for stdin or unknown extensions.
+
+  This is a sibling format to VCF; it does not share any code with the
+  VCF package. The new format is intentionally narrow — BEDGraph,
+  narrowPeak, broadPeak, and GFF/GTF are out of scope for this release.
+
+- **Test coverage on structured-meta parse paths.** Pinned the duplicate
+  INFO / FILTER / FORMAT ID detection, Flag-with-non-zero-Number
+  rejection, contig length parsing, missing-ID error reporting for
+  every meta-line type, and the positive PEDIGREE `Name_*` and SAMPLE
+  `Genomes`/`MolConvs` nested-body paths. The VCF package coverage
+  rose from 81.7% to 85.2%.
+
 ### Changed
 
 - **Internal refactor — value-type coercion.** `InfoValue` and `FieldValue`

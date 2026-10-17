@@ -1,0 +1,4 @@
+track name="bad"
+chr1	100	200	peak_1	500	+
+chr1	not_a_number	400	peak_2	900	-
+chr2	500	600
