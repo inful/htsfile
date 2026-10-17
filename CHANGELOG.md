@@ -9,6 +9,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **BAM v1 format support.** A new `bam` package
+  (`github.com/inful/htsfile/bam`) reads BGZF-compressed BAM
+  files: streaming `Decoder` plus a per-record `Validator` with
+  `ModeDefault` and `ModeStrict`. Supports the full binary
+  framing (4-byte magic `BAM\1`, length-prefixed SAM header
+  text, binary reference-sequence dictionary) and every BAM
+  alignment-record field — refID, pos (0-based → 1-based POS),
+  l_read_name, mapq, bin, n_cigar_op, flag, l_seq, next_refID,
+  next_pos, tlen, read_name, packed CIGAR, 4-bit packed SEQ,
+  qual, and the full aux-tag set (A, c, C, s, S, i, I, f, d, Z,
+  H, B). SEQ is decoded back to ASCII; CIGAR is exposed as a
+  packed `[]uint32` and as a SAM-text `CigarString()`; tags are
+  parsed for all 12 documented BAM type codes with values
+  exposed as SAM-compatible strings. BAM v1 is **read-only**
+  in this build — there is no BAM writer. The companion
+  `bam/bai` package reads BAI index files (read-only; bin
+  index + 16384-bp linear intervals + `n_no_coor`) and exposes
+  the samtools 6-level bin-assignment helper `Reg2Bins` for
+  future region-query code.
+
+  The `internal/bgzf` package is a small zero-dependency
+  implementation of the BGZF block format: every block is a
+  valid gzip stream with the FEXTRA flag set, carrying the
+  `BC` subfield (BSIZE-1, uint16 LE), constrained to 64 KiB;
+  each block is terminated with a 4-byte CRC32 + 4-byte ISIZE
+  trailer. The reader decompresses blocks on the fly, validates
+  CRC32 and ISIZE, and recognises the 28-byte empty EOF marker.
+
+  The `cmd/htsfile` CLI auto-dispatches by extension (`.vcf`,
+  `.bed`, `.sam`, `.bam`) and sniffs the first 4 bytes for
+  stdin / unknown extensions — the gzip+FEXTRA prefix indicates
+  a BGZF-compressed BAM. `check` and `summary` work for BAM;
+  `roundtrip` is not supported (BAM v1 is read-only) and returns
+  a clear "BAM v1 is read-only" error rather than silently
+  emitting broken output.
+
+  CLI duplication for the four per-format `runCheck*` /
+  `runSummary*` entry points has hit the ≥3-packages threshold
+  the ROADMAP flagged; the four duplicates each carry a
+  `//nolint:dupl` with rationale. The refactor to extract a
+  shared "issue-reporting" helper is queued for the next format
+  landing (GFF3), where the savings will be more substantial.
+
 - **SAM v1 format support.** A new `sam` package
   (`github.com/inful/htsfile/sam`) mirrors the vcf/ and bed/
   API: streaming `Decoder`, round-trippable `Encoder`, and a

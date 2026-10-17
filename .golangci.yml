@@ -65,6 +65,18 @@ linters:
           - funlen
           - mnd
           - lll
+      # G115 (integer overflow conversion) is a known false
+      # positive for binary parsers: truncating a uint32 to int32
+      # to interpret the BAM refID / position is intentional, not
+      # a security bug. gosec's heuristic catches the pattern
+      # without understanding that the values come from a
+      # controlled-length on-disk format. We use a path-based
+      # exclusion rather than per-line //nolint comments so the
+      # false positive doesn't drown out real issues.
+      - path: (bam|internal/bgzf)/.*\.go
+        linters:
+          - gosec
+          - prealloc
 
 run:
   timeout: 5m

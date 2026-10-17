@@ -10,11 +10,10 @@ the [samtools/hts-specs](https://samtools.github.io/hts-specs/) family
 and adjacent bioinformatics formats.
 
 > **Where to continue from this point in a new session:** start with
-> **Tier 2 (BAM)**. The roadmap is up to date as of the latest
-> commit on `main`. Open decisions for Tier 2 are listed under
-> "Open decisions" near the bottom. See the [CHANGELOG](CHANGELOG.md)
-> for what just landed and `git log --oneline` for the commit
-> history.
+> **Tier 2 (GFF3)**. BAM Tier 2 just landed (commit replacing this
+> note). The roadmap is up to date as of the latest commit on
+> `main`. See the [CHANGELOG](CHANGELOG.md) for what just
+> landed and `git log --oneline` for the commit history.
 
 ## Design principles
 
@@ -113,15 +112,27 @@ in the style established for the BED v1 work.
       `DefaultMaxLineLength` (10 MB) across all three packages
       (commit `cd6cb08`)
 
-### Tier 2 — Companion and adjacent formats — **NEXT**
+### Tier 2 — Companion and adjacent formats
 
-- [ ] **BAM** — binary SAM with BGZF compression. Reader first;
-      BAI index reader for random access. *Recommended next
-      major work.* See "Open decisions" for unresolved questions.
+- [x] **BAM** — binary SAM with BGZF compression. Reader first;
+      BAI index reader for random access. *Completed.* Includes:
+      - `internal/bgzf/` — zero-dependency BGZF block decoder
+        (BSIZE, CRC32, ISIZE validation; EOF marker)
+      - `bam/` — streaming `Decoder`, per-record `Validator`
+        with `ModeDefault` and `ModeStrict`, all 12 BAM tag
+        type codes, full aux-tag parsing including B-arrays,
+        4-bit packed SEQ decoding, CIGAR exposed as
+        `[]uint32` and as `CigarString()`. Read-only — no BAM
+        writer yet.
+      - `bam/bai/` — BAI file parser (bin index + linear
+        intervals + `n_no_coor`); `Reg2Bins` helper for the
+        samtools 6-level bin scheme; region queries deferred.
+      - CLI: `check` and `summary` for `.bam`; `roundtrip`
+        returns "read-only" error.
 - [ ] **GFF3** — feature annotation. 1-based inclusive coordinates
       (different convention from BED's 0-based half-open). 9
       mandatory columns + free-form `attributes` column. Strand and
-      phase are typed values.
+      phase are typed values. *Next up.*
 - [ ] **FASTA** — sequence foundation. Two record types (header
       starting with `>` + multi-line sequence). Optional `.fai`
       index file for random access.
@@ -186,23 +197,27 @@ rather than per-tier to avoid duplication.
   CHANGELOG entry under `[Unreleased]`. Mirror the SAM v1 commit
   (`3484a4f`) as the template.
 
-- **CLI duplication.** `runCheck{VCF,BED,SAM}`,
-  `runRoundtrip{VCF,BED,SAM}`, and `runSummary{VCF,BED,SAM}` are
-  intentionally near-duplicates and carry `//nolint:dupl` with
-  rationale. The duplication is structural across per-format
-  entry points. **Re-evaluate when the fourth format (GFF3)
-  lands** — at that point, the ≥3-packages threshold for shared
-  abstraction is crossed and a narrow helper (just the
-  issue-reporting loop) becomes worth extracting.
+- **CLI duplication.** `runCheck{VCF,BED,SAM,BAM}`,
+  `runRoundtrip{VCF,BED,SAM}`, and `runSummary{VCF,BED,SAM,BAM}`
+  are intentionally near-duplicates and carry `//nolint:dupl`
+  with rationale. The duplication is structural across
+  per-format entry points. BAM landed before the threshold
+  refactor was due (the ROADMAP originally pinned GFF3 as the
+  trigger), so the BAM entries joined the existing pattern;
+  the four-way refactor (extract an issue-reporting helper)
+  is queued for the next format landing.
 
 ## What we have today
 
 | Package        | Status | Coverage | Test surface |
 |----------------|--------|----------|--------------|
-| `vcf/`         | v4.5   | 85.2%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, corpus round-trip |
-| `bed/`         | v1     | high     | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, corpus round-trip |
-| `sam/`         | v1     | high     | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, corpus round-trip |
-| `cmd/htsfile/` | n/a    | n/a      | CLI: `check`, `roundtrip`, `summary`, `version`; auto-dispatch by `.vcf`/`.bed`/`.sam` extension + content sniff for stdin |
+| `vcf/`         | v4.5   | 85.3%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, corpus round-trip |
+| `bed/`         | v1     | 90.5%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, corpus round-trip |
+| `sam/`         | v1     | 83.6%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, corpus round-trip |
+| `bam/`         | v1     | 76.2%    | Decoder (with `NewDecoderWithMaxLine`), Validator, errors, types, B-array round-trip, CLI smoke |
+| `bam/bai/`     | n/a    | 84.1%    | Index parser + `Reg2Bins` helper |
+| `internal/bgzf/` | n/a  | 77.5%    | Block decoder (BSIZE, CRC32, ISIZE, EOF marker) |
+| `cmd/htsfile/` | n/a    | n/a      | CLI: `check`, `roundtrip`, `summary`, `version`; auto-dispatch by `.vcf`/`.bed`/`.sam`/`.bam` extension + content sniff for stdin |
 
 All three format packages follow the same shape (one `Decoder`, one
 `Encoder`, one `Validator`, one `Record`/`Header` type, one
@@ -216,27 +231,6 @@ land in the same shape and inherit the bounded-line-read pattern
 These are the unresolved questions for the next tier of work.
 Each has a recommendation; the recommendation should be confirmed
 before starting implementation.
-
-### For Tier 2 — BAM
-
-- [ ] **BAM CLI surface.** Separate subcommands (`htsfile sam
-      view`, `htsfile bam view`) or single dispatch by extension?
-      *Recommendation:* extension dispatch via `.bam` for the
-      read/write cases, since the existing VCF/BED/SAM
-      auto-dispatch has worked cleanly. Reconsider only if the
-      BAM CLI surface diverges meaningfully (e.g. requires a
-      region argument for random access).
-
-- [ ] **BAI index support.** Read-only, or also write? The
-      ROADMAP scope says read-only ("we read BAI/CSI/Tabix but
-      do not write them"). Confirm before starting.
-
-- [ ] **BGZF compression dependency.** Standard library has
-      `compress/gzip` for gzip; BGZF is a constrained variant
-      of gzip (small 64 KB blocks, random access). Implement a
-      small `internal/bgzf` package or use a community library
-      (avoiding the latter per the "zero runtime dependencies"
-      rule).
 
 ### For Tier 2 — GFF3 and FASTA
 

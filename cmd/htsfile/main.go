@@ -1,17 +1,19 @@
-// Command htsfile is a small command-line interface over the vcf and
-// bed packages.
+// Command htsfile is a small command-line interface over the
+// vcf, bed, sam, and bam packages.
 //
 // Usage:
 //
-//	htsfile check [--strict] [--warnings] file.vcf | file.bed
-//	htsfile roundtrip [--crlf] file.vcf | file.bed
-//	htsfile summary file.vcf | file.bed
+//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam
+//	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam
+//	htsfile summary file.vcf | file.bed | file.sam | file.bam
 //	htsfile version
 //
-// The format is auto-detected from the file extension (.vcf, .bed).
-// For stdin ("-") or unknown extensions, the first non-empty line
-// is sniffed: "##fileformat" → VCF; "track", "browser", or a tab-
-// separated chrom/start/end triple → BED.
+// The format is auto-detected from the file extension (.vcf,
+// .bed, .sam, .bam). For stdin ("-") or unknown extensions, the
+// first non-empty line is sniffed: "##fileformat" → VCF; "track",
+// "browser", or a tab-separated chrom/start/end triple → BED;
+// "@HD" or an 11-column tab-separated record with integer
+// FLAG/MAPQ → SAM; the 4-byte BAM magic at offset 0 → BAM.
 //
 // Subcommands:
 //
@@ -19,6 +21,9 @@
 //	roundtrip parse the file and re-emit it to stdout.
 //	summary   print a one-line summary of the file's header.
 //	version   print the htsfile version (set via -ldflags at build time).
+//
+// BAM v1 is read-only: `roundtrip` is not supported for .bam
+// files. `check` and `summary` work normally.
 package main
 
 import (
@@ -33,6 +38,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/inful/htsfile/bam"
 	"github.com/inful/htsfile/bed"
 	"github.com/inful/htsfile/sam"
 	"github.com/inful/htsfile/vcf"
@@ -58,6 +64,7 @@ const (
 	formatVCF
 	formatBED
 	formatSAM
+	formatBAM
 )
 
 func (f format) String() string {
@@ -68,6 +75,8 @@ func (f format) String() string {
 		return "BED"
 	case formatSAM:
 		return "SAM"
+	case formatBAM:
+		return "BAM"
 	default:
 		return "unknown"
 	}
@@ -106,7 +115,7 @@ func main() {
 }
 
 func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|->
+	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|->
 
 Commands:
   check       Validate the file. Exits non-zero if any errors are found.
@@ -116,8 +125,9 @@ Commands:
               --crlf       use CR+LF line endings
   summary     Print a summary of the file (header / column count / records).
 
-Format is auto-detected from the extension (.vcf, .bed). For stdin ("-")
-or unknown extensions, the first non-empty line is sniffed.`)
+Format is auto-detected from the extension (.vcf, .bed, .sam, .bam). For
+stdin ("-") or unknown extensions, the first non-empty line is sniffed.
+BAM v1 is read-only: the roundtrip subcommand does not support .bam files.`)
 }
 
 // openFileOrStdin returns the named file, or os.Stdin if path is "-".
@@ -159,6 +169,12 @@ func detectFormat(path string) (format, io.Reader, error) {
 			return formatUnknown, nil, err
 		}
 		return formatSAM, f, nil
+	case ".bam":
+		f, err := openFileOrStdin(path)
+		if err != nil {
+			return formatUnknown, nil, err
+		}
+		return formatBAM, f, nil
 	}
 	// Unknown extension (or no extension) — open once, buffer, and sniff.
 	return sniffFormat(path)
@@ -178,8 +194,15 @@ func sniffFormat(path string) (format, io.Reader, error) {
 
 	br := bufio.NewReader(f)
 	// Peek at up to 4 KiB — enough for the first non-empty line in
-	// typical BED/VCF headers.
+	// typical BED/VCF headers and for the 4-byte BAM magic.
 	peeked, _ := br.Peek(4096)
+	// BAM magic check: 0x1f 0x8b 0x08 0x04 (gzip header that every
+	// BGZF block starts with — the BAM header itself starts with
+	// "BAM\1" but that's *inside* the first BGZF block, so the
+	// outer bytes are gzip).
+	if len(peeked) >= 4 && bytes.Equal(peeked[:4], bamSniffMagic[:]) {
+		return formatBAM, br, nil
+	}
 	scanner := bufio.NewScanner(bytes.NewReader(peeked))
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
@@ -220,6 +243,11 @@ func sniffFormat(path string) (format, io.Reader, error) {
 	// Empty file: defer to VCF (will fail with a clear error).
 	return formatVCF, br, nil
 }
+
+// bamSniffMagic is the first 4 bytes of every BGZF block (and
+// therefore of every BAM file): the gzip magic + the deflate
+// compression method byte + the FEXTRA flag.
+var bamSniffMagic = [4]byte{0x1f, 0x8b, 0x08, 0x04}
 
 // fieldsAreChromStartEnd reports whether the first three fields of
 // fields look like chrom / chromStart / chromEnd.
@@ -287,6 +315,8 @@ func runCheck(args []string) error {
 		return runCheckBED(r, path, *strict, *warnings)
 	case formatSAM:
 		return runCheckSAM(r, path, *strict, *warnings)
+	case formatBAM:
+		return runCheckBAM(r, path, *strict, *warnings)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -499,6 +529,8 @@ func runRoundtrip(args []string) error {
 		return runRoundtripBED(r, *crlf)
 	case formatSAM:
 		return runRoundtripSAM(r, *crlf)
+	case formatBAM:
+		return runRoundtripBAM()
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -633,6 +665,8 @@ func runSummary(args []string) error {
 		return runSummaryBED(r, path)
 	case formatSAM:
 		return runSummarySAM(r, path)
+	case formatBAM:
+		return runSummaryBAM(r, path)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -705,6 +739,7 @@ func runSummaryBED(f io.Reader, path string) error {
 	return nil
 }
 
+//nolint:dupl // See runCheckVCF: same shape as runSummaryBAM and the existing runSummarySAM.
 func runSummarySAM(f io.Reader, path string) error {
 	dec := sam.NewDecoder(f)
 	hdr, err := dec.Header()
@@ -724,6 +759,128 @@ func runSummarySAM(f io.Reader, path string) error {
 		}
 		rnames[rec.RName]++
 		if rec.Flag&sam.FlagUnmap != 0 {
+			nUnmapped++
+		} else {
+			nMapped++
+		}
+		nRec++
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", path)
+	if hdr != nil && hdr.HD != nil {
+		if hdr.HD.VN != "" {
+			fmt.Fprintf(&b, "  version:    %s\n", hdr.HD.VN)
+		}
+		if hdr.HD.SO != "" {
+			fmt.Fprintf(&b, "  sort order: %s\n", hdr.HD.SO)
+		}
+		fmt.Fprintf(&b, "  @SQ lines:  %d\n", len(hdr.SQs))
+		fmt.Fprintf(&b, "  @RG lines:  %d\n", len(hdr.RGs))
+		fmt.Fprintf(&b, "  @PG lines:  %d\n", len(hdr.PGs))
+	} else {
+		fmt.Fprintf(&b, "  header:     (none)\n")
+	}
+	fmt.Fprintf(&b, "  records:    %d\n", nRec)
+	fmt.Fprintf(&b, "  mapped:     %d\n", nMapped)
+	fmt.Fprintf(&b, "  unmapped:   %d\n", nUnmapped)
+	_, _ = fmt.Fprint(os.Stdout, b.String())
+	return nil
+}
+
+// runCheckBAM parses and validates a BAM file. The format
+// mirrors runCheckSAM but the records come from the bam
+// package's binary decoder.
+//
+//nolint:dupl // See runCheckVCF: same shape, different package.
+func runCheckBAM(f io.Reader, path string, strict, warnings bool) error {
+	mode := bam.ModeDefault
+	if strict {
+		mode = bam.ModeStrict
+	}
+	dec := bam.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	_ = hdr
+	var recs []*bam.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	val := bam.NewValidator(mode)
+	issues := val.Validate(hdr, recs)
+	if len(issues) == 0 {
+		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
+		return nil
+	}
+	sort.SliceStable(issues, func(i, j int) bool {
+		if issues[i].Line != issues[j].Line {
+			return issues[i].Line < issues[j].Line
+		}
+		if issues[i].Severity != issues[j].Severity {
+			return issues[i].Severity < issues[j].Severity
+		}
+		return issues[i].Field < issues[j].Field
+	})
+	var nErr, nWarn int
+	for _, iss := range issues {
+		switch iss.Severity {
+		case bam.SeverityError:
+			nErr++
+		case bam.SeverityWarning:
+			nWarn++
+		}
+		fmt.Printf("line %d  [%s] %s: %s\n",
+			iss.Line, iss.Severity, iss.Field, iss.Msg)
+	}
+	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
+	if nErr > 0 {
+		return fmt.Errorf("%d error(s) found", nErr)
+	}
+	if warnings && nWarn > 0 {
+		return fmt.Errorf("%d warning(s) found", nWarn)
+	}
+	return nil
+}
+
+// runRoundtripBAM returns an error explaining that BAM v1 is
+// read-only and the roundtrip subcommand does not support it.
+// The error is intentionally clear so users who try the
+// subcommand on a .bam file see the reason.
+func runRoundtripBAM() error {
+	return errors.New("roundtrip: BAM v1 is read-only in this build (no BAM writer)")
+}
+
+// runSummaryBAM prints a one-line summary of the BAM file's
+// header. The format mirrors runSummarySAM.
+//
+//nolint:dupl // See runCheckVCF: same shape, different package.
+func runSummaryBAM(f io.Reader, path string) error {
+	dec := bam.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	rnames := make(map[string]int)
+	var nRec int
+	var nMapped, nUnmapped int
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		rnames[rec.NameRName]++
+		if rec.Flag&bam.FlagUnmap != 0 {
 			nUnmapped++
 		} else {
 			nMapped++

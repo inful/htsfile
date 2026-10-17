@@ -5,12 +5,13 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
-file formats. It currently targets three specifications from
+file formats. It currently targets four specifications from
 [samtools/hts-specs](https://github.com/samtools/hts-specs):
 
 - **VCF v4.5** — Variant Call Format (accepts any v4.x minor)
 - **BED v1** — Browser Extensible Data (UCSC-derived, BED3 through BED12)
 - **SAM v1** — Sequence Alignment/Map (header + 11-column records + optional tags)
+- **BAM v1** — Binary SAM (BGZF-compressed) with read-only BAI index reader
 
 See [ROADMAP.md](ROADMAP.md) for the planned expansion (BAM, GFF3, FASTA,
 FASTQ, BCF v2.1, Tabix/CSI).
@@ -105,14 +106,39 @@ The decoder auto-detects BED3 through BED12 by column count. Track
 lines are parsed and round-tripped; browser lines are skipped. See
 `bed.ExampleNewDecoder` for a full runnable example.
 
+### BAM Parsing
+
+The `bam` package reads BGZF-compressed BAM files:
+
+```go
+dec := bam.NewDecoder(f)
+hdr, _ := dec.Header()    // required; BGZF + binary framing
+for {
+    rec, err := dec.Record()
+    if errors.Is(err, io.EOF) { break }
+    // rec.QName, rec.Pos, rec.Flag, rec.MapQ, rec.Cigar, rec.Seq,
+    // rec.Qual, rec.Tags, ...
+    // rec.CigarString() returns the SAM text form ("5M2I3M" etc.).
+}
+```
+
+The decoder parses all 11 BAM core fields plus the variable-length
+remainder (read name, packed SEQ, qual, optional tags). SEQ is decoded
+from 4-bit packed form back to ASCII; tags are parsed for all
+documented BAM type codes (A, c, C, s, S, i, I, f, d, Z, H, B) with
+values exposed as SAM-compatible strings. BAI files are read by the
+sibling `bam/bai` package; see `bai.ExampleNewReader` if you want
+random access. BAM v1 is read-only in this build.
+
 ## CLI
 
 A small command-line tool ships in `cmd/htsfile`. Format is
-auto-detected from the file extension (`.vcf`, `.bed`, `.sam`);
-for stdin (`-`) or unknown extensions, the first non-empty line
-is sniffed (`##fileformat` → VCF; `track`, `browser`, or a
-tab-separated `chrom\tstart\tend` triple → BED; `@HD` or an
-11-column tab-separated record with integer FLAG/MAPQ → SAM).
+auto-detected from the file extension (`.vcf`, `.bed`, `.sam`,
+`.bam`); for stdin (`-`) or unknown extensions, the first
+non-empty line is sniffed (`##fileformat` → VCF; `track`,
+`browser`, or a tab-separated `chrom\tstart\tend` triple → BED;
+`@HD` or an 11-column tab-separated record with integer
+FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM).
 
 ```sh
 # Validate a file
@@ -121,17 +147,20 @@ htsfile check --strict sample.vcf         # strict spec-compliance checks
 htsfile check --strict --warnings file.vcf   # exit non-zero on warnings too
 htsfile check peaks.bed                   # BED is auto-detected by extension
 htsfile check reads.sam                   # SAM is auto-detected by extension
+htsfile check aligned.bam                 # BAM is auto-detected by extension
 
 # Re-emit a file (verifies round-trip)
 htsfile roundtrip sample.vcf > out.vcf
 htsfile roundtrip --crlf sample.vcf       # CR+LF line endings
 htsfile roundtrip peaks.bed > out.bed     # BED round-trip
 htsfile roundtrip reads.sam > out.sam     # SAM round-trip
+# roundtrip does not support .bam files (BAM v1 is read-only).
 
 # Print a header summary
 htsfile summary sample.vcf
 htsfile summary peaks.bed                 # BED summary: track, type, records, chroms
 htsfile summary reads.sam                 # SAM summary: version, @SQ/@RG/@PG counts, records
+htsfile summary aligned.bam               # BAM summary: version, @SQ/@RG/@PG counts, records
 ```
 
 ## Status
@@ -179,9 +208,24 @@ htsfile summary reads.sam                 # SAM summary: version, @SQ/@RG/@PG co
 | CIGAR string parsing (semantic) | ❌ |
 | Read/write of unknown `@XX` header lines | ✅ |
 
+### bam/ package (BAM v1)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| BGZF block decoder (internal/bgzf)     |   ✅   |
+| `BAM\1` magic + reference dictionary   |   ✅   |
+| Embedded SAM header text (HD/SQ/RG/PG/CO) | ✅   |
+| 11-column alignment records + tags     |   ✅   |
+| 4-bit packed SEQ / CIGAR / qual        |   ✅   |
+| All 12 BAM tag type codes (A, c, C, s, S, i, I, f, d, Z, H, B) | ✅ |
+| `ModeDefault` and `ModeStrict` validators | ✅ |
+| BAM **writer** (round-trip)             |   ❌   |
+| BAI index reader (`bam/bai`)            |   ✅   |
+| BAI-based region queries                |   🔜   |
+
 ### Planned (see [ROADMAP.md](ROADMAP.md))
 
-- **Tier 2 (next)**: BAM, GFF3, FASTA
+- **Tier 2 (next)**: GFF3, FASTA
 - **Tier 3**: BCF v2.1, Tabix, CSI
 - **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ
 
