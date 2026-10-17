@@ -11,6 +11,9 @@ file formats. It currently targets two specifications from
 - **VCF v4.5** — Variant Call Format
 - **BED v1** — Browser Extensible Data (UCSC-derived, BED3 through BED12)
 
+See [ROADMAP.md](ROADMAP.md) for the planned expansion to SAM, BAM,
+GFF3, FASTA, FASTQ, and BCF v2.1.
+
 The implementation aims to be:
 
 - **Spec-compliant** — covers the v4.5 VCF grammar for core records, INFO/FORMAT
@@ -128,6 +131,8 @@ htsfile summary peaks.bed                 # BED summary: track, type, records, c
 
 ## Status
 
+### vcf/ package (VCF v4.5)
+
 | Feature                                | Status |
 |----------------------------------------|:------:|
 | File header (`##fileformat` etc.)      |   ✅   |
@@ -142,7 +147,27 @@ htsfile summary peaks.bed                 # BED summary: track, type, records, c
 | Base modifications (M\* fields)         |   🔜   |
 | Tandem repeats (RN/RUS/RUC/RB…)        |   🔜   |
 | Local alleles (LAA / LAD / LPL…)       |   🔜   |
-| BCF (binary counterpart)               |   ❌   |
+| VCF v4.1–v4.4 back-compat               |   🔜   |
+| BCF v2.1 (binary counterpart)           |   ❌   |
+
+### bed/ package (BED v1)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| BED3–BED12 with column-count auto-detect |  ✅   |
+| Track lines (parsed and round-tripped) |   ✅   |
+| Browser lines (skipped, not preserved)  |   ✅   |
+| BED12 block invariants (blockCount, sum, overlap) | ✅ |
+| `ModeDefault` and `ModeStrict` validators | ✅ |
+| BEDGraph / narrowPeak / broadPeak      |   ❌   |
+| bigBed (binary indexed)                |   ❌   |
+
+### Planned (see [ROADMAP.md](ROADMAP.md))
+
+- **Tier 1**: SAM v1 + SAMtags
+- **Tier 2**: BAM, GFF3, FASTA
+- **Tier 3**: BCF v2.1, Tabix, CSI, VCF v4.1–v4.4
+- **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ
 
 ## Releases
 
