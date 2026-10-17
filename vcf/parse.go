@@ -25,7 +25,15 @@ import (
 //
 // A [Decoder] is not safe for concurrent use; create one per goroutine.
 type Decoder struct {
-	r *bufio.Reader
+	// scanner reads lines from the input with a bounded buffer
+	// (DefaultMaxLineLength or whatever was set via
+	// NewDecoderWithMaxLine).
+	scanner *bufio.Scanner
+
+	// maxLineLength is the per-line byte cap used to configure the
+	// scanner. The scanner returns bufio.ErrTooLong when a line
+	// exceeds this; readLine translates that into a *ParseError.
+	maxLineLength int
 
 	// line is the 1-based line number of the most recently read line.
 	line int
@@ -44,14 +52,33 @@ type Decoder struct {
 	eof bool
 }
 
-// NewDecoder wraps r in a [Decoder]. The decoder buffers input with a
-// [bufio.Reader] unless r is already one.
+// DefaultMaxLineLength is the per-line size cap applied by
+// [NewDecoder]. Lines longer than this cause a parse error rather
+// than an unbounded allocation; the value is large enough for any
+// real-world VCF line (even a long INFO string rarely exceeds a few
+// KB) and small enough to prevent OOM on hostile input.
+const DefaultMaxLineLength = 10 << 20 // 10 MB
+
+// NewDecoder wraps r in a [Decoder] with the default
+// [DefaultMaxLineLength] per-line size cap. Use
+// [NewDecoderWithMaxLine] to override the cap.
 func NewDecoder(r io.Reader) *Decoder {
-	br, ok := r.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReaderSize(r, 64*1024)
+	return NewDecoderWithMaxLine(r, DefaultMaxLineLength)
+}
+
+// NewDecoderWithMaxLine is like [NewDecoder] but lets the caller
+// set a custom per-line size cap. Pass maxLineLength <= 0 to keep
+// the default cap.
+func NewDecoderWithMaxLine(r io.Reader, maxLineLength int) *Decoder {
+	if maxLineLength <= 0 {
+		maxLineLength = DefaultMaxLineLength
 	}
-	return &Decoder{r: br}
+	sc := bufio.NewScanner(r)
+	// Both the initial buffer cap and the explicit max must equal
+	// the limit; otherwise the Scanner silently grows the buffer
+	// up to cap(buf) regardless of max.
+	sc.Buffer(make([]byte, 0, maxLineLength), maxLineLength)
+	return &Decoder{scanner: sc, maxLineLength: maxLineLength}
 }
 
 // Header parses the VCF header. The first call reads ##meta lines until the
@@ -97,52 +124,49 @@ func (d *Decoder) Record() (*Record, error) {
 	}
 }
 
-// readLine reads one line from the underlying reader. The returned slice
-// includes the trailing newline (if present) but not a preceding BOM if one
-// was present (the BOM is consumed and an error is raised — VCF files must
-// not contain a BOM per the spec).
+// readLine reads one line from the underlying reader. The returned
+// slice is the line without its trailing newline. The Scanner
+// internally enforces [DefaultMaxLineLength] (or whatever the
+// caller set via [NewDecoderWithMaxLine]); lines longer than that
+// return a [ParseError] without unbounded allocation.
+//
+// On the first call, a leading UTF-8 BOM (EF BB BF) is detected
+// and rejected with a [ParseError] — VCF files must not contain
+// a BOM per the spec.
 func (d *Decoder) readLine() (raw []byte, lineNo int, err error) {
 	if d.eof {
 		return nil, d.line, io.EOF
 	}
 	lineNo = d.line + 1
-
-	// BOM detection: a UTF-8 BOM (EF BB BF) is illegal per spec.
-	if d.line == 0 {
-		peek, _ := d.r.Peek(3)
-		if len(peek) >= 3 && bytes.Equal(peek, []byte{0xEF, 0xBB, 0xBF}) {
-			return nil, lineNo, &ParseError{Line: lineNo, Field: "<BOM>",
-				Msg: "VCF files must not contain a UTF-8 byte order mark"}
+	if !d.scanner.Scan() {
+		if scanErr := d.scanner.Err(); scanErr != nil {
+			if errors.Is(scanErr, bufio.ErrTooLong) {
+				return nil, lineNo, &ParseError{Line: lineNo,
+					Msg: fmt.Sprintf("line exceeds max length %d", d.maxLineLength)}
+			}
+			return nil, lineNo, &ParseError{Line: lineNo, Msg: scanErr.Error()}
 		}
-	}
-
-	line, err := d.r.ReadBytes('\n')
-	if errors.Is(err, io.EOF) && len(line) == 0 {
 		d.eof = true
 		d.line = lineNo
 		return nil, d.line, io.EOF
 	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		d.line = lineNo
-		return nil, lineNo, &ParseError{Line: lineNo, Msg: err.Error()}
+	// Copy the scanner's bytes because the slice is reused on the
+	// next Scan call.
+	src := d.scanner.Bytes()
+	raw = make([]byte, len(src))
+	copy(raw, src)
+	// Strip a trailing CR from the copy (Scanner preserves the
+	// newline but not a leading CR; be safe anyway).
+	if n := len(raw); n > 0 && raw[n-1] == '\r' {
+		raw = raw[:n-1]
 	}
-	if errors.Is(err, io.EOF) {
-		d.eof = true
+	// BOM detection on the first line.
+	if d.line == 0 && len(raw) >= 3 && bytes.Equal(raw[0:3], []byte{0xEF, 0xBB, 0xBF}) {
+		return nil, lineNo, &ParseError{Line: lineNo, Field: "<BOM>",
+			Msg: "VCF files must not contain a UTF-8 byte order mark"}
 	}
 	d.line = lineNo
-
-	// Strip trailing newline (and CR) for parsing, but remember which
-	// terminator we saw for any callers that care about the original line
-	// length. For now we don't expose that distinction — [Encoder] writes
-	// "\n" and round-trips rely on that.
-	stripped := line
-	if n := len(stripped); n > 0 && stripped[n-1] == '\n' {
-		stripped = stripped[:n-1]
-		if m := len(stripped); m > 0 && stripped[m-1] == '\r' {
-			stripped = stripped[:m-1]
-		}
-	}
-	return stripped, lineNo, nil
+	return raw, lineNo, nil
 }
 
 // parseHeader reads ## meta lines and the #CHROM header line.

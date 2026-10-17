@@ -311,3 +311,29 @@ func sliceEq(a, b []int64) bool {
 	}
 	return true
 }
+
+// TestDecoder_MaxLineLength pins the bounded-read behavior: a
+// line longer than MaxLineLength must error, not silently allocate
+// gigabytes.
+func TestDecoder_MaxLineLength(t *testing.T) {
+	t.Parallel()
+	// 200 'A' characters in chromStart, with a 100-byte limit.
+	longStart := strings.Repeat("9", 200)
+	src := "track name=\"oops\"\n" +
+		"chr1\t" + longStart + "\t300\n"
+
+	dec := NewDecoderWithMaxLine(strings.NewReader(src), 100)
+	if _, err := dec.Track(); err != nil {
+		t.Fatalf("Track: %v", err)
+	}
+	_, err := dec.Record()
+	if err == nil {
+		t.Fatal("expected error for line exceeding MaxLineLength")
+	}
+	if !IsParseError(err) {
+		t.Errorf("error type = %T; want *ParseError", err)
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error msg = %q; want it to mention 'exceeds'", err.Error())
+	}
+}

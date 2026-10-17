@@ -7,6 +7,26 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Bounded per-line read size in all three Decoders.** Each
+  format package (`vcf/`, `bed/`, `sam/`) now configures its line
+  reader with a `MaxLineLength` cap (default 10 MB). Lines
+  longer than the cap produce a clear `*ParseError` rather than
+  unbounded allocation. This is a real DoS-surface fix for
+  library use cases (e.g. parsing untrusted VCF/BED/SAM input);
+  the previous `bufio.Reader.ReadBytes` would happily allocate
+  a 10 GB byte slice for a malicious 10 GB line. The internal
+  reader is now `bufio.Scanner` with the buffer cap pinned via
+  `make([]byte, 0, maxLineLength)` so the cap is enforced (a
+  subtle Scanner-API gotcha: passing `make([]byte, 64*1024, 100)`
+  to `Buffer` would silently grow to 64 KB regardless of the
+  max). The new constructors are `NewDecoderWithMaxLine(r,
+  maxLineLength)`; the existing `NewDecoder(r)` uses the
+  default. Behaviour is unchanged for any real-world file.
+
+## [Unreleased]
+
 ### Added
 
 - **SAM v1 format support.** A new `sam` package

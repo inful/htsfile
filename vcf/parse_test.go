@@ -605,3 +605,52 @@ func TestDecoder_Errors(t *testing.T) {
 		})
 	}
 }
+
+// TestDecoder_MaxLineLength pins the bounded-read behavior: a
+// line longer than MaxLineLength must error, not silently allocate
+// gigabytes. We use NewDecoderWithMaxLine to set a small limit and
+// verify it.
+func TestDecoder_MaxLineLength(t *testing.T) {
+	t.Parallel()
+	// 200 'A' characters in SEQ, with a 100-byte limit.
+	longSeq := strings.Repeat("A", 200)
+	src := "##fileformat=VCFv4.5\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+		"chr1\t100\t.\tA\tC\t.\t.\t.\t" + longSeq + "\n"
+
+	dec := NewDecoderWithMaxLine(strings.NewReader(src), 100)
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	_, err := dec.Record()
+	if err == nil {
+		t.Fatal("expected error for line exceeding MaxLineLength")
+	}
+	if !IsParseError(err) {
+		t.Errorf("error type = %T; want *ParseError", err)
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error msg = %q; want it to mention 'exceeds'", err.Error())
+	}
+}
+
+// TestDecoder_BOM verifies that a leading UTF-8 BOM in the input
+// is rejected with a clear error (VCF files must not contain a BOM
+// per the spec).
+func TestDecoder_BOM(t *testing.T) {
+	t.Parallel()
+	src := "\xEF\xBB\xBF" + "##fileformat=VCFv4.5\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+		"chr1\t100\t.\tA\tC\t.\t.\t.\n"
+	dec := NewDecoder(strings.NewReader(src))
+	_, err := dec.Header()
+	if err == nil {
+		t.Fatal("expected error for BOM-prefixed input")
+	}
+	if !IsParseError(err) {
+		t.Errorf("error type = %T; want *ParseError", err)
+	}
+	if !strings.Contains(err.Error(), "BOM") {
+		t.Errorf("error msg = %q; want it to mention 'BOM'", err.Error())
+	}
+}

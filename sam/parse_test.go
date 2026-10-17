@@ -295,3 +295,26 @@ func TestParseTagPairs(t *testing.T) {
 		}
 	}
 }
+
+// TestDecoder_MaxLineLength pins the bounded-read behavior: a
+// line longer than MaxLineLength must error, not silently allocate
+// gigabytes.
+func TestDecoder_MaxLineLength(t *testing.T) {
+	t.Parallel()
+	// 200 'A' characters in @SQ URL field, with a 100-byte limit.
+	longURL := strings.Repeat("a", 200)
+	src := "@HD\tVN:1.6\n" +
+		"@SQ\tSN:chr1\tLN:1000\tUR:" + longURL + "\n"
+
+	dec := NewDecoderWithMaxLine(strings.NewReader(src), 100)
+	_, err := dec.Header()
+	if err == nil {
+		t.Fatal("expected error for header line exceeding MaxLineLength")
+	}
+	if !IsParseError(err) {
+		t.Errorf("error type = %T; want *ParseError", err)
+	}
+	if !strings.Contains(err.Error(), "exceeds") {
+		t.Errorf("error msg = %q; want it to mention 'exceeds'", err.Error())
+	}
+}

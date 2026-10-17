@@ -24,7 +24,16 @@ import (
 //
 // A Decoder is not safe for concurrent use; create one per goroutine.
 type Decoder struct {
-	r    *bufio.Reader
+	// scanner reads lines from the input with a bounded buffer
+	// (DefaultMaxLineLength or whatever was set via
+	// NewDecoderWithMaxLine).
+	scanner *bufio.Scanner
+
+	// maxLineLength is the per-line byte cap used to configure the
+	// scanner. The scanner returns bufio.ErrTooLong when a line
+	// exceeds this; readLine translates that into a ParseError.
+	maxLineLength int
+
 	line int
 	eof  bool
 
@@ -40,14 +49,33 @@ type Decoder struct {
 	pendingSet  bool
 }
 
-// NewDecoder wraps r in a [Decoder]. The decoder buffers input with a
-// [bufio.Reader] unless r is already one.
+// DefaultMaxLineLength is the per-line size cap applied by
+// [NewDecoder]. Lines longer than this cause a parse error rather
+// than an unbounded allocation; the value is large enough for any
+// real-world BED line and small enough to prevent OOM on hostile
+// input.
+const DefaultMaxLineLength = 10 << 20 // 10 MB
+
+// NewDecoder wraps r in a [Decoder] with the default
+// [DefaultMaxLineLength] per-line size cap. Use
+// [NewDecoderWithMaxLine] to override the cap.
 func NewDecoder(r io.Reader) *Decoder {
-	br, ok := r.(*bufio.Reader)
-	if !ok {
-		br = bufio.NewReaderSize(r, 64*1024)
+	return NewDecoderWithMaxLine(r, DefaultMaxLineLength)
+}
+
+// NewDecoderWithMaxLine is like [NewDecoder] but lets the caller
+// set a custom per-line size cap. Pass maxLineLength <= 0 to keep
+// the default cap.
+func NewDecoderWithMaxLine(r io.Reader, maxLineLength int) *Decoder {
+	if maxLineLength <= 0 {
+		maxLineLength = DefaultMaxLineLength
 	}
-	return &Decoder{r: br}
+	sc := bufio.NewScanner(r)
+	// Both the initial buffer cap and the explicit max must equal
+	// the limit; otherwise the Scanner silently grows the buffer
+	// up to cap(buf) regardless of max.
+	sc.Buffer(make([]byte, 0, maxLineLength), maxLineLength)
+	return &Decoder{scanner: sc, maxLineLength: maxLineLength}
 }
 
 // Track returns the file's "track" header line, or (nil, nil) if
@@ -132,34 +160,37 @@ func (d *Decoder) Record() (*Record, error) {
 
 // readLine reads one line. Returns (raw, lineNo, nil) on success,
 // (nil, lineNo, io.EOF) at end of file. Trailing newline / CR is
-// stripped.
+// stripped. The Scanner internally enforces [DefaultMaxLineLength]
+// (or whatever the caller set via [NewDecoderWithMaxLine]); lines
+// longer than that return a [ParseError] without unbounded
+// allocation.
 func (d *Decoder) readLine() (raw []byte, lineNo int, err error) {
 	if d.eof {
 		return nil, d.line, io.EOF
 	}
 	lineNo = d.line + 1
-	line, err := d.r.ReadBytes('\n')
-	if errors.Is(err, io.EOF) && len(line) == 0 {
+	if !d.scanner.Scan() {
+		if scanErr := d.scanner.Err(); scanErr != nil {
+			if errors.Is(scanErr, bufio.ErrTooLong) {
+				return nil, lineNo, &ParseError{Line: lineNo,
+					Msg: fmt.Sprintf("line exceeds max length %d", d.maxLineLength)}
+			}
+			return nil, lineNo, &ParseError{Line: lineNo, Msg: scanErr.Error()}
+		}
 		d.eof = true
 		d.line = lineNo
 		return nil, d.line, io.EOF
 	}
-	if err != nil && !errors.Is(err, io.EOF) {
-		d.line = lineNo
-		return nil, lineNo, &ParseError{Line: lineNo, Msg: err.Error()}
-	}
-	if errors.Is(err, io.EOF) {
-		d.eof = true
+	src := d.scanner.Bytes()
+	raw = make([]byte, len(src))
+	copy(raw, src)
+	// Strip a trailing CR (Scanner doesn't include it; be safe
+	// anyway in case of mixed line endings).
+	if n := len(raw); n > 0 && raw[n-1] == '\r' {
+		raw = raw[:n-1]
 	}
 	d.line = lineNo
-	stripped := line
-	if n := len(stripped); n > 0 && stripped[n-1] == '\n' {
-		stripped = stripped[:n-1]
-		if m := len(stripped); m > 0 && stripped[m-1] == '\r' {
-			stripped = stripped[:m-1]
-		}
-	}
-	return stripped, lineNo, nil
+	return raw, lineNo, nil
 }
 
 func isBlank(b []byte) bool {
