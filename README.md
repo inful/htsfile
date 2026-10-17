@@ -8,12 +8,12 @@
 file formats. It currently targets three specifications from
 [samtools/hts-specs](https://github.com/samtools/hts-specs):
 
-- **VCF v4.5** — Variant Call Format
+- **VCF v4.5** — Variant Call Format (accepts any v4.x minor)
 - **BED v1** — Browser Extensible Data (UCSC-derived, BED3 through BED12)
 - **SAM v1** — Sequence Alignment/Map (header + 11-column records + optional tags)
 
-See [ROADMAP.md](ROADMAP.md) for the planned expansion to SAM, BAM,
-GFF3, FASTA, FASTQ, and BCF v2.1.
+See [ROADMAP.md](ROADMAP.md) for the planned expansion (BAM, GFF3, FASTA,
+FASTQ, BCF v2.1, Tabix/CSI).
 
 The implementation aims to be:
 
@@ -108,10 +108,11 @@ lines are parsed and round-tripped; browser lines are skipped. See
 ## CLI
 
 A small command-line tool ships in `cmd/htsfile`. Format is
-auto-detected from the file extension (`.vcf`, `.bed`); for stdin
-(`-`) or unknown extensions, the first non-empty line is sniffed
-(`##fileformat` → VCF; `track`, `browser`, or a tab-separated
-`chrom\tstart\tend` triple → BED).
+auto-detected from the file extension (`.vcf`, `.bed`, `.sam`);
+for stdin (`-`) or unknown extensions, the first non-empty line
+is sniffed (`##fileformat` → VCF; `track`, `browser`, or a
+tab-separated `chrom\tstart\tend` triple → BED; `@HD` or an
+11-column tab-separated record with integer FLAG/MAPQ → SAM).
 
 ```sh
 # Validate a file
@@ -119,15 +120,18 @@ htsfile check sample.vcf                  # default mode (warns on issues)
 htsfile check --strict sample.vcf         # strict spec-compliance checks
 htsfile check --strict --warnings file.vcf   # exit non-zero on warnings too
 htsfile check peaks.bed                   # BED is auto-detected by extension
+htsfile check reads.sam                   # SAM is auto-detected by extension
 
 # Re-emit a file (verifies round-trip)
 htsfile roundtrip sample.vcf > out.vcf
 htsfile roundtrip --crlf sample.vcf       # CR+LF line endings
 htsfile roundtrip peaks.bed > out.bed     # BED round-trip
+htsfile roundtrip reads.sam > out.sam     # SAM round-trip
 
 # Print a header summary
 htsfile summary sample.vcf
 htsfile summary peaks.bed                 # BED summary: track, type, records, chroms
+htsfile summary reads.sam                 # SAM summary: version, @SQ/@RG/@PG counts, records
 ```
 
 ## Status
@@ -177,8 +181,8 @@ htsfile summary peaks.bed                 # BED summary: track, type, records, c
 
 ### Planned (see [ROADMAP.md](ROADMAP.md))
 
-- **Tier 2**: BAM, GFF3, FASTA
-- **Tier 3**: BCF v2.1, Tabix, CSI, VCF v4.1–v4.4
+- **Tier 2 (next)**: BAM, GFF3, FASTA
+- **Tier 3**: BCF v2.1, Tabix, CSI
 - **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ
 
 ## Releases
