@@ -147,7 +147,7 @@ htsfile summary peaks.bed                 # BED summary: track, type, records, c
 | Base modifications (M\* fields)         |   🔜   |
 | Tandem repeats (RN/RUS/RUC/RB…)        |   🔜   |
 | Local alleles (LAA / LAD / LPL…)       |   🔜   |
-| VCF v4.1–v4.4 back-compat               |   🔜   |
+| VCF v4.1–v4.5 acceptance (any v4.x)     |   ✅   |
 | BCF v2.1 (binary counterpart)           |   ❌   |
 
 ### bed/ package (BED v1)

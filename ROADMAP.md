@@ -105,13 +105,14 @@ part — they're two-letter keys with single-character type codes
 
 ### Tier 3 — VCF ecosystem and indexing
 
-- [ ] **VCF v4.1–v4.5 version negotiation.** Parser reads
-      `##fileformat=VCFvX.Y` and stores the version on the
-      `Header`. Validator selects per-version rules. Reserved
-      keys, allowed `Number=` values, and FILTER code meanings
-      differ across versions. **Effort:** non-trivial; the
-      per-version validation rules need to be enumerated before
-      the change.
+- [x] **VCF v4.1–v4.5 acceptance (any v4.x minor).** Parser
+      reads `##fileformat=VCFvX.Y` and stores the version on the
+      `Header`; the writer round-trips it verbatim. Major
+      versions other than 4 are rejected. Per-version
+      validation rule differences (which reserved keys are
+      recognised, which `Number=` values are valid) are **not**
+      yet implemented — the library treats all v4.x identically
+      and asks users to report per-version bugs as they surface.
 - [ ] **BCF v2.1** — binary VCF. Companion to VCF; useful for
       round-tripping large VCFs without the text overhead.
 - [ ] **Tabix** — generic index for sorted, bgzipped position

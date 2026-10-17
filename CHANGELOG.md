@@ -9,6 +9,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **VCF v4.1–v4.5 acceptance.** The parser, writer, and validator now
+  accept any v4.x minor version of the VCF specification. Previously
+  documented as "v4.5 only", the underlying `ParseFileFormat` has
+  always accepted any v4.x; this change makes the behaviour
+  explicit, fixes the misleading doc comment, and adds explicit
+  test coverage for v4.1, v4.2, v4.3, and v4.0. Major versions
+  other than 4 (v3, v5+) are still rejected.
+
+  Per-version validation rule differences (which reserved keys are
+  recognised, which `Number=` values are valid, etc.) are **not** yet
+  implemented — the library treats all v4.x identically and
+  preserves the `FileFormat` verbatim on round-trip. Adding
+  per-version rules would require reading the v4.1–v4.4 specs to
+  enumerate the differences, and is deferred until users report
+  concrete per-version bugs.
+
 - **BED format support.** A new `bed` package (`github.com/inful/htsfile/bed`)
   mirrors the VCF API: streaming `Decoder`, round-trippable `Encoder`, and a
   per-record `Validator` with `ModeDefault` and `ModeStrict`. Supports

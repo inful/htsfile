@@ -6,9 +6,15 @@ import (
 	"strings"
 )
 
-// FileFormat records the VCF version reported by the leading ##fileformat line.
+// FileFormat records the VCF version reported by the leading ##fileformat line,
+// for example "##fileformat=VCFv4.5".
 //
-// For VCF v4.5 the line is "##fileformat=VCFv4.5".
+// The library accepts any v4.x minor version (v4.0 through v4.5 are all
+// known-good; future v4.6+ releases will be accepted as long as they
+// keep the v4 major). Major versions other than 4 (v3, v5+) are
+// rejected. Per-version validation rule differences are not yet
+// implemented — the parser and writer treat all v4.x identically,
+// preserving the FileFormat verbatim on round-trip.
 type FileFormat struct {
 	Major int
 	Minor int
@@ -22,7 +28,7 @@ func (f FileFormat) String() string {
 // ParseFileFormat parses "VCFvMAJOR.MINOR" (case sensitive on "VCF", case
 // insensitive on the version digits). The parser enforces major version
 // 4 only — VCFv3 and VCFv5+ require a separate code path that this
-// library does not implement.
+// library does not implement. Any v4.x minor version is accepted.
 func ParseFileFormat(s string) (FileFormat, error) {
 	if !strings.HasPrefix(s, "VCFv") && !strings.HasPrefix(s, "vcfv") {
 		return FileFormat{}, &ParseError{Field: "fileformat", Msg: "missing 'VCFv' prefix in " + s}
