@@ -9,6 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **SAM v1 format support.** A new `sam` package
+  (`github.com/inful/htsfile/sam`) mirrors the vcf/ and bed/
+  API: streaming `Decoder`, round-trippable `Encoder`, and a
+  per-record `Validator` with `ModeDefault` and `ModeStrict`.
+  Supports the full SAM header line set (`@HD`, `@SQ`, `@RG`,
+  `@PG`, `@CO`, plus unknown `@XX` lines preserved verbatim for
+  round-trip) and 11-column alignment records with optional
+  `TAG:TYPE:VALUE` fields. Tag values are stored as raw strings
+  in v1; typed accessors are deferred until a real use case
+  surfaces (per `pref-similar-shape-not-duplication`). The
+  `cmd/htsfile` CLI auto-dispatches by extension (`.vcf`, `.bed`,
+  `.sam`) and sniffs the first line for stdin or unknown
+  extensions.
+
+  This is the largest of the v1 packages — ~3× the BED v1 work.
+  CIGAR string *semantic* parsing is intentionally out of scope
+  (CIGAR is stored as a string); index-file support (BAI) is
+  deferred to BAM in Tier 2.
+
 - **VCF v4.1–v4.5 acceptance.** The parser, writer, and validator now
   accept any v4.x minor version of the VCF specification. Previously
   documented as "v4.5 only", the underlying `ParseFileFormat` has

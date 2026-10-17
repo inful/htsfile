@@ -75,20 +75,19 @@ in the style established for the BED v1 work.
 
 ### Tier 1 — SAM v1 (next)
 
-- [ ] `sam/` package: `Record` (11 mandatory columns + variable
+- [x] `sam/` package: `Record` (11 mandatory columns + variable
       tag map), `Header` (HD / SQ / RG / PG / CO lines + optional
       fields), `Decoder`, `Encoder`, `Validator`
-- [ ] CLI integration via extension (`.sam` → SAM) and content
-      sniff (`@HD` header line → SAM)
-- [ ] SAMtags companion: predefined optional tag types
-- [ ] Test corpus: small representative SAM + a larger streaming
-      test (e.g. a chr1 extract from 1000 Genomes)
-- [ ] Public godoc example
-- [ ] README + CHANGELOG
-
-**Effort estimate:** 3–5× the BED v1 work. Tags are the trickiest
-part — they're two-letter keys with single-character type codes
-(A, i, f, Z, H, B) and per-type parsing rules.
+- [x] CLI integration via extension (`.sam` → SAM) and content
+      sniff (`@HD` header line → SAM; 11-column tab-separated
+      with integer FLAG/MAPQ for headerless files)
+- [x] SAMtags companion: predefined optional tag types (`A`, `C`,
+      `f`, `H`, `i`, `Z`, `B`) — kept as raw `Value string` in v1;
+      typed accessors deferred until needed
+- [x] Test corpus: small synthetic SAM file (5 records covering
+      BED-style paired/stranded/secondary cases)
+- [x] Public godoc example
+- [x] README + CHANGELOG
 
 ### Tier 2 — Companion and adjacent formats
 

@@ -5,11 +5,12 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
-file formats. It currently targets two specifications from
+file formats. It currently targets three specifications from
 [samtools/hts-specs](https://github.com/samtools/hts-specs):
 
 - **VCF v4.5** — Variant Call Format
 - **BED v1** — Browser Extensible Data (UCSC-derived, BED3 through BED12)
+- **SAM v1** — Sequence Alignment/Map (header + 11-column records + optional tags)
 
 See [ROADMAP.md](ROADMAP.md) for the planned expansion to SAM, BAM,
 GFF3, FASTA, FASTQ, and BCF v2.1.
@@ -162,9 +163,20 @@ htsfile summary peaks.bed                 # BED summary: track, type, records, c
 | BEDGraph / narrowPeak / broadPeak      |   ❌   |
 | bigBed (binary indexed)                |   ❌   |
 
+### sam/ package (SAM v1)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| `@HD` / `@SQ` / `@RG` / `@PG` / `@CO` header lines | ✅ |
+| 11-column alignment records (QNAME–QUAL) | ✅ |
+| Optional tag fields (TAG:TYPE:VALUE) | ✅ |
+| `ModeDefault` and `ModeStrict` validators | ✅ |
+| Lenient parsing of malformed lines | ✅ |
+| CIGAR string parsing (semantic) | ❌ |
+| Read/write of unknown `@XX` header lines | ✅ |
+
 ### Planned (see [ROADMAP.md](ROADMAP.md))
 
-- **Tier 1**: SAM v1 + SAMtags
 - **Tier 2**: BAM, GFF3, FASTA
 - **Tier 3**: BCF v2.1, Tabix, CSI, VCF v4.1–v4.4
 - **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ

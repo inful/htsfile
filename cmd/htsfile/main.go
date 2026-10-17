@@ -34,6 +34,7 @@ import (
 	"strings"
 
 	"github.com/inful/htsfile/bed"
+	"github.com/inful/htsfile/sam"
 	"github.com/inful/htsfile/vcf"
 )
 
@@ -56,6 +57,7 @@ const (
 	formatUnknown format = iota
 	formatVCF
 	formatBED
+	formatSAM
 )
 
 func (f format) String() string {
@@ -64,6 +66,8 @@ func (f format) String() string {
 		return "VCF"
 	case formatBED:
 		return "BED"
+	case formatSAM:
+		return "SAM"
 	default:
 		return "unknown"
 	}
@@ -149,6 +153,12 @@ func detectFormat(path string) (format, io.Reader, error) {
 			return formatUnknown, nil, err
 		}
 		return formatBED, f, nil
+	case ".sam":
+		f, err := openFileOrStdin(path)
+		if err != nil {
+			return formatUnknown, nil, err
+		}
+		return formatSAM, f, nil
 	}
 	// Unknown extension (or no extension) — open once, buffer, and sniff.
 	return sniffFormat(path)
@@ -187,12 +197,22 @@ func sniffFormat(path string) (format, io.Reader, error) {
 		if strings.HasPrefix(line, "track") || strings.HasPrefix(line, "browser") {
 			return formatBED, br, nil
 		}
+		// SAM header line: @HD, @SQ, @RG, @PG, @CO.
+		if strings.HasPrefix(line, "@HD") {
+			return formatSAM, br, nil
+		}
 		// Tab-separated triple: BED.
 		fields := strings.Split(line, "\t")
 		if len(fields) >= 3 {
 			if err := fieldsAreChromStartEnd(fields); err == nil {
 				return formatBED, br, nil
 			}
+		}
+		// Tab-separated 11+ field record: SAM alignment. Distinguish
+		// from VCF (8 fields) by column count and by the second and
+		// fifth fields being integers (FLAG and MAPQ).
+		if len(fields) >= 11 && looksLikeSAMRecord(fields) {
+			return formatSAM, br, nil
 		}
 		// Default: assume VCF; better error than silent miss.
 		return formatVCF, br, nil
@@ -225,6 +245,24 @@ func parseInt(s string) error {
 	return nil
 }
 
+// looksLikeSAMRecord reports whether fields look like a SAM
+// alignment record (11+ tab-separated columns, with column 2
+// (FLAG) and column 5 (MAPQ) being non-negative integers).
+// Distinguishes SAM from VCF (8 columns) and FASTA (line-based
+// headers starting with ">") by structure.
+func looksLikeSAMRecord(fields []string) bool {
+	if len(fields) < 11 {
+		return false
+	}
+	if err := parseInt(fields[1]); err != nil {
+		return false
+	}
+	if err := parseInt(fields[4]); err != nil {
+		return false
+	}
+	return true
+}
+
 // runCheck parses and validates the file at args[0].
 func runCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
@@ -247,12 +285,20 @@ func runCheck(args []string) error {
 		return runCheckVCF(r, path, *strict, *warnings)
 	case formatBED:
 		return runCheckBED(r, path, *strict, *warnings)
+	case formatSAM:
+		return runCheckSAM(r, path, *strict, *warnings)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
 }
 
+//nolint:dupl // runCheckVCF / runCheckBED / runCheckSAM are intentionally parallel
 func runCheckVCF(f io.Reader, path string, strict, warnings bool) error {
+	// per-format entry points. They share the same control flow (parse,
+	// validate, report) but operate on distinct record types from
+	// independent packages. Abstracting them behind a common interface
+	// would require a generic helper and yield diminishing returns
+	// for the third duplicate.
 	mode := vcf.ModeDefault
 	if strict {
 		mode = vcf.ModeStrict
@@ -312,6 +358,7 @@ func runCheckVCF(f io.Reader, path string, strict, warnings bool) error {
 	return nil
 }
 
+//nolint:dupl // See runCheckVCF: same shape, different package.
 func runCheckBED(f io.Reader, path string, strict, warnings bool) error {
 	mode := bed.ModeDefault
 	if strict {
@@ -370,6 +417,65 @@ func runCheckBED(f io.Reader, path string, strict, warnings bool) error {
 	return nil
 }
 
+//nolint:dupl // See runCheckVCF: same shape, different package.
+func runCheckSAM(f io.Reader, path string, strict, warnings bool) error {
+	mode := sam.ModeDefault
+	if strict {
+		mode = sam.ModeStrict
+	}
+	dec := sam.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	_ = hdr
+	var recs []*sam.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	val := sam.NewValidator(mode)
+	issues := val.Validate(hdr, recs)
+	if len(issues) == 0 {
+		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
+		return nil
+	}
+	sort.SliceStable(issues, func(i, j int) bool {
+		if issues[i].Line != issues[j].Line {
+			return issues[i].Line < issues[j].Line
+		}
+		if issues[i].Severity != issues[j].Severity {
+			return issues[i].Severity < issues[j].Severity
+		}
+		return issues[i].Field < issues[j].Field
+	})
+	var nErr, nWarn int
+	for _, iss := range issues {
+		switch iss.Severity {
+		case sam.SeverityError:
+			nErr++
+		case sam.SeverityWarning:
+			nWarn++
+		}
+		fmt.Printf("line %d  [%s] %s: %s\n",
+			iss.Line, iss.Severity, iss.Field, iss.Msg)
+	}
+	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
+	if nErr > 0 {
+		return fmt.Errorf("%d error(s) found", nErr)
+	}
+	if warnings && nWarn > 0 {
+		return fmt.Errorf("%d warning(s) found", nWarn)
+	}
+	return nil
+}
+
 // runRoundtrip parses the file at args[0] and re-emits it.
 func runRoundtrip(args []string) error {
 	fs := flag.NewFlagSet("roundtrip", flag.ExitOnError)
@@ -391,12 +497,16 @@ func runRoundtrip(args []string) error {
 		return runRoundtripVCF(r, *crlf)
 	case formatBED:
 		return runRoundtripBED(r, *crlf)
+	case formatSAM:
+		return runRoundtripSAM(r, *crlf)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
 }
 
+//nolint:dupl // runRoundtripVCF / runRoundtripBED / runRoundtripSAM are
 func runRoundtripVCF(f io.Reader, crlf bool) error {
+	// intentionally parallel; see runCheckVCF for the rationale.
 	dec := vcf.NewDecoder(f)
 	hdr, err := dec.Header()
 	if err != nil {
@@ -466,6 +576,41 @@ func runRoundtripBED(f io.Reader, crlf bool) error {
 	return enc.Flush()
 }
 
+//nolint:dupl // See runCheckVCF: same shape, different package.
+func runRoundtripSAM(f io.Reader, crlf bool) error {
+	dec := sam.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	var recs []*sam.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	var enc *sam.Encoder
+	if crlf {
+		enc = sam.NewEncoderCRLF(os.Stdout)
+	} else {
+		enc = sam.NewEncoder(os.Stdout)
+	}
+	if err := enc.EncodeHeader(hdr); err != nil {
+		return fmt.Errorf("encode header: %w", err)
+	}
+	for _, rec := range recs {
+		if err := enc.EncodeRecord(rec); err != nil {
+			return fmt.Errorf("encode record: %w", err)
+		}
+	}
+	return enc.Flush()
+}
+
 // runSummary prints a one-line summary of the file.
 func runSummary(args []string) error {
 	fs := flag.NewFlagSet("summary", flag.ExitOnError)
@@ -486,6 +631,8 @@ func runSummary(args []string) error {
 		return runSummaryVCF(r, path)
 	case formatBED:
 		return runSummaryBED(r, path)
+	case formatSAM:
+		return runSummarySAM(r, path)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -554,6 +701,53 @@ func runSummaryBED(f io.Reader, path string) error {
 	fmt.Fprintf(&b, "  type:       %s\n", bedType)
 	fmt.Fprintf(&b, "  records:    %d\n", nRec)
 	fmt.Fprintf(&b, "  chroms:     %d\n", len(chroms))
+	_, _ = fmt.Fprint(os.Stdout, b.String())
+	return nil
+}
+
+func runSummarySAM(f io.Reader, path string) error {
+	dec := sam.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	rnames := make(map[string]int)
+	var nRec int
+	var nMapped, nUnmapped int
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		rnames[rec.RName]++
+		if rec.Flag&sam.FlagUnmap != 0 {
+			nUnmapped++
+		} else {
+			nMapped++
+		}
+		nRec++
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", path)
+	if hdr != nil && hdr.HD != nil {
+		if hdr.HD.VN != "" {
+			fmt.Fprintf(&b, "  version:    %s\n", hdr.HD.VN)
+		}
+		if hdr.HD.SO != "" {
+			fmt.Fprintf(&b, "  sort order: %s\n", hdr.HD.SO)
+		}
+		fmt.Fprintf(&b, "  @SQ lines:  %d\n", len(hdr.SQs))
+		fmt.Fprintf(&b, "  @RG lines:  %d\n", len(hdr.RGs))
+		fmt.Fprintf(&b, "  @PG lines:  %d\n", len(hdr.PGs))
+	} else {
+		fmt.Fprintf(&b, "  header:     (none)\n")
+	}
+	fmt.Fprintf(&b, "  records:    %d\n", nRec)
+	fmt.Fprintf(&b, "  mapped:     %d\n", nMapped)
+	fmt.Fprintf(&b, "  unmapped:   %d\n", nUnmapped)
 	_, _ = fmt.Fprint(os.Stdout, b.String())
 	return nil
 }
