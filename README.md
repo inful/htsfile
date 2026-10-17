@@ -5,15 +5,17 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
-file formats. It currently targets four specifications from
-[samtools/hts-specs](https://github.com/samtools/hts-specs):
+file formats. It currently targets five specifications from
+[samtools/hts-specs](https://github.com/samtools/hts-specs) and
+the Sequence Ontology:
 
 - **VCF v4.5** — Variant Call Format (accepts any v4.x minor)
 - **BED v1** — Browser Extensible Data (UCSC-derived, BED3 through BED12)
 - **SAM v1** — Sequence Alignment/Map (header + 11-column records + optional tags)
 - **BAM v1** — Binary SAM (BGZF-compressed) with read-only BAI index reader
+- **GFF3** — Generic Feature Format Version 3 (9 columns + free-form attributes)
 
-See [ROADMAP.md](ROADMAP.md) for the planned expansion (BAM, GFF3, FASTA,
+See [ROADMAP.md](ROADMAP.md) for the planned expansion (FASTA,
 FASTQ, BCF v2.1, Tabix/CSI).
 
 The implementation aims to be:
@@ -130,15 +132,45 @@ values exposed as SAM-compatible strings. BAI files are read by the
 sibling `bam/bai` package; see `bai.ExampleNewReader` if you want
 random access. BAM v1 is read-only in this build.
 
+### GFF3 Parsing
+
+The `gff` package reads and writes GFF3 (Generic Feature Format
+Version 3):
+
+```go
+dec := gff.NewDecoder(r)
+hdr, _ := dec.Header()    // required; returns Version + pragmas
+for {
+    rec, err := dec.Record()
+    if errors.Is(err, io.EOF) { break }
+    // rec.SeqID, rec.Source, rec.Type,
+    // rec.Start, rec.End,       // 1-based inclusive
+    // rec.Score, rec.ScoreKnown,
+    // rec.Strand, rec.Phase,
+    // rec.Attributes map[string][]string
+    // rec.Attribute("Parent")      // first value
+    // rec.AttributeList("Parent") // all values
+}
+```
+
+GFF3 coordinates are 1-based inclusive (the opposite of BED).
+Multi-value attributes (`Parent`, `Dbxref`, `Alias`, `Note`, …) use
+comma separation within a single attribute; multiple attributes are
+separated by `;`. The parser rejects `start < 1` and `end < start`,
+and the validator's `ModeStrict` cross-references `Parent` IDs
+against the document's `ID` set. The encoder is round-trippable:
+`htsfile roundtrip foo.gff > out.gff` re-emits a clean file.
+
 ## CLI
 
 A small command-line tool ships in `cmd/htsfile`. Format is
 auto-detected from the file extension (`.vcf`, `.bed`, `.sam`,
-`.bam`); for stdin (`-`) or unknown extensions, the first
-non-empty line is sniffed (`##fileformat` → VCF; `track`,
-`browser`, or a tab-separated `chrom\tstart\tend` triple → BED;
-`@HD` or an 11-column tab-separated record with integer
-FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM).
+`.bam`, `.gff`, `.gff3`); for stdin (`-`) or unknown extensions,
+the first non-empty line is sniffed (`##fileformat` → VCF;
+`track`, `browser`, or a tab-separated `chrom\tstart\tend`
+triple → BED; `@HD` or an 11-column tab-separated record with
+integer FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM;
+`##gff-version` or a 9-column tab-separated feature line → GFF3).
 
 ```sh
 # Validate a file
@@ -148,12 +180,14 @@ htsfile check --strict --warnings file.vcf   # exit non-zero on warnings too
 htsfile check peaks.bed                   # BED is auto-detected by extension
 htsfile check reads.sam                   # SAM is auto-detected by extension
 htsfile check aligned.bam                 # BAM is auto-detected by extension
+htsfile check genes.gff3                  # GFF3 is auto-detected by extension
 
 # Re-emit a file (verifies round-trip)
 htsfile roundtrip sample.vcf > out.vcf
 htsfile roundtrip --crlf sample.vcf       # CR+LF line endings
 htsfile roundtrip peaks.bed > out.bed     # BED round-trip
 htsfile roundtrip reads.sam > out.sam     # SAM round-trip
+htsfile roundtrip genes.gff3 > out.gff3   # GFF3 round-trip
 # roundtrip does not support .bam files (BAM v1 is read-only).
 
 # Print a header summary
@@ -161,6 +195,7 @@ htsfile summary sample.vcf
 htsfile summary peaks.bed                 # BED summary: track, type, records, chroms
 htsfile summary reads.sam                 # SAM summary: version, @SQ/@RG/@PG counts, records
 htsfile summary aligned.bam               # BAM summary: version, @SQ/@RG/@PG counts, records
+htsfile summary genes.gff3                # GFF3 summary: version, pragmas, seqids, types, records
 ```
 
 ## Status
@@ -223,9 +258,25 @@ htsfile summary aligned.bam               # BAM summary: version, @SQ/@RG/@PG co
 | BAI index reader (`bam/bai`)            |   ✅   |
 | BAI-based region queries                |   🔜   |
 
+### gff/ package (GFF3)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| `##gff-version` + `##sequence-region` + `##date` pragmas | ✅ |
+| All other `##` pragmas preserved verbatim for round-trip | ✅ |
+| 9-column feature records (SeqID/Source/Type/Start/End/Score/Strand/Phase/Attributes) | ✅ |
+| 1-based inclusive coordinates (start ≥ 1, end ≥ start) | ✅ |
+| Strand: +, -, ., ?                      |   ✅   |
+| Phase: 0, 1, 2, .                      |   ✅   |
+| Multi-value attributes (`Parent`, `Dbxref`, …) | ✅ |
+| `###` record terminator (ends feature section) | ✅ |
+| Round-trippable `Encoder`              |   ✅   |
+| `ModeDefault` and `ModeStrict` validators (strict = Parent ID cross-references) | ✅ |
+| FASTA emission after `###`             |   ❌   |
+
 ### Planned (see [ROADMAP.md](ROADMAP.md))
 
-- **Tier 2 (next)**: GFF3, FASTA
+- **Tier 2 (next)**: FASTA
 - **Tier 3**: BCF v2.1, Tabix, CSI
 - **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ
 

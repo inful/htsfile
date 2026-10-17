@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GFF3 format support.** A new `gff` package
+  (`github.com/inful/htsfile/gff`) implements parsing, writing,
+  and validation for the Generic Feature Format Version 3.
+  Streaming `Decoder`, round-trippable `Encoder`, and a
+  per-record `Validator` with `ModeDefault` and `ModeStrict`.
+  Supports the full 9-column feature record (SeqID, Source,
+  Type, Start, End, Score, Strand, Phase, Attributes) plus the
+  `##` pragma directives (`##gff-version`, `##sequence-region`,
+  `##date`, and arbitrary tool-specific pragmas preserved
+  verbatim for round-trip) and the `###` record terminator.
+  GFF3 coordinates are 1-based inclusive (the opposite of
+  BED's 0-based half-open); the parser rejects `start < 1` and
+  `end < start`. Strand accepts `+`, `-`, `.`, `?`; phase
+  accepts `0`, `1`, `2`, `.`. Multi-value attributes
+  (`Parent`, `Dbxref`, `Alias`, `Note`, `Target`, `Gap`,
+  `Derives_from`, `Ontology_term`) are exposed as
+  `map[string][]string` via the `AttributeList(key)` accessor;
+  `Attribute(key)` returns the first value as a convenience.
+  The validator's strict mode cross-references `Parent` IDs
+  against the document's `ID` set. FASTA emission after `###`
+  is intentionally out of scope for v1 (the `###` line just
+  ends the feature section). The `cmd/htsfile` CLI
+  auto-dispatches by extension (`.gff`, `.gff3`) and sniffs
+  `##gff-version` or a 9-column tab-separated feature line
+  with single-character strand for stdin / unknown
+  extensions.
+
+  This is the smallest of the v1 packages — similar size to
+  BED. Round-trip preserves all `##` pragmas in source order
+  plus the bare `#` comments; multi-value attributes are
+  serialised back as `key=v1,v2,v3`.
+
+  CLI duplication for the four per-format `runCheck*` /
+  `runSummary*` entry points has now hit the ≥3-packages
+  threshold (VCF/BED/SAM + BAM + GFF = five per-format
+  duplicates). Each duplicate carries a `//nolint:dupl` with
+  rationale. The refactor to extract a shared
+  "issue-reporting" helper is queued for FASTA, where the
+  refactor's payoff will be largest; the current pattern is
+  tolerable but acknowledged as a known wart.
+
 - **BAM v1 format support.** A new `bam` package
   (`github.com/inful/htsfile/bam`) reads BGZF-compressed BAM
   files: streaming `Decoder` plus a per-record `Validator` with

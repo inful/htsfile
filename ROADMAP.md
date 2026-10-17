@@ -10,10 +10,10 @@ the [samtools/hts-specs](https://samtools.github.io/hts-specs/) family
 and adjacent bioinformatics formats.
 
 > **Where to continue from this point in a new session:** start with
-> **Tier 2 (GFF3)**. BAM Tier 2 just landed (commit replacing this
-> note). The roadmap is up to date as of the latest commit on
-> `main`. See the [CHANGELOG](CHANGELOG.md) for what just
-> landed and `git log --oneline` for the commit history.
+> **Tier 2 (FASTA)**. BAM and GFF3 Tier 2 have landed. The
+> roadmap is up to date as of the latest commit on `main`.
+> See the [CHANGELOG](CHANGELOG.md) for what just landed and
+> `git log --oneline` for the commit history.
 
 ## Design principles
 
@@ -129,13 +129,26 @@ in the style established for the BED v1 work.
         samtools 6-level bin scheme; region queries deferred.
       - CLI: `check` and `summary` for `.bam`; `roundtrip`
         returns "read-only" error.
-- [ ] **GFF3** — feature annotation. 1-based inclusive coordinates
+- [x] **GFF3** — feature annotation. 1-based inclusive coordinates
       (different convention from BED's 0-based half-open). 9
       mandatory columns + free-form `attributes` column. Strand and
-      phase are typed values. *Next up.*
+      phase are typed values. *Completed.* Includes:
+      - `gff/` — streaming `Decoder`, round-trippable `Encoder`,
+        per-record `Validator` (`ModeDefault` + `ModeStrict`
+        with Parent ID cross-reference check); `##gff-version`
+        + `##sequence-region` + `##date` parsed; arbitrary `##`
+        pragmas preserved verbatim; `###` terminator ends the
+        feature section. Multi-value attributes exposed as
+        `map[string][]string` with `Attribute` /
+        `AttributeList` accessors.
+      - CLI: `check`, `roundtrip`, `summary` for `.gff` /
+        `.gff3`; content sniff `##gff-version` or 9-column
+        feature line.
+      - FASTA emission after `###` is intentionally out of
+        scope for v1.
 - [ ] **FASTA** — sequence foundation. Two record types (header
       starting with `>` + multi-line sequence). Optional `.fai`
-      index file for random access.
+      index file for random access. *Next up.*
 
 ### Tier 3 — VCF ecosystem and indexing
 
@@ -197,15 +210,14 @@ rather than per-tier to avoid duplication.
   CHANGELOG entry under `[Unreleased]`. Mirror the SAM v1 commit
   (`3484a4f`) as the template.
 
-- **CLI duplication.** `runCheck{VCF,BED,SAM,BAM}`,
-  `runRoundtrip{VCF,BED,SAM}`, and `runSummary{VCF,BED,SAM,BAM}`
-  are intentionally near-duplicates and carry `//nolint:dupl`
-  with rationale. The duplication is structural across
-  per-format entry points. BAM landed before the threshold
-  refactor was due (the ROADMAP originally pinned GFF3 as the
-  trigger), so the BAM entries joined the existing pattern;
-  the four-way refactor (extract an issue-reporting helper)
-  is queued for the next format landing.
+- **CLI duplication.** `runCheck{VCF,BED,SAM,BAM,GFF}`,
+  `runRoundtrip{VCF,BED,SAM,GFF}`, and
+  `runSummary{VCF,BED,SAM,BAM,GFF}` are intentionally
+  near-duplicates and carry `//nolint:dupl` with rationale.
+  The duplication is structural across per-format entry points.
+  GFF3 crossed the ≥3-packages threshold the ROADMAP flagged
+  for refactor; the refactor (extract an issue-reporting
+  helper) is queued for the next format landing (FASTA).
 
 ## What we have today
 
@@ -217,7 +229,8 @@ rather than per-tier to avoid duplication.
 | `bam/`         | v1     | 76.2%    | Decoder (with `NewDecoderWithMaxLine`), Validator, errors, types, B-array round-trip, CLI smoke |
 | `bam/bai/`     | n/a    | 84.1%    | Index parser + `Reg2Bins` helper |
 | `internal/bgzf/` | n/a  | 77.5%    | Block decoder (BSIZE, CRC32, ISIZE, EOF marker) |
-| `cmd/htsfile/` | n/a    | n/a      | CLI: `check`, `roundtrip`, `summary`, `version`; auto-dispatch by `.vcf`/`.bed`/`.sam`/`.bam` extension + content sniff for stdin |
+| `gff/`         | v3     | 75.4%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, multi-value attrs, CLI smoke |
+| `cmd/htsfile/` | n/a    | n/a      | CLI: `check`, `roundtrip`, `summary`, `version`; auto-dispatch by `.vcf`/`.bed`/`.sam`/`.bam`/`.gff`/`.gff3` extension + content sniff for stdin |
 
 All three format packages follow the same shape (one `Decoder`, one
 `Encoder`, one `Validator`, one `Record`/`Header` type, one
@@ -232,26 +245,13 @@ These are the unresolved questions for the next tier of work.
 Each has a recommendation; the recommendation should be confirmed
 before starting implementation.
 
-### For Tier 2 — GFF3 and FASTA
-
-- [ ] **GFF3 attributes column.** Free-form `key=value; key2=value2`
-      pairs. The v1 parser will store the raw text plus
-      well-known keys (ID, Name, Parent, Alias, Target, Gap, etc.)
-      in a map. Open: do we also expose typed accessors (e.g.
-      `rec.Attributes["Parent"]` returns a `[]string` for
-      multi-value keys)?
+### For Tier 2 — FASTA
 
 - [ ] **FASTA index scope.** Read-only, write, or both?
       *Recommendation:* read-only for v1 (consistent with
       ROADMAP's "Index generation" out-of-scope note). If
       streaming-only access turns out to be enough, this can
       stay read-only forever.
-
-- [ ] **FASTQ quality encoding.** Multiple incompatible
-      encodings (Phred+33 Sanger/Illumina 1.8+, Phred+64 Solexa,
-      Phred+64 Illumina 1.3–1.7). v1 should at minimum auto-detect
-      and parse Phred+33 (the dominant modern convention); an
-      `Encoding` field on the Record would let callers override.
 
 ## Anti-patterns we have learned to avoid
 

@@ -1,19 +1,21 @@
 // Command htsfile is a small command-line interface over the
-// vcf, bed, sam, and bam packages.
+// vcf, bed, sam, bam, and gff packages.
 //
 // Usage:
 //
-//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam
-//	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam
-//	htsfile summary file.vcf | file.bed | file.sam | file.bam
+//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3]
+//	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam | file.gff[3]
+//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3]
 //	htsfile version
 //
 // The format is auto-detected from the file extension (.vcf,
-// .bed, .sam, .bam). For stdin ("-") or unknown extensions, the
-// first non-empty line is sniffed: "##fileformat" → VCF; "track",
-// "browser", or a tab-separated chrom/start/end triple → BED;
-// "@HD" or an 11-column tab-separated record with integer
-// FLAG/MAPQ → SAM; the 4-byte BAM magic at offset 0 → BAM.
+// .bed, .sam, .bam, .gff, .gff3). For stdin ("-") or unknown
+// extensions, the first non-empty line is sniffed:
+// "##fileformat" → VCF; "track", "browser", or a tab-separated
+// chrom/start/end triple → BED; "@HD" or an 11-column
+// tab-separated record with integer FLAG/MAPQ → SAM; the
+// gzip+FEXTRA prefix → BAM; "##gff-version" or a 9-column
+// tab-separated feature line → GFF3.
 //
 // Subcommands:
 //
@@ -40,6 +42,7 @@ import (
 
 	"github.com/inful/htsfile/bam"
 	"github.com/inful/htsfile/bed"
+	"github.com/inful/htsfile/gff"
 	"github.com/inful/htsfile/sam"
 	"github.com/inful/htsfile/vcf"
 )
@@ -65,6 +68,7 @@ const (
 	formatBED
 	formatSAM
 	formatBAM
+	formatGFF
 )
 
 func (f format) String() string {
@@ -77,6 +81,8 @@ func (f format) String() string {
 		return "SAM"
 	case formatBAM:
 		return "BAM"
+	case formatGFF:
+		return "GFF3"
 	default:
 		return "unknown"
 	}
@@ -115,7 +121,7 @@ func main() {
 }
 
 func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|->
+	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|->
 
 Commands:
   check       Validate the file. Exits non-zero if any errors are found.
@@ -125,7 +131,7 @@ Commands:
               --crlf       use CR+LF line endings
   summary     Print a summary of the file (header / column count / records).
 
-Format is auto-detected from the extension (.vcf, .bed, .sam, .bam). For
+Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3). For
 stdin ("-") or unknown extensions, the first non-empty line is sniffed.
 BAM v1 is read-only: the roundtrip subcommand does not support .bam files.`)
 }
@@ -175,6 +181,12 @@ func detectFormat(path string) (format, io.Reader, error) {
 			return formatUnknown, nil, err
 		}
 		return formatBAM, f, nil
+	case ".gff", ".gff3":
+		f, err := openFileOrStdin(path)
+		if err != nil {
+			return formatUnknown, nil, err
+		}
+		return formatGFF, f, nil
 	}
 	// Unknown extension (or no extension) — open once, buffer, and sniff.
 	return sniffFormat(path)
@@ -224,6 +236,11 @@ func sniffFormat(path string) (format, io.Reader, error) {
 		if strings.HasPrefix(line, "@HD") {
 			return formatSAM, br, nil
 		}
+		// GFF3 pragma line: ##gff-version (and other ## pragmas
+		// will also be detected below via the 9-column rule).
+		if strings.HasPrefix(line, "##gff-version") {
+			return formatGFF, br, nil
+		}
 		// Tab-separated triple: BED.
 		fields := strings.Split(line, "\t")
 		if len(fields) >= 3 {
@@ -237,11 +254,38 @@ func sniffFormat(path string) (format, io.Reader, error) {
 		if len(fields) >= 11 && looksLikeSAMRecord(fields) {
 			return formatSAM, br, nil
 		}
+		// 9-column tab-separated line with integer start/end
+		// and a single-character strand: GFF3 feature.
+		if len(fields) == 9 && looksLikeGFF3Record(fields) {
+			return formatGFF, br, nil
+		}
 		// Default: assume VCF; better error than silent miss.
 		return formatVCF, br, nil
 	}
 	// Empty file: defer to VCF (will fail with a clear error).
 	return formatVCF, br, nil
+}
+
+// looksLikeGFF3Record reports whether fields look like a GFF3
+// feature record: exactly 9 tab-separated columns, with the
+// 4th and 5th (start, end) being non-negative integers and
+// the 7th (strand) being a single character from {+, -, ., ?}.
+func looksLikeGFF3Record(fields []string) bool {
+	if len(fields) != 9 {
+		return false
+	}
+	if err := parseInt(fields[3]); err != nil {
+		return false
+	}
+	if err := parseInt(fields[4]); err != nil {
+		return false
+	}
+	switch fields[6] {
+	case "+", "-", ".", "?":
+	default:
+		return false
+	}
+	return true
 }
 
 // bamSniffMagic is the first 4 bytes of every BGZF block (and
@@ -317,6 +361,8 @@ func runCheck(args []string) error {
 		return runCheckSAM(r, path, *strict, *warnings)
 	case formatBAM:
 		return runCheckBAM(r, path, *strict, *warnings)
+	case formatGFF:
+		return runCheckGFF(r, path, *strict, *warnings)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -531,6 +577,8 @@ func runRoundtrip(args []string) error {
 		return runRoundtripSAM(r, *crlf)
 	case formatBAM:
 		return runRoundtripBAM()
+	case formatGFF:
+		return runRoundtripGFF(r, *crlf)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -667,6 +715,8 @@ func runSummary(args []string) error {
 		return runSummarySAM(r, path)
 	case formatBAM:
 		return runSummaryBAM(r, path)
+	case formatGFF:
+		return runSummaryGFF(r, path)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -856,6 +906,148 @@ func runCheckBAM(f io.Reader, path string, strict, warnings bool) error {
 // subcommand on a .bam file see the reason.
 func runRoundtripBAM() error {
 	return errors.New("roundtrip: BAM v1 is read-only in this build (no BAM writer)")
+}
+
+// runCheckGFF parses and validates a GFF3 file.
+//
+//nolint:dupl // See runCheckVCF: same shape, different package.
+func runCheckGFF(f io.Reader, path string, strict, warnings bool) error {
+	mode := gff.ModeDefault
+	if strict {
+		mode = gff.ModeStrict
+	}
+	dec := gff.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	_ = hdr
+	var recs []*gff.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	val := gff.NewValidator(mode)
+	issues := val.Validate(hdr, recs)
+	if len(issues) == 0 {
+		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
+		return nil
+	}
+	sort.SliceStable(issues, func(i, j int) bool {
+		if issues[i].Line != issues[j].Line {
+			return issues[i].Line < issues[j].Line
+		}
+		if issues[i].Severity != issues[j].Severity {
+			return issues[i].Severity < issues[j].Severity
+		}
+		return issues[i].Field < issues[j].Field
+	})
+	var nErr, nWarn int
+	for _, iss := range issues {
+		switch iss.Severity {
+		case gff.SeverityError:
+			nErr++
+		case gff.SeverityWarning:
+			nWarn++
+		}
+		fmt.Printf("line %d  [%s] %s: %s\n",
+			iss.Line, iss.Severity, iss.Field, iss.Msg)
+	}
+	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
+	if nErr > 0 {
+		return fmt.Errorf("%d error(s) found", nErr)
+	}
+	if warnings && nWarn > 0 {
+		return fmt.Errorf("%d warning(s) found", nWarn)
+	}
+	return nil
+}
+
+// runRoundtripGFF parses a GFF3 file and re-emits it to stdout.
+//
+//nolint:dupl // See runCheckVCF: same shape as runRoundtripVCF and the existing runRoundtripSAM.
+func runRoundtripGFF(f io.Reader, crlf bool) error {
+	dec := gff.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	var recs []*gff.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	var enc *gff.Encoder
+	if crlf {
+		enc = gff.NewEncoderCRLF(os.Stdout)
+	} else {
+		enc = gff.NewEncoder(os.Stdout)
+	}
+	if err := enc.EncodeHeader(hdr); err != nil {
+		return fmt.Errorf("encode header: %w", err)
+	}
+	for _, rec := range recs {
+		if err := enc.EncodeRecord(rec); err != nil {
+			return fmt.Errorf("encode record: %w", err)
+		}
+	}
+	return enc.Flush()
+}
+
+// runSummaryGFF prints a one-line summary of the GFF3 file's
+// header.
+//
+//nolint:dupl // See runCheckVCF: same shape, different package.
+func runSummaryGFF(f io.Reader, path string) error {
+	dec := gff.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	seqids := make(map[string]bool)
+	types := make(map[string]int)
+	var nRec int
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		seqids[rec.SeqID] = true
+		types[rec.Type]++
+		nRec++
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", path)
+	if hdr != nil {
+		if hdr.Version != 0 {
+			fmt.Fprintf(&b, "  version:    %d\n", hdr.Version)
+		}
+		if hdr.Date != "" {
+			fmt.Fprintf(&b, "  date:       %s\n", hdr.Date)
+		}
+		fmt.Fprintf(&b, "  pragmas:    %d\n", len(hdr.MetaLines))
+		fmt.Fprintf(&b, "  sequence-regions: %d\n", len(hdr.SequenceRegions))
+	}
+	fmt.Fprintf(&b, "  seqids:     %d\n", len(seqids))
+	fmt.Fprintf(&b, "  types:      %d unique\n", len(types))
+	fmt.Fprintf(&b, "  records:    %d\n", nRec)
+	_, _ = fmt.Fprint(os.Stdout, b.String())
+	return nil
 }
 
 // runSummaryBAM prints a one-line summary of the BAM file's

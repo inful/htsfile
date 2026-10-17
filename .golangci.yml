@@ -77,6 +77,11 @@ linters:
         linters:
           - gosec
           - prealloc
+      # Same rationale for the GFF package's CLI smoke tests
+      # (the test binary path comes from t.TempDir()).
+      - path: gff/cli_test\.go
+        linters:
+          - gosec
 
 run:
   timeout: 5m
