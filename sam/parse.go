@@ -81,16 +81,12 @@ func (d *Decoder) Header() (*Header, error) {
 			d.pendingSet = true
 			return nil, nil
 		}
-		hdr, err := d.parseHeader(raw, lineNo)
+		err = d.parseHeader(raw, lineNo)
 		if err != nil {
 			d.hdrErr = err
-			return nil, err
-		}
-		// parseHeader appends to the appropriate header section.
-		// It returns the *Header only for the @HD line; for other
-		// lines we keep reading.
-		if hdr != nil {
-			d.hdr = hdr
+			// Return d.hdr (the partial header) alongside the error
+			// so callers can inspect what parsed before the failure.
+			return d.hdr, err
 		}
 		// Continue reading until a non-header line.
 		for {
@@ -111,9 +107,9 @@ func (d *Decoder) Header() (*Header, error) {
 				d.pendingSet = true
 				return d.hdr, nil
 			}
-			if _, err := d.parseHeader(raw, lineNo); err != nil {
+			if err := d.parseHeader(raw, lineNo); err != nil {
 				d.hdrErr = err
-				return nil, err
+				return d.hdr, err
 			}
 		}
 	}
@@ -196,16 +192,20 @@ func isBlank(b []byte) bool {
 }
 
 // parseHeader parses one "@" header line and appends it to the
-// appropriate section of hdr. Returns hdr only for the @HD line
-// (the "anchor" for the Header struct); for @SQ, @RG, @PG, @CO it
-// returns nil and the caller keeps iterating.
-//
-// The caller is responsible for passing raw WITHOUT the leading
-// "@" prefix and WITHOUT the trailing newline.
-func (d *Decoder) parseHeader(raw []byte, lineNo int) (*Header, error) {
+// appropriate section of d.hdr. The caller passes raw with the
+// leading "@" and WITHOUT the trailing newline.
+func (d *Decoder) parseHeader(raw []byte, lineNo int) error {
 	// raw starts with '@' (e.g. "@HD\tVN:1.6\tSO:coordinate").
-	if len(raw) < 2 || raw[0] != '@' {
-		return nil, &ParseError{Line: lineNo, Field: "header", Msg: "header line must start with '@'"}
+	// Reject lines that are too short to contain the two-character
+	// type tag, and lines where raw[3] is non-tab/non-EOF (which
+	// means the type tag is more than two characters).
+	if len(raw) < 3 || raw[0] != '@' {
+		return &ParseError{Line: lineNo, Field: "header",
+			Msg: "header line must start with '@' followed by a two-character type tag"}
+	}
+	if len(raw) > 3 && raw[3] != '\t' {
+		return &ParseError{Line: lineNo, Field: "header",
+			Msg: "header type tag must be exactly two characters"}
 	}
 	// The header type is the two characters after '@'.
 	tag := string(raw[1:3])
@@ -217,25 +217,28 @@ func (d *Decoder) parseHeader(raw []byte, lineNo int) (*Header, error) {
 		if hdr == nil {
 			hdr = &Header{}
 		}
-		h := &HD{
+		if hdr.HD != nil {
+			return &ParseError{Line: lineNo, Field: "header",
+				Msg: "duplicate @HD line (only one @HD is allowed per file)"}
+		}
+		hdr.HD = &HD{
 			VN:    pairs["VN"],
 			SO:    pairs["SO"],
 			GO:    pairs["GO"],
 			Other: pairs.otherExcept("VN", "SO", "GO"),
 			Raw:   string(raw),
 		}
-		hdr.HD = h
 		d.hdr = hdr
-		return hdr, nil
+		return nil
 	case "SQ":
 		if hdr == nil {
 			hdr = &Header{}
 		}
 		ln, err := parseInt64Field(pairs["LN"], lineNo, "SQ/LN")
 		if err != nil {
-			return nil, err
+			return err
 		}
-		sq := &SQ{
+		hdr.SQs = append(hdr.SQs, &SQ{
 			SN:    pairs["SN"],
 			LN:    ln,
 			AH:    pairs["AH"],
@@ -246,15 +249,14 @@ func (d *Decoder) parseHeader(raw []byte, lineNo int) (*Header, error) {
 			SP:    pairs["SP"],
 			Other: pairs.otherExcept("SN", "LN", "AH", "AN", "AS", "M5", "UR", "SP"),
 			Raw:   string(raw),
-		}
-		hdr.SQs = append(hdr.SQs, sq)
+		})
 		d.hdr = hdr
-		return nil, nil
+		return nil
 	case "RG":
 		if hdr == nil {
 			hdr = &Header{}
 		}
-		rg := &RG{
+		hdr.RGs = append(hdr.RGs, &RG{
 			ID:    pairs["ID"],
 			SM:    pairs["SM"],
 			LB:    pairs["LB"],
@@ -267,15 +269,14 @@ func (d *Decoder) parseHeader(raw []byte, lineNo int) (*Header, error) {
 			PG:    pairs["PG"],
 			Other: pairs.otherExcept("ID", "SM", "LB", "DS", "PU", "PI", "CN", "DT", "PL", "PG"),
 			Raw:   string(raw),
-		}
-		hdr.RGs = append(hdr.RGs, rg)
+		})
 		d.hdr = hdr
-		return nil, nil
+		return nil
 	case "PG":
 		if hdr == nil {
 			hdr = &Header{}
 		}
-		pg := &PG{
+		hdr.PGs = append(hdr.PGs, &PG{
 			ID:    pairs["ID"],
 			PN:    pairs["PN"],
 			CL:    pairs["CL"],
@@ -283,17 +284,16 @@ func (d *Decoder) parseHeader(raw []byte, lineNo int) (*Header, error) {
 			VN:    pairs["VN"],
 			Other: pairs.otherExcept("ID", "PN", "CL", "PP", "VN"),
 			Raw:   string(raw),
-		}
-		hdr.PGs = append(hdr.PGs, pg)
+		})
 		d.hdr = hdr
-		return nil, nil
+		return nil
 	case "CO":
 		if hdr == nil {
 			hdr = &Header{}
 		}
 		hdr.COs = append(hdr.COs, string(raw))
 		d.hdr = hdr
-		return nil, nil
+		return nil
 	default:
 		// Unknown @XX line — preserve verbatim in COs so the
 		// encoder can round-trip it.
@@ -302,7 +302,7 @@ func (d *Decoder) parseHeader(raw []byte, lineNo int) (*Header, error) {
 		}
 		hdr.COs = append(hdr.COs, string(raw))
 		d.hdr = hdr
-		return nil, nil
+		return nil
 	}
 }
 

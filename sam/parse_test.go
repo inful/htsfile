@@ -177,6 +177,39 @@ func TestDecoder_TagWithColonInValue(t *testing.T) {
 	}
 }
 
+func TestDecoder_MalformedHeaderTypeTag(t *testing.T) {
+	t.Parallel()
+	// Header line with only one type character: should error,
+	// not be silently stored in COs.
+	src := "@H\trandom\nr1\t0\tchr1\t100\t60\t100M\t*\t0\t0\tACGT\tIIII\n"
+	dec := NewDecoder(strings.NewReader(src))
+	_, err := dec.Header()
+	if err == nil {
+		t.Fatal("expected error for malformed header type tag '@H'")
+	}
+	if !IsParseError(err) {
+		t.Errorf("error type = %T; want *ParseError", err)
+	}
+}
+
+func TestDecoder_DuplicateHD(t *testing.T) {
+	t.Parallel()
+	// Two @HD lines: second should be rejected (spec allows
+	// exactly one @HD). The first is preserved.
+	src := "@HD\tVN:1.6\n@HD\tVN:1.0\nr1\t0\tchr1\t100\t60\t100M\t*\t0\t0\tACGT\tIIII\n"
+	dec := NewDecoder(strings.NewReader(src))
+	hdr, err := dec.Header()
+	if err == nil {
+		t.Fatal("expected error for duplicate @HD")
+	}
+	if hdr == nil || hdr.HD == nil {
+		t.Fatal("expected first @HD to be preserved before error")
+	}
+	if hdr.HD.VN != "1.6" {
+		t.Errorf("first @HD.VN = %q; want 1.6", hdr.HD.VN)
+	}
+}
+
 func TestDecoder_EmptyFile(t *testing.T) {
 	t.Parallel()
 	dec := NewDecoder(strings.NewReader(""))

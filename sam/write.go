@@ -3,8 +3,8 @@ package sam
 import (
 	"bufio"
 	"bytes"
-	"errors"
 	"io"
+	"sort"
 	"strconv"
 )
 
@@ -195,20 +195,8 @@ func sortedKeys(m map[string]string) []string {
 	for k := range m {
 		keys = append(keys, k)
 	}
-	// Insertion sort — small maps, no need to import sort.
-	for i := 1; i < len(keys); i++ {
-		for j := i; j > 0 && keys[j-1] > keys[j]; j-- {
-			keys[j-1], keys[j] = keys[j], keys[j-1]
-		}
-	}
+	sort.Strings(keys)
 	return keys
 }
 
-// errInvalidRecord is returned by helpers that validate record
-// fields; reserved for future use.
-var errInvalidRecord = errors.New("sam: invalid record") //nolint:unused // reserved for future validation helpers
-
-// formatInt is a small helper that wraps strconv.Itoa's negative-
-// int handling for symmetry with formatInt64. Reserved for future
-// use; inline calls use strconv.Itoa / strconv.FormatInt directly.
-func formatInt(n int) string { return strconv.Itoa(n) } //nolint:unused // reserved for future symmetry helpers
+// (errInvalidRecord was removed; no longer needed.)
