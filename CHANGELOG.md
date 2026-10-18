@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **GFF3 `###` FASTA section** (`Encoder.EncodeFastaSection`).
+  GFF3 allows an optional FASTA block after the `###`
+  directive; the encoder previously stopped at the feature
+  section. The new method writes `###` then streams the
+  verbatim content of an `io.Reader` (typically a FASTA
+  file). One-shot: a second call returns an error.
+
+- **Solexa Solexa+64 encoding** (`fastq.PhredEncoding`,
+  `Decoder.SetPhredEncoding`, `Record.PhredEncoding`). The
+  Solexa+64 byte range is identical to Phred+64; the
+  difference is the per-byte error-probability formula.
+  Callers with known Solexa data set the encoding flag; the
+  library records it on each `Record` and never applies the
+  formula itself. Default remains Phred+33 / Phred+64.
+
+- **v4.5 reserved-key table** (`vcf.IsReservedInfoKey`,
+  `IsReservedFormatKey`, `IsBaseModKey`, and a new
+  `Validator.checkReservedKeys` step in `ModeStrict`). The
+  package now knows the expected `Number` / `Type` for the
+  v4.5-reserved INFO keys (M* family, RN/RUS/RUL/RUC/RB,
+  CIRUC/CIRB/RUB, LAA/LAD) and FORMAT keys (LAA/LAD/LADF/
+  LADR/LEC/LGL/LGP/LPL/LPP), and warns when a header
+  declaration disagrees with the spec. Structural value
+  validation (e.g. RB's value being a repeat motif present
+  in REF) remains the caller's responsibility.
+
+- **BAI region queries** (`bam/bai.Reference.Query`,
+  `Reference.FindOffset`). Given a half-open range `[beg,
+  end)`, `Query` returns the deduplicated BGZF `(Lo, Hi)`
+  virtual-offset pairs from the candidate bins (looked up
+  via `Reg2Bins`) plus the linear-index minimum offset per
+  htslib's `bam_intv_to_offset` semantics. `FindOffset` is
+  the position-only shortcut.
+
+- **BCF per-sample FORMAT** (v2 scope). `bcf.Record` gains
+  `Format []uint16` and `Samples []bcf.Sample`. The decoder
+  reads the FORMAT list and per-sample typed values
+  (cardinality driven by the FORMAT key's declared Number);
+  the encoder mirrors. Records with `Format` nil / empty
+  are byte-identical to v1 output (n_fmt = 0).
+
 - **`.fai` index generation** (`fai.Build`, `fai.Writer`).
   Build reads a FASTA document and returns an `*Index` in source
   order; `Writer.Write` serialises an `*Index` in canonical
