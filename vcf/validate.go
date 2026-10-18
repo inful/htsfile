@@ -36,10 +36,21 @@ const (
 //	    log.Printf("%v\n", iss)
 //	}
 //
-// A Validator is safe to re-use across multiple Validate calls; the only
-// state is its Mode.
+// A Validator is safe to re-use across multiple Validate calls. The
+// streaming API ([Validator.HeaderChecks], [Validator.Next],
+// [Validator.Finish]) holds cross-record state in the
+// Validator itself, so do not share a Validator across
+// concurrent streams.
 type Validator struct {
 	Mode Mode
+
+	// Streaming state (used by Next / Finish). Zero value is
+	// fine; the validator initialises lazily.
+	recordIdx   int     // 0-based index of the most recently fed record
+	prevChrom   string  // CHROM of the most recently fed record
+	prevPos     int64   // POS of the most recently fed record; -1 means "no previous"
+	headerDone  bool    // true once HeaderChecks has been called
+	finished    bool    // true once Finish has been called
 }
 
 // NewValidator constructs a Validator with the given mode.
@@ -49,29 +60,96 @@ func NewValidator(m Mode) *Validator { return &Validator{Mode: m} }
 // batch of records under the given header. Issues are returned in
 // (Line, Record) order; nil is returned for a clean file.
 //
+// Validate is a thin wrapper around the streaming API: it
+// runs the header checks once, feeds every record through
+// Next, and then runs Finish. Callers that want to validate
+// files larger than memory should use the streaming API
+// directly instead.
+//
 // Validate never modifies the input.
 func (v *Validator) Validate(h *Header, records []*Record) []ValidationError {
+	v.Reset()
+	issues := make([]ValidationError, 0, 16)
+	issues = append(issues, v.HeaderChecks(h)...)
+	for _, rec := range records {
+		issues = append(issues, v.Next(h, rec)...)
+	}
+	issues = append(issues, v.Finish()...)
+	return issues
+}
+
+// Reset clears any state from a previous streaming run. It
+// does not change the Mode. Call this before reusing a
+// Validator for a new file when you used the streaming API.
+func (v *Validator) Reset() {
+	v.recordIdx = 0
+	v.prevChrom = ""
+	v.prevPos = -1
+	v.headerDone = false
+	v.finished = false
+}
+
+// HeaderChecks runs the header-only checks and the
+// reserved-key metadata check (ModeStrict). Call this once
+// at the start of a streaming run. Subsequent calls are
+// no-ops.
+func (v *Validator) HeaderChecks(h *Header) []ValidationError {
+	if v.headerDone {
+		return nil
+	}
+	v.headerDone = true
 	var issues []ValidationError
-
-	// Header-level checks (recorded with Line=0).
 	issues = append(issues, v.checkHeader(h)...)
-
-	// Reserved-key metadata check (ModeStrict only).
 	if v.Mode == ModeStrict {
 		issues = append(issues, v.checkReservedKeys(h)...)
 	}
-
-	// Per-record checks.
-	for i, rec := range records {
-		issues = append(issues, v.checkRecord(h, rec, i)...)
-	}
-
-	// Strict-mode cross-record checks (e.g. POS monotonicity).
-	if v.Mode == ModeStrict {
-		issues = append(issues, v.checkRecordsStrict(records)...)
-	}
-
 	return issues
+}
+
+// Next runs the per-record checks for a single record and
+// updates the cross-record state used by Finish. Returns
+// the issues for this record only. Callers that want issues
+// in (line, record) order should append the returned slice
+// to their own output.
+//
+// Records must be supplied in the order they appear in the
+// file. Records within a chromosome must be sorted by POS
+// for the strict-mode POS-monotonicity check to be accurate.
+func (v *Validator) Next(h *Header, rec *Record) []ValidationError {
+	idx := v.recordIdx
+	v.recordIdx++
+	issues := v.checkRecord(h, rec, idx)
+	// Update cross-record state. We do this even in
+	// non-strict mode so a future mode switch is consistent.
+	if rec.Chrom != v.prevChrom {
+		v.prevChrom = rec.Chrom
+		v.prevPos = -1
+	}
+	if v.Mode == ModeStrict && v.prevPos >= 0 && rec.Pos < v.prevPos {
+		issues = append(issues, ValidationError{
+			Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+			Field: "POS",
+			Msg: fmt.Sprintf("POS %d < previous POS %d within CHROM %s",
+				rec.Pos, v.prevPos, rec.Chrom),
+		})
+	}
+	if rec.Pos > v.prevPos {
+		v.prevPos = rec.Pos
+	}
+	return issues
+}
+
+// Finish runs any checks that need to see the full record
+// stream (currently nothing cross-record — the POS
+// monotonicity check runs incrementally in Next). Call this
+// once at the end of a streaming run. Subsequent calls are
+// no-ops.
+func (v *Validator) Finish() []ValidationError {
+	if v.finished {
+		return nil
+	}
+	v.finished = true
+	return nil
 }
 
 // checkHeader runs header-only checks. Records are inspected separately.
@@ -474,30 +552,6 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 				}
 			}
 		}
-	}
-	return issues
-}
-
-// checkRecordsStrict runs cross-record checks that only make sense in
-// strict mode (e.g. POS monotonicity within a CHROM block).
-func (v *Validator) checkRecordsStrict(records []*Record) []ValidationError {
-	var issues []ValidationError
-	prevChrom := ""
-	var prevPos int64
-	for i, rec := range records {
-		if rec.Chrom != prevChrom {
-			prevChrom = rec.Chrom
-			prevPos = -1
-		}
-		if prevPos >= 0 && rec.Pos < prevPos {
-			issues = append(issues, ValidationError{
-				Severity: SeverityError, Record: i + 1, Line: rec.Line,
-				Field: "POS",
-				Msg: fmt.Sprintf("POS %d < previous POS %d within CHROM %s",
-					rec.Pos, prevPos, rec.Chrom),
-			})
-		}
-		prevPos = rec.Pos
 	}
 	return issues
 }
