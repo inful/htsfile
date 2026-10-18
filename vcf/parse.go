@@ -1063,6 +1063,16 @@ func validMD5Hex(s string) bool {
 	return true
 }
 
+// reservedSymbolicAlleles lists the symbolic ALT IDs the
+// spec treats as reserved. A ##contig ID must not match
+// one of these names (VCFv4.5 §1.4.7).
+var reservedSymbolicAlleles = map[string]bool{
+	"DEL": true, "INS": true, "DUP": true, "INV": true,
+	"CNV": true, "NON_REF": true,
+	"DEL:ME": true, "INS:ME": true,
+	"DUP:TANDEM": true, "DUP:DISPERSED": true, "CNV:TR": true,
+}
+
 // parseContigAttrs parses a ##contig structured line's
 // key/value pairs and validates them per VCFv4.5 §1.4.7.
 // Returns the Contig or an error.
@@ -1100,12 +1110,17 @@ func parseContigAttrs(pairs []fieldPair, lineNo int) (*Contig, error) {
 	// Contig name regex (SAM-compatible per VCFv4.5
 	// §1.4.7 "Contig field format"). The first character
 	// excludes '*' and '='; subsequent characters may
-	// include them. Reserved symbolic allele names
-	// (e.g. <*>, <DEL>) are not used as contig names.
+	// include them.
 	if !validContigName(c.ID) {
 		return nil, &ParseError{Line: lineNo, Field: "contig/ID",
 			Msg: fmt.Sprintf("contig name %q does not match the required regex %s",
 				c.ID, contigNamePattern)}
+	}
+	// Contig ID must not be a reserved symbolic allele
+	// name (VCFv4.5 §1.4.7).
+	if reservedSymbolicAlleles[c.ID] {
+		return nil, &ParseError{Line: lineNo, Field: "contig/ID",
+			Msg: fmt.Sprintf("contig name %q is a reserved symbolic allele name and cannot be used as a contig ID", c.ID)}
 	}
 	return c, nil
 }

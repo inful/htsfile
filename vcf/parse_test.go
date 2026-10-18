@@ -563,6 +563,18 @@ func TestDecoder_Errors(t *testing.T) {
 				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
 		},
 		{
+			"contig id reserved symbolic allele",
+			"##fileformat=VCFv4.5\n" +
+				"##contig=<ID=DEL,length=1000>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"contig id reserved symbolic allele subtype",
+			"##fileformat=VCFv4.5\n" +
+				"##contig=<ID=CNV:TR,length=1000>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
 			"contig md5 wrong length",
 			"##fileformat=VCFv4.5\n" +
 				"##contig=<ID=chr1,length=1000,md5=\"abc\">\n" +
