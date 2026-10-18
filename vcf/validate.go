@@ -56,6 +56,11 @@ func (v *Validator) Validate(h *Header, records []*Record) []ValidationError {
 	// Header-level checks (recorded with Line=0).
 	issues = append(issues, v.checkHeader(h)...)
 
+	// Reserved-key metadata check (ModeStrict only).
+	if v.Mode == ModeStrict {
+		issues = append(issues, v.checkReservedKeys(h)...)
+	}
+
 	// Per-record checks.
 	for i, rec := range records {
 		issues = append(issues, v.checkRecord(h, rec, i)...)
@@ -103,6 +108,45 @@ func (v *Validator) checkHeader(h *Header) []ValidationError {
 		seen[name] = true
 	}
 
+	return issues
+}
+
+// checkReservedKeys warns when a reserved INFO/FORMAT key
+// (per VCF v4.5 §1.6.1.4–1.6.1.7) is declared in the header
+// with a Number or Type that disagrees with the spec. The
+// check is non-fatal: the spec lists these as reservations,
+// not strict requirements, so we surface a warning the
+// caller can promote to an error by switching to ModeStrict.
+func (v *Validator) checkReservedKeys(h *Header) []ValidationError {
+	var issues []ValidationError
+	for key, def := range h.Infos {
+		want, ok := reservedInfoKeys[key]
+		if !ok {
+			continue
+		}
+		if def.Number.String() != want.Number || def.Type != want.Type {
+			issues = append(issues, ValidationError{
+				Severity: SeverityWarning,
+				Field:    "header/INFO/" + key,
+				Msg: fmt.Sprintf("reserved key %q should be Number=%s,Type=%q; got Number=%s,Type=%q",
+					key, want.Number, want.Type, def.Number, def.Type),
+			})
+		}
+	}
+	for key, def := range h.Formats {
+		want, ok := reservedFormatKeys[key]
+		if !ok {
+			continue
+		}
+		if def.Number.String() != want.Number || def.Type != want.Type {
+			issues = append(issues, ValidationError{
+				Severity: SeverityWarning,
+				Field:    "header/FORMAT/" + key,
+				Msg: fmt.Sprintf("reserved key %q should be Number=%s,Type=%q; got Number=%s,Type=%q",
+					key, want.Number, want.Type, def.Number, def.Type),
+			})
+		}
+	}
 	return issues
 }
 

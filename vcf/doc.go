@@ -45,9 +45,14 @@
 //     (IMPRECISE, NOVEL, SVLEN, CIPOS, CIEND, HOMLEN, HOMSEQ, BKPTID, MEINFO,
 //     METRANS, DGVID, DBVARID, DBRIPID, MATEID, PARID, EVENT, EVENTTYPE,
 //     CILEN, CN, CICN, SVCLAIM, RN, RUS, RUL, RUC, RB, CIRUC, CIRB, RUB).
+//     v4.5-specific reserved keys (tandem repeats, base modifications) are
+//     looked up by [IsReservedInfoKey]; the validator checks declared
+//     Number/Type against the spec table in [ModeStrict] mode.
 //   - Reserved FORMAT keys (GT, DP, EC, FT, GL, GP, GQ, HQ, LEN, MQ, PL, PP,
 //     PQ, PS, AD, ADF, ADR) and SV keys (CN, CICN, CNQ, CNL, CNP, NQ, HAP,
-//     AHAP).
+//     AHAP). v4.5 local-allele FORMAT keys (LAA, LAD, LADF, LADR, LEC, LGL,
+//     LGP, LPL, LPP) are looked up by [IsReservedFormatKey]; LAA is also
+//     structurally validated to follow GT in the FORMAT column.
 //   - Symbolic structural variant alleles: DEL, INS, DUP, INV, CNV (and the
 //     recommended subtypes CNV:TR, DUP:TANDEM, DEL:ME, INS:ME) plus the
 //     unspecified-allele <*>.
@@ -55,10 +60,14 @@
 //     contig-anchored and circular-contig forms.
 //   - The phasing field PS (phase set identifier) is acknowledged.
 //
-// Currently out of scope (will follow in a future release): base modification
-// fields (M[0-9]+[ACGTUN], M5mC, M5hmC, …), the full tandem-repeat field
-// suite (RN/RUS/RUL/RUC/RB/CIRUC/CIRB/RUB) cardinality rules, and local-allele
-// encoding (LAA, LAD, LADF, LADR, LEC, LGL, LGP, LPL, LPP).
+// Currently out of scope: full structural validation of the
+// tandem-repeat and base-modification record values
+// (e.g. enforcing that RB is a repeat motif present in
+// REF, or that M0A's value count matches the per-base
+// cardinality). The library recognises the keys (see
+// [IsReservedInfoKey], [IsBaseModKey]) and warns on
+// mismatched header metadata; the value-level grammar is
+// the user's responsibility.
 //
 // # Safety
 //
