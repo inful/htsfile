@@ -433,7 +433,20 @@ func (e *Encoder) EncodeRecord(rec *Record) error {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		writeInfoColumn(&b, keys, rec.Info)
+		// END is a computed field per VCF v4.5 §1.6.1.6. If
+		// the caller placed it in rec.Info, replace its
+		// value with the computed one before writing. We do
+		// not mutate rec.Info (callers may reuse the Record);
+		// instead we build a small override map.
+		var endOverride *InfoValue
+		if _, hasEND := rec.Info["END"]; hasEND {
+			if v := computeEND(rec); v > 0 {
+				endOverride = &InfoValue{
+					typedCore: typedCore{Type: TypeInteger, Ints: []int64{v}},
+				}
+			}
+		}
+		writeInfoColumnOverride(&b, keys, rec.Info, endOverride)
 	}
 
 	// FORMAT + sample columns
@@ -559,14 +572,70 @@ func writeTyped(b *bytes.Buffer, v *typedCore) {
 	}
 }
 
-// writeInfoColumn writes the INFO column contents to b. keys should already
-// be in the desired order.
-func writeInfoColumn(b *bytes.Buffer, keys []string, info map[string]InfoValue) {
+// computeEND returns the VCF v4.5 §1.6.1.6 computed END value
+// for rec, or 0 if END cannot be computed. The end position
+// (1-based) is the maximum of:
+//   - POS + len(REF) - 1
+//   - for each symbolic SV ALT: POS + SVLEN[i] (if SVLEN is
+//     present in the record's Info)
+//   - for each <*> ALT: max over samples of POS + LEN - 1
+//     (where LEN is the per-sample FORMAT LEN value)
+//
+// If the record has no symbolic alleles and no <*>, the
+// computed END equals POS + len(REF) - 1.
+func computeEND(rec *Record) int64 {
+	end := rec.Pos + int64(len(rec.Ref)) - 1
+	for i, alt := range rec.Alt {
+		// Symbolic structural variant: <ID> form.
+		if !strings.HasPrefix(alt, "<") || !strings.HasSuffix(alt, ">") {
+			continue
+		}
+		id := alt[1 : len(alt)-1]
+		if id == "*" {
+			// <*> : use FORMAT LEN per sample.
+			for _, s := range rec.Samples {
+				v, ok := s.Fields["LEN"]
+				if !ok || v.Missing || len(v.Ints) == 0 {
+					continue
+				}
+				// LEN is the block length; end = POS + LEN - 1.
+				e := rec.Pos + v.Ints[0] - 1
+				if e > end {
+					end = e
+				}
+			}
+			continue
+		}
+		// Other symbolic allele: use INFO SVLEN.
+		if svlen, ok := rec.Info["SVLEN"]; ok {
+			if i < len(svlen.Ints) {
+				e := rec.Pos + svlen.Ints[i]
+				if e > end {
+					end = e
+				}
+			}
+		}
+	}
+	return end
+}
+
+// writeInfoColumnOverride writes the INFO column contents to
+// b, using keys (already in the desired order). If override
+// is non-nil and its target key appears in keys, that key's
+// value is written from override instead of info. This lets
+// the caller substitute a computed value (e.g. for END)
+// without mutating the source map.
+func writeInfoColumnOverride(b *bytes.Buffer, keys []string, info map[string]InfoValue, override *InfoValue) {
 	for i, k := range keys {
 		if i > 0 {
 			b.WriteByte(';')
 		}
-		v := info[k]
+		var v InfoValue
+		if override != nil && k == "END" {
+			v = *override
+		} else {
+			v = info[k]
+		}
 		b.WriteString(k)
 		if isFlagInfo(&v) {
 			continue
