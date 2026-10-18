@@ -355,12 +355,18 @@ htsget/refget and crypt4gh remain pending.
       follow-up. Tabix + CSI writers shipped (see the Tier 4
       item above). BCF writer still deferred for per-sample
       FORMAT data.
+- [ ] **htsget / refget** — separate package from the per-format
+      work, scope TBD (see §Open decisions for the two
+      architectural readings).
 - [ ] **CRAM v3** — design-survey stage only. Codecs 3–8 are
       not in Go stdlib and the no-runtime-deps rule precludes
       samtools/htscodecs. Resume when stdlib adds the codecs,
       a separate `htscram/` module is acceptable, or
       real-world testdata becomes available. See `cram/SPEC.md`.
-- [ ] **htsget / refget** — separate module if at all.
+- [ ] **htsget / refget** — separate package from the per-format
+      work. See §Tier 4 above for the two architectural readings
+      (separate directory vs separate Go module); decision
+      deferred to first user pull for the protocols.
 - [ ] **crypt4gh** — encryption; cross-cutting.
 
 ## Anti-patterns we have learned to avoid
