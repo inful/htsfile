@@ -19,15 +19,18 @@ var reservedInfoKeys = map[string]reservedKey{
 	// M5hmC). Number=1, Type=String. The key is treated
 	// literally by the validator — callers can match the
 	// pattern with reservedBaseModKeys below.
-	"RN":  {Number: "1", Type: TypeInteger},
-	"RUS": {Number: ".", Type: TypeString},
-	"RUL": {Number: ".", Type: TypeInteger},
-	"RUC": {Number: ".", Type: TypeInteger},
-	"RB":  {Number: "1", Type: TypeString},
-	// Circular-tandem-repeat variants.
-	"CIRUC": {Number: ".", Type: TypeInteger},
-	"CIRB":  {Number: "1", Type: TypeString},
-	"RUB":   {Number: "1", Type: TypeString},
+	// Tandem-repeat fields (VCFv4.5 §1.6.1.7 lines 1070
+	// and 1084-1110): RN is per-allele; RUS/RUL/RUC/RB are
+	// flat lists whose length is determined by RN; CIRUC /
+	// CIRB are flat lists whose length is 2×RN.
+	"RN":    {Number: "A", Type: TypeInteger},
+	"RUS":   {Number: ".", Type: TypeString},
+	"RUL":   {Number: ".", Type: TypeInteger},
+	"RUC":   {Number: ".", Type: TypeFloat},
+	"RB":    {Number: ".", Type: TypeInteger},
+	"CIRUC": {Number: ".", Type: TypeFloat},
+	"CIRB":  {Number: ".", Type: TypeInteger},
+	"RUB":   {Number: ".", Type: TypeInteger},
 	// Local-allele related (also appear as FORMAT keys below).
 	"LAA": {Number: ".", Type: TypeString},
 	"LAD": {Number: ".", Type: TypeString},

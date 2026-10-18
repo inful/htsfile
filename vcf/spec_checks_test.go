@@ -770,6 +770,115 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 	}
 }
 
+func TestValidator_CIRUCMissingMatchesRUC(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.7: "CIRUC/CIRB must not be
+	// non-missing for any alleles with no corresponding
+	// RUC/RB value." When RUC[i] is missing (raw "."),
+	// CIRUC[2i] and CIRUC[2i+1] must also be ".".
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=CNV:TR,Description=\"x\">\n" +
+		"##INFO=<ID=RN,Number=A,Type=Integer,Description=\"x\">\n" +
+		"##INFO=<ID=RUC,Number=.,Type=Float,Description=\"x\">\n" +
+		"##INFO=<ID=RB,Number=.,Type=Integer,Description=\"x\">\n" +
+		"##INFO=<ID=CIRUC,Number=.,Type=Float,Description=\"x\">\n" +
+		"##INFO=<ID=CIRB,Number=.,Type=Integer,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, info string
+		want       bool
+	}{
+		{"RUC=., CIRUC=.,. ok", "RN=2;RUC=.,5;CIRUC=.,.,0,2", false},
+		{"RUC=., CIRUC[1]=0 (non-missing)", "RN=2;RUC=.,5;CIRUC=.,0,0,2", true},
+		{"RUC=., CIRUC[0]=0 (non-missing)", "RN=2;RUC=.,5;CIRUC=0,.,0,2", true},
+		{"RUC all present, CIRUC all missing", "RN=2;RUC=5,5;CIRUC=.,.,.,.", false},
+		{"RB missing, CIRB[1] non-missing", "RN=2;RB=.,5;CIRB=.,0,0,5", true},
+		{"all RUC present, all CIRUC present", "RN=2;RUC=5,5;CIRUC=0,1,0,2", false},
+		{"no CIRUC", "RN=2;RUC=.,5", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + "chr1\t100\t.\tA\t<CNV:TR>\t.\t.\t" + c.info + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "non-missing but the corresponding") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_PSLTrioConsistency(t *testing.T) {
+	// Per VCFv4.5 §1.6.2 PSQ: "The missing value '$.$'
+	// should be used when the corresponding PSL value is
+	// missing." We enforce PSL[i] missing iff PSO[i]
+	// missing iff PSQ[i] missing per allele.
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=PSL,Number=P,Type=String,Description=\"l\">\n" +
+		"##FORMAT=<ID=PSO,Number=P,Type=Integer,Description=\"o\">\n" +
+		"##FORMAT=<ID=PSQ,Number=P,Type=Integer,Description=\"q\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, gt, psl, pso, psq string
+		want                     bool
+	}{
+		{"all consistent", "|0|1", "chr1*5*1,chr1*5*2", "1,2", "10,20", false},
+		{"PSL miss, PSO has value", "|0|1", ".,chr1*5*2", "1,2", "10,20", true},
+		{"PSL has value, PSO miss", "|0|1", "chr1*5*1,chr1*5*2", ".,2", "10,20", true},
+		{"PSL has value, PSQ miss", "|0|1", "chr1*5*1,chr1*5*2", "1,2", ".,20", true},
+		{"all missing", "|0|1", ".,.", ".,.", ".,.", false},
+		{"no PSO/PSQ", "|0|1", "chr1*5*1,chr1*5*2", "", "", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			line := "chr1\t100\t.\tA\tC,G\t.\t.\t.\tGT:PSL"
+			sample := c.gt + ":" + c.psl
+			if c.pso != "" {
+				line += ":PSO"
+				sample += ":" + c.pso
+			}
+			if c.psq != "" {
+				line += ":PSQ"
+				sample += ":" + c.psq
+			}
+			dec := NewDecoder(strings.NewReader(hdr + line + "\t" + sample + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "missing") && (strings.Contains(iss.Msg, "PSL[") || strings.Contains(iss.Msg, "PSO[") || strings.Contains(iss.Msg, "PSQ[")) {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_MKeyValueRange(t *testing.T) {
 	// Per VCFv4.5 §1.6.1.5: "Values must be between 0 and 1".
 	hdr := "##fileformat=VCFv4.2\n" +

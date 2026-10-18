@@ -89,10 +89,10 @@ func TestValidator_ReservedKeyMetadataMismatch(t *testing.T) {
 }
 
 func TestValidator_ReservedKeyMetadataOK(t *testing.T) {
-	// RN with the spec-correct Number=1, Type=Integer must
-	// not produce a warning.
+	// RN with the spec-correct Number=A, Type=Integer must
+	// not produce a warning (VCFv4.5 §1.6.1.7).
 	src := "##fileformat=VCFv4.2\n" +
-		"##INFO=<ID=RN,Number=1,Type=Integer,Description=\"tandem repeat ref number\">\n" +
+		"##INFO=<ID=RN,Number=A,Type=Integer,Description=\"tandem repeat ref number\">\n" +
 		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
 	dec := NewDecoder(strings.NewReader(src))
 	hdr, err := dec.Header()

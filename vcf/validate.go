@@ -849,6 +849,38 @@ func checkRNDeterminedFields(rec *Record, rnSum, idx, line int, issues *[]Valida
 			})
 		}
 	}
+	// CIRUC/CIRB are paired confidence intervals around
+	// RUC/RB; their total length is 2 × sum(RN).
+	for _, key := range rnDeterminedKeysDoubled {
+		fv, has := rec.Info[key]
+		if !has || !fv.HasValue() {
+			continue
+		}
+		got := valueLen(&fv)
+		want := 2 * rnSum
+		if got != want {
+			*issues = append(*issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "INFO/" + key,
+				Msg: fmt.Sprintf("%s length %d does not match 2 × sum of RN values (%d)", key, got, want),
+			})
+		}
+	}
+	// CIRUC/CIRB sub-allele missingness must match RUC/RB
+	// (VCFv4.5 §1.6.1.7: "CIRUC/CIRB must not be non-missing
+	// for any alleles with no corresponding RUC/RB value").
+	// RUC and RB are integer vectors; their raw "." entries
+	// mark the missing values that the parser collapses to
+	// 0 in Ints. CIRUC/CIRB are length 2*RN, paired against
+	// RUC/RB by position: CIRUC[2i] and CIRUC[2i+1] are the
+	// confidence bounds around RUC[i].
+	if ruc, ok := rec.Info["RUC"]; ok && ruc.HasValue() {
+		checkCIRUCMissing(&ruc, rec, "CIRUC", idx, line, issues)
+	}
+	if rb, ok := rec.Info["RB"]; ok && rb.HasValue() {
+		checkCIRUCMissing(&rb, rec, "CIRB", idx, line, issues)
+	}
+
 	// RUS length must match RUL per element (VCFv4.5
 	// §1.6.1.7 RUS).
 	rus, hasRUS := rec.Info["RUS"]
@@ -867,6 +899,49 @@ func checkRNDeterminedFields(rec *Record, rnSum, idx, line int, issues *[]Valida
 				Field: "INFO/RUS",
 				Msg: fmt.Sprintf("RUS[%d] length %d does not match RUL[%d]=%d", i, rlen, i, rul.Ints[i]),
 			})
+		}
+	}
+}
+
+// pairKey returns the base-key name for a confidence key:
+// "CIRUC" -> "RUC", "CIRB" -> "RB".
+func pairKey(confKey string) string {
+	switch confKey {
+	case "CIRUC":
+		return "RUC"
+	case "CIRB":
+		return "RB"
+	}
+	return ""
+}
+
+// checkCIRUCMissing emits one SeverityError per non-missing
+// CIRUC/CIRB pair whose corresponding RUC/RB entry is the
+// missing sentinel. The pairing is: confidence key entry j
+// corresponds to confidence key entries [2j, 2j+1] and base
+// key entry j (so a missing base entry forces the pair to
+// be missing too).
+func checkCIRUCMissing(base *InfoValue, rec *Record, confKey string, idx, line int, issues *[]ValidationError) {
+	cf, ok := rec.Info[confKey]
+	if !ok || !cf.HasValue() {
+		return
+	}
+	for j := 0; j < len(base.Raw); j++ {
+		if base.Raw[j] != "." {
+			continue
+		}
+		for k := 0; k < 2; k++ {
+			cj := 2*j + k
+			if cj >= len(cf.Raw) {
+				break
+			}
+			if cf.Raw[cj] != "." {
+				*issues = append(*issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "INFO/" + confKey,
+					Msg: fmt.Sprintf("%s[%d] is non-missing but the corresponding %s[%d] is missing (§1.6.1.7)", confKey, cj, pairKey(confKey), j),
+				})
+			}
 		}
 	}
 }
@@ -933,8 +1008,20 @@ func valueLen(v *InfoValue) int {
 // rnDeterminedKeys lists the INFO keys whose total length
 // must equal the sum of RN values for the record
 // (VCFv4.5 §1.6.1.7 RN).
+// rnDeterminedKeys lists the INFO keys whose total length
+// must equal the sum of RN values for the record
+// (VCFv4.5 §1.6.1.7 RN).
 var rnDeterminedKeys = [...]string{
-	"RUS", "RUL", "RUC", "RB", "CIRUC", "CIRB",
+	"RUS", "RUL", "RUC", "RB",
+}
+
+// rnDeterminedKeysDoubled lists the INFO keys whose total
+// length must equal twice the sum of RN values
+// (VCFv4.5 §1.6.1.7: "The length of these fields must be
+// twice that of their corresponding fields" — applies to
+// the confidence-interval fields CIRUC and CIRB).
+var rnDeterminedKeysDoubled = [...]string{
+	"CIRUC", "CIRB",
 }
 
 // reservedEventTypes is the set of EVENTTYPE values the spec
@@ -1393,6 +1480,13 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 		// (§1.6.1.5: "If any base modification key is present
 		// for a sample, GT must be defined for that sample").
 		issues = append(issues, checkMRequiresGT(g, sIdx, idx, line)...)
+
+		// PSL / PSO / PSQ trio consistency per allele
+		// (§1.6.2 PSQ: "The missing value '$.$' should be
+		// used when the corresponding PSL value is missing").
+		// When PSL[i] is ".", PSO[i] and PSQ[i] must also
+		// be "."; the same holds in reverse.
+		issues = append(issues, checkPSLTrio(g, sIdx, idx, line)...)
 
 		// LAA must precede all FORMAT keys other than GT
 		// (per §1.6.2: "If any local-allele field is present,
@@ -1887,6 +1981,50 @@ func checkMRequiresGT(g Genotype, sIdx, idx, line int) []ValidationError {
 		}}
 	}
 	return nil
+}
+// checkPSLTrio enforces VCFv4.5 §1.6.2 PSQ field: "The
+// missing value '$.$' should be used when the corresponding
+// PSL value is missing, or when the phasing is of unknown
+// quality." We treat the rule as bidirectional: PSL[i]
+// is missing iff PSO[i] is missing iff PSQ[i] is missing.
+// Each mismatch fires one SeverityError. Spec uses "should";
+// we still fire in ModeStrict (matching the existing
+// PSL-unphased check).
+func checkPSLTrio(g Genotype, sIdx, idx, line int) []ValidationError {
+	pslFV, hasPSL := g.Fields["PSL"]
+	if !hasPSL {
+		return nil
+	}
+	if pslFV.Missing {
+		return nil
+	}
+	pslCount := len(pslFV.Raw)
+	var issues []ValidationError
+	for _, k := range []string{"PSO", "PSQ"} {
+		fv, ok := g.Fields[k]
+		if !ok || fv.Missing {
+			continue
+		}
+		for i := 0; i < pslCount && i < len(fv.Raw); i++ {
+			pslMiss := pslFV.Raw[i] == "."
+			otherMiss := fv.Raw[i] == "."
+			if pslMiss == otherMiss {
+				continue
+			}
+			var msg string
+			if pslMiss {
+				msg = fmt.Sprintf("%s[%d]=%q is non-missing but the corresponding PSL[%d] is missing (§1.6.2 PSQ)", k, i, fv.Raw[i], i)
+			} else {
+				msg = fmt.Sprintf("PSL[%d]=%q is non-missing but the corresponding %s[%d] is missing (§1.6.2 PSQ)", i, pslFV.Raw[i], k, i)
+			}
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/%s/sample[%d]", k, sIdx),
+				Msg:   msg,
+			})
+		}
+	}
+	return issues
 }
 
 // checkMKeyRange enforces VCFv4.5 §1.6.1.5: "Values
