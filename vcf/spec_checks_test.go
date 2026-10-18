@@ -770,6 +770,65 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 	}
 }
 
+func TestValidator_METAValuesEnforced(t *testing.T) {
+	// Per VCFv4.5 §1.4.7 "Sample field format": when a
+	// ##META entry declares a Values list, every
+	// ##SAMPLE field with that key must take a value
+	// from the list. Fires as a SeverityWarning in
+	// ModeStrict; skipped in ModeDefault.
+	cases := []struct {
+		name  string
+		samp  string
+		want  bool
+	}{
+		{"allowed", "Assay=WholeGenome", false},
+		{"not in list", "Assay=Bogus", true},
+		{"no values declared", "OtherField=anything", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			hdr := "##fileformat=VCFv4.2\n" +
+				"##META=<ID=Assay,Type=String,Number=.,Values=[WholeGenome, Exome]>\n" +
+				"##META=<ID=OtherField,Type=String,Number=.>\n" +
+				"##SAMPLE=<ID=Sample1," + c.samp + ">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+			dec := NewDecoder(strings.NewReader(hdr))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			issues := NewValidator(ModeStrict).HeaderChecks(h)
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "##SAMPLE") && strings.Contains(iss.Msg, "not in the ##META") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_METAValuesDefaultModeSkipsCheck(t *testing.T) {
+	// The check fires only in ModeStrict. In ModeDefault
+	// the same input passes without issues.
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##META=<ID=Assay,Type=String,Number=.,Values=[WholeGenome, Exome]>\n" +
+		"##SAMPLE=<ID=Sample1,Assay=Bogus>\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	dec := NewDecoder(strings.NewReader(hdr))
+	h, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	if issues := NewValidator(ModeDefault).HeaderChecks(h); len(issues) != 0 {
+		t.Errorf("ModeDefault should skip META Values check; got: %+v", issues)
+	}
+}
+
 func TestValidator_LocalAlleleRequiresLAA(t *testing.T) {
 	// Per VCFv4.5 §1.6.2: "If any local-allele field is
 	// present, LAA must also be present". A sample that

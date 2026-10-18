@@ -91,6 +91,9 @@ type Header struct {
 	Formats map[string]*FormatDef
 	// Alts maps ID → definition for all ##ALT entries.
 	Alts map[string]*AltDef
+	// Metas maps ID → definition for all ##META entries. Used by the
+	// validator to constrain ##SAMPLE field values.
+	Metas map[string]*MetaDef
 	// Pedigrees lists all ##PEDIGREE entries in source order.
 	Pedigrees []*Pedigree
 	// Samples lists all ##SAMPLE entries in source order.
@@ -198,6 +201,19 @@ type Sample struct {
 	Description string
 	DOI         string
 	Other       map[string]string
+}
+
+// MetaDef describes one ##META=<ID=...,Type=...,Number=...,Values=[...]>
+// entry. The Values list, when non-nil, constrains the values that may
+// appear on a ##SAMPLE line under this key (per VCFv4.5 §1.4.7
+// "Sample field format").
+type MetaDef struct {
+	ID     string
+	Type   FieldType
+	Number Number
+	// Values is the parsed [a, b, c] list. nil means no Values was
+	// declared (the constraint is not enforced).
+	Values []string
 }
 
 // LookupInfo returns the [InfoDef] for the given ID, or nil if not declared.

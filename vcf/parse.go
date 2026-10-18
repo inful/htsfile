@@ -201,6 +201,7 @@ func (d *Decoder) parseHeader() (*Header, error) {
 	h := &Header{
 		Infos:   map[string]*InfoDef{},
 		Filters: map[string]*FilterDef{},
+		Metas:   map[string]*MetaDef{},
 		Formats: map[string]*FormatDef{},
 		Alts:    map[string]*AltDef{},
 	}
@@ -406,6 +407,12 @@ func (h *Header) parseHeaderLine(raw []byte, lineNo int) error {
 // the corresponding header field.
 func (h *Header) applyStructured(key string, pairs []fieldPair, lineNo int) error {
 	switch key {
+	case "META":
+		d, err := parseMetaAttrs(pairs, lineNo)
+		if err != nil {
+			return err
+		}
+		h.Metas[d.ID] = d
 	case "contig":
 		c, err := parseContigAttrs(pairs, lineNo)
 		if err != nil {
@@ -640,6 +647,10 @@ func parseStructuredBody(body string) ([]fieldPair, error) {
 	inQuotes := false
 	escape := false
 	fieldStart := true
+	// bracketDepth counts nested '[' (and the matching ']'). When
+	// > 0, commas do not separate fields — this allows Values=[a,b,c]
+	// on ##META lines to be parsed as a single field.
+	bracketDepth := 0
 
 	flush := func() {
 		out = append(out, fieldPair{key: key, value: current.String()})
@@ -674,7 +685,21 @@ func parseStructuredBody(body string) ([]fieldPair, error) {
 			inQuotes = true
 			current.WriteByte(c)
 			fieldStart = false
+		case '[':
+			bracketDepth++
+			current.WriteByte(c)
+			fieldStart = false
+		case ']':
+			if bracketDepth > 0 {
+				bracketDepth--
+			}
+			current.WriteByte(c)
+			fieldStart = false
 		case ',':
+			if bracketDepth > 0 {
+				current.WriteByte(c)
+				continue
+			}
 			flush()
 		case '=':
 			if !seenEquals {
@@ -1124,6 +1149,67 @@ var reservedSymbolicAlleles = map[string]bool{
 // parseContigAttrs parses a ##contig structured line's
 // key/value pairs and validates them per VCFv4.5 §1.4.7.
 // Returns the Contig or an error.
+// parseMetaAttrs parses a ##META=<...> structured line per
+// VCFv4.5 §1.4.7 "Sample field format". Required: ID.
+// Optional: Type (String by default), Number (1 by default),
+// Values (square-bracketed enumeration).
+func parseMetaAttrs(pairs []fieldPair, lineNo int) (*MetaDef, error) {
+	d := &MetaDef{Type: TypeString, Number: Number{Fixed: 1}}
+	for _, p := range pairs {
+		switch p.key {
+		case "ID":
+			d.ID = unquote(p.value)
+		case "Type":
+			t, err := ParseFieldType(p.value)
+			if err != nil {
+				return nil, &ParseError{Line: lineNo, Field: "META/Type", Msg: err.Error()}
+			}
+			d.Type = t
+		case "Number":
+			n, err := ParseNumber(p.value)
+			if err != nil {
+				return nil, &ParseError{Line: lineNo, Field: "META/Number", Msg: err.Error()}
+			}
+			d.Number = n
+		case "Values":
+			d.Values = parseMetaValuesList(p.value)
+		default:
+			return nil, &ParseError{Line: lineNo, Field: "META",
+				Msg: fmt.Sprintf("unknown META sub-field %q", p.key)}
+		}
+	}
+	if d.ID == "" {
+		return nil, &ParseError{Line: lineNo, Field: "META",
+			Msg: "missing required ID"}
+	}
+	return d, nil
+}
+
+// parseMetaValuesList parses the bracketed enumeration
+// "Values=[a,b,c]" used by ##META. The brackets are
+// optional; when present they are stripped and the
+// remaining tokens are split on comma. When absent the
+// whole string is split on comma (treating the raw
+// value as already unbracketed).
+func parseMetaValuesList(raw string) []string {
+	s := strings.TrimSpace(raw)
+	s = strings.TrimPrefix(s, "[")
+	s = strings.TrimSuffix(s, "]")
+	if s == "" {
+		return nil
+	}
+	parts := strings.Split(s, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
 func parseContigAttrs(pairs []fieldPair, lineNo int) (*Contig, error) {
 	c := &Contig{Other: map[string]string{}}
 	for _, p := range pairs {

@@ -352,7 +352,44 @@ func (v *Validator) checkHeader(h *Header) []ValidationError {
 		seen[name] = true
 	}
 
+	// ##META Values enforcement (§1.4.7 "Sample field
+	// format"): every ##SAMPLE field whose key matches
+	// a ##META ID that declares a Values list must have
+	// a value drawn from that list. Fires in ModeStrict;
+	// skipped in ModeDefault to avoid surprising callers
+	// who don't want strict header validation.
+	if v.Mode == ModeStrict && len(h.Metas) > 0 {
+		for _, sample := range h.Samples {
+			for key, rawValue := range sample.Other {
+				meta, ok := h.Metas[key]
+				if !ok || meta.Values == nil {
+					continue
+				}
+				if !valuesContain(meta.Values, rawValue) {
+					issues = append(issues, ValidationError{
+						Severity: SeverityWarning,
+						Field:    fmt.Sprintf("header/META/%s", key),
+						Msg: fmt.Sprintf("##SAMPLE %s uses value %q which is not in the ##META %s.Values list (%v)",
+							sample.ID, rawValue, key, meta.Values),
+					})
+				}
+			}
+		}
+	}
+
 	return issues
+}
+
+// valuesContain reports whether v contains s (string
+// equality; empty-string and missing-value are skipped
+// at the call site).
+func valuesContain(values []string, s string) bool {
+	for _, v := range values {
+		if v == s {
+			return true
+		}
+	}
+	return false
 }
 
 // checkReservedKeys warns when a reserved INFO/FORMAT key
