@@ -714,6 +714,24 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 				})
 			}
 		}
+		// LAA value range: 1-based indices into ALT. The
+		// spec says LAA must be distinct integers in
+		// [1, len(ALT)]. We do not check distinctness here
+		// because the spec also says "n distinct integers"
+		// and most callers benefit from a separate report.
+		if v, ok := g.Fields["LAA"]; ok && !v.Missing {
+			nAlts := int64(len(rec.Alt))
+			for i, n := range v.Ints {
+				if n < 1 || n > nAlts {
+					issues = append(issues, ValidationError{
+						Severity: SeverityError, Record: idx + 1, Line: line,
+						Field: fmt.Sprintf("FORMAT/LAA/sample[%d]", sIdx),
+						Msg: fmt.Sprintf("LAA[%d]=%d is out of range (must be a 1-based ALT index in [1, %d])",
+							i, n, nAlts),
+					})
+				}
+			}
+		}
 
 		// Determine the last present FORMAT index for this sample — keys
 		// past that index are considered dropped (per spec).

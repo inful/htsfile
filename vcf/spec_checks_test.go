@@ -529,3 +529,54 @@ func TestValidator_EventTypeUnreserved(t *testing.T) {
 		t.Errorf("strict mode: expected EVENTTYPE error, got: %+v", issues)
 	}
 }
+
+func TestValidator_LAAValueRange(t *testing.T) {
+	// LAA is a 1-based index into ALT (per VCFv4.5 §1.6.1.4).
+	// Out-of-range values (0, or > len(ALT)) are an error.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=LAA,Number=.,Type=Integer,Description=\"local alleles\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	for _, bad := range []string{"0", "4", "-1"} {
+		// 2 ALTs, so valid LAA is {1, 2}. 0, 4, -1 all fail.
+		dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC,G\t.\t.\t.\tGT:LAA\t0/1:" + bad + "\n"))
+		hdr, err := dec.Header()
+		if err != nil {
+			t.Fatalf("Header: %v", err)
+		}
+		rec, err := dec.Record()
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+		found := false
+		for _, iss := range issues {
+			if iss.Field == "FORMAT/LAA/sample[0]" && strings.Contains(iss.Msg, "out of range") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("LAA=%q: expected out-of-range issue, got: %+v", bad, issues)
+		}
+	}
+	// Valid LAA values: no issue.
+	for _, good := range []string{"1", "2", "1,2", "2,1"} {
+		dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC,G\t.\t.\t.\tGT:LAA\t0/1:" + good + "\n"))
+		hdr, err := dec.Header()
+		if err != nil {
+			t.Fatalf("Header: %v", err)
+		}
+		rec, err := dec.Record()
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+		for _, iss := range issues {
+			if iss.Field == "FORMAT/LAA/sample[0]" {
+				t.Errorf("LAA=%q: unexpected issue: %+v", good, iss)
+			}
+		}
+	}
+}
