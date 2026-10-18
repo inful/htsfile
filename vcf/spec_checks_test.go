@@ -1,8 +1,12 @@
 package vcf
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/inful/htsfile/fasta"
 )
 
 func TestParser_RejectsDisallowedControlByte(t *testing.T) {
@@ -767,6 +771,90 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 				t.Errorf("ALT=%q: found=%v, want %v; issues=%+v", c.alt, found, c.want, issues)
 			}
 		})
+	}
+}
+
+func TestValidator_PaddingBaseWithReference(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.1: for indels (and symbolic
+	// ALTs), REF[0] must match the reference base at
+	// POS-1 (or POS when POS=1).
+	refText := ">chr1\nACGTACGTACGTACGT\n"
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(refPath, []byte(refText), 0o600); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	ref, err := fasta.Open(refPath)
+	if err != nil {
+		t.Fatalf("fasta.Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=DEL,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		// Insertion at pos 3 (G + insert X). REF="G"
+		// is the padding base at pos 3 (=ref[3]='G').
+		{"Insertion right padding", "chr1\t3\t.\tG\tGX\t.\t.\t.", false},
+		// Insertion at pos 3 with WRONG padding base
+		// (REF[0]='A' should be 'G'). Error.
+		{"Insertion wrong padding", "chr1\t3\t.\tA\tAX\t.\t.\t.", true},
+		// Deletion of pos 4..5: REF="TA", ALT="T".
+		// REF[0]='T' matches ref[4]='T'.
+		{"Deletion right padding", "chr1\t4\t.\tTA\tT\t.\t.\t.", false},
+		// SNV: REF and ALT both 1 base. Padding NOT
+		// required by §1.6.1.1 — even a wrong base
+		// here is allowed.
+		{"SNV no padding required", "chr1\t3\t.\tA\tT\t.\t.\t.", false},
+		// Symbolic <DEL> at pos 2: REF="C", REF[0]='C'
+		// matches ref[2]='C'. (Symbolic requires
+		// padding.)
+		{"Symbolic right padding", "chr1\t2\t.\tCG\t<DEL>\t.\t.\t.", false},
+		// Unknown contig: warning, not error.
+		{"Unknown contig", "chrX\t3\t.\tG\tGX\t.\t.\t.", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			v := NewValidator(ModeStrict).WithReference(ref)
+			issues := v.Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "padding base") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_NoReference_NoCheck(t *testing.T) {
+	// Without a reference attached, no padding check fires.
+	hdr := "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	dec := NewDecoder(strings.NewReader(hdr + "chr1\t2\t.\tC\tT\t.\t.\t.\n"))
+	h, _ := dec.Header()
+	rec, _ := dec.Record()
+	issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+	for _, iss := range issues {
+		if strings.Contains(iss.Msg, "padding base") {
+			t.Errorf("unexpected padding check without reference: %+v", iss)
+		}
 	}
 }
 

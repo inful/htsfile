@@ -583,6 +583,54 @@ existing parser).
 
 **Status:** ✅
 
+### T4.3 — Reference-aware REF/ALT padding check (§1.6.1.1)
+
+**Spec (§1.6.1.1, lines 406–407):**
+
+> For simple insertions and deletions in which either
+> the REF or one of the ALT alleles would otherwise be
+> null/empty, the REF and ALT Strings must include the
+> base before the variant (which must be reflected in
+> the POS field), unless the variant occurs at position
+> 1 on the contig in which case it must include the base
+> after the variant.
+
+**Scope:** per-record, conditioned on a FASTA reference
+being attached. The check fires only when padding is
+required: any ALT is symbolic, or any ALT has a
+different length from REF (true indel). SNVs and
+same-length substitutions are exempt — the spec allows
+padding to be omitted for "complex substitutions or
+other variants where all alleles have at least one base
+represented".
+
+**Where:**
+- `fasta/fasta.go` (new package, v0.10.0): plain
+  FASTA reader with optional `.fai` random access.
+- `vcf/validate.go`: `Validator.WithReference` and
+  `checkPaddingBase` look up `ref[POS]` and compare to
+  `REF[0]`.
+
+**Acceptance:**
+- A record with `POS=3`, `REF="G"`, `ALT="GX"` on a
+  reference where `ref[3]="G"` is accepted.
+- A record with the same POS/ALT but `REF="A"` fires
+  SeverityError.
+- An SNV with `REF="A"`, `ALT="T"` (same length) is
+  accepted regardless of `ref[POS]`.
+- Unknown contig or position-out-of-range degrades to
+  SeverityWarning (skipped in ModeDefault).
+
+**Notes:** plain FASTA only in this release. BGZF (the
+common `.fa.gz` form) is not supported; callers should
+gunzip first. The `.fai` format follows the samtools
+faidx output: 5-column TSV
+(`name`, `length`, `offset`, `linebases`, `linewidth`).
+The offset is the byte position of the first base
+(just past the header line).
+
+**Status:** ✅ (v0.10.0)
+
 ---
 
 ## Quick index — by spec section

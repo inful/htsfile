@@ -11,6 +11,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.10.0] — 2026-10-18
+
+This release adds a top-level `fasta` package and uses
+it to give the VCF validator a reference-aware padding
+check (§1.6.1.1). It is a small, additive feature
+release: no public API in `vcf` changed beyond the new
+`Validator.WithReference` method.
+
+### Added — new package
+
+- **`fasta` package** (`e6f9b91`). A small
+  read-only FASTA reference reader. Supports plain
+  FASTA with optional samtools-faidx-style `.fai`
+  random access. When no `.fai` is found, the package
+  streams the file once at open time to build an
+  in-memory index. The package exposes `Open`,
+  `(*Reference).BaseAt`, `(*Reference).Contigs`, and
+  `(*Reference).Close`. Five unit tests cover scanned,
+  indexed, unknown-contig, out-of-range, and
+  variable-width cases. BGZF compression is out of
+  scope for this release.
+
+### Added — vcf validator
+
+- **`Validator.WithReference`** (`e6f9b91`). When a
+  `*fasta.Reference` is attached, the validator
+  enforces the §1.6.1.1 REF/ALT padding-base rule:
+  for any record where REF or any ALT is symbolic, or
+  any ALT has a different length from REF (a true
+  indel), `REF[0]` must equal the reference base at
+  `POS`. Reference lookup failures (unknown contig,
+  position out of range) downgrade to a SeverityWarning
+  in `ModeStrict` and are skipped in `ModeDefault`.
+  Six new sub-tests cover right/wrong padding for
+  insertion, deletion, symbolic ALT, SNV (no
+  padding required), and unknown contig.
+
 ## [0.9.1] — 2026-10-18
 
 This patch release closes the last open item from the

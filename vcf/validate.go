@@ -5,6 +5,8 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+
+	"github.com/inful/htsfile/fasta"
 )
 
 // Mode controls the strictness of the [Validator].
@@ -44,6 +46,16 @@ const (
 // concurrent streams.
 type Validator struct {
 	Mode Mode
+
+	// Reference is an optional FASTA handle. When set, the
+	// validator enforces VCFv4.5 §1.6.1.1 "For simple
+	// insertions and deletions in which either the REF or
+	// one of the ALT alleles would otherwise be
+	// null/empty, the REF and ALT Strings must include the
+	// base before the variant" by checking that REF[0]
+	// matches the reference base at POS-1 (or POS when
+	// POS=1).
+	Reference *fasta.Reference
 
 	// Streaming state (used by Next / Finish). Zero value is
 	// fine; the validator initialises lazily.
@@ -100,6 +112,15 @@ type phaseKey struct {
 
 // NewValidator constructs a Validator with the given mode.
 func NewValidator(m Mode) *Validator { return &Validator{Mode: m} }
+
+// WithReference attaches a FASTA reference to the validator
+// for the §1.6.1.1 REF/ALT padding-base check. Returns the
+// receiver for chaining. The reference must remain open for
+// the lifetime of validation.
+func (v *Validator) WithReference(ref *fasta.Reference) *Validator {
+	v.Reference = ref
+	return v
+}
 
 // Validate returns a list of issues found by applying the validator to a
 // batch of records under the given header. Issues are returned in
@@ -496,6 +517,16 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 			Field: "REF",
 			Msg:   fmt.Sprintf("invalid REF allele %q (must contain only A/C/G/T/N, case insensitive)", rec.Ref),
 		})
+	}
+
+	// REF / ALT padding-base check (§1.6.1.1). When a
+	// reference is attached and at least one ALT is
+	// symbolic OR has a different length from REF, REF[0]
+	// must equal the base at POS-1 (or POS if POS=1).
+	if v.Reference != nil && rec.Ref != "" {
+		if needsPadding(rec.Ref, rec.Alt) {
+			issues = append(issues, v.checkPaddingBase(rec, idx, line)...)
+		}
 	}
 
 	// ALT alleles: spec limits them to ACGTN, "*", "<ID>", "<* >", ".",
@@ -2200,6 +2231,15 @@ func isSymbolicSV(a string) bool {
 	return isCNVAllele(a)
 }
 
+// isSymbolic reports whether a is any symbolic ALT
+// allele (an angle-bracketed ID string). Catches all
+// <ID>, <ID:SUBTYPE>, and breakend-like forms. Used by
+// the padding-base check; isSymbolicSV is more
+// restrictive (CNV-only).
+func isSymbolic(a string) bool {
+	return len(a) >= 2 && a[0] == '<' && a[len(a)-1] == '>'
+}
+
 // svlenPresent reports whether the SVLEN INFO field
 // carries a present (non-missing) entry for the i-th
 // ALT allele.
@@ -2213,6 +2253,71 @@ func svlenPresent(rec *Record, i int) bool {
 	}
 	v := iv.Ints[i]
 	return !isMissing(v)
+}
+
+// needsPadding reports whether the §1.6.1.1 padding-base
+// rule applies to a record. The rule applies when at
+// least one ALT is symbolic, OR any ALT has a different
+// length from REF (a true indel). Same-length
+// substitutions and SNVs are exempt — the spec explicitly
+// allows the padding base to be omitted for "complex
+// substitutions or other variants where all alleles have
+// at least one base represented".
+func needsPadding(ref string, alts []string) bool {
+	if len(alts) == 0 {
+		return false
+	}
+	refLen := len(ref)
+	for _, a := range alts {
+		if isSymbolic(a) {
+			return true
+		}
+		if len(a) != refLen {
+			return true
+		}
+	}
+	return false
+}
+
+// checkPaddingBase fetches ref[POS] and verifies REF[0]
+// matches. Returns one SeverityError on mismatch, or
+// one SeverityWarning if the reference cannot answer
+// (unknown contig, position out of range). The warning
+// is dropped in ModeDefault.
+//
+// Per VCFv4.5 §1.6.1.1: "the REF and ALT Strings must
+// include the base before the variant (which must be
+// reflected in the POS field)". POS is the position of
+// the first base of REF, which IS the padding base for
+// both simple insertions and deletions.
+func (v *Validator) checkPaddingBase(rec *Record, idx, line int) []ValidationError {
+	pos := int(rec.Pos)
+	if pos < 1 {
+		return nil
+	}
+	b, err := v.Reference.BaseAt(rec.Chrom, pos)
+	if err != nil {
+		iss := ValidationError{
+			Severity: SeverityWarning,
+			Record:   idx + 1, Line: line,
+			Field: "REF",
+			Msg:   fmt.Sprintf("reference lookup for %s:%d failed: %v; skipping padding-base check", rec.Chrom, pos, err),
+		}
+		if v.Mode == ModeStrict {
+			iss.Severity = SeverityError
+		}
+		return []ValidationError{iss}
+	}
+	got := strings.ToUpper(string(b))
+	want := strings.ToUpper(string(rec.Ref[0]))
+	if got != want {
+		return []ValidationError{{
+			Severity: SeverityError, Record: idx + 1, Line: line,
+			Field: "REF",
+			Msg:   fmt.Sprintf("REF padding base %q does not match reference base %q at %s:%d (§1.6.1.1)", string(rec.Ref[0]), string(b), rec.Chrom, pos),
+		}}
+	}
+	return nil
 }
 
 // checkLAAPosition enforces VCFv4.5 §1.6.2: "LAA must
