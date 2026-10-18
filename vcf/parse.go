@@ -756,6 +756,12 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 	// bases here, plus the leading base for symbolic SV padding. Percent
 	// encoding only applies inside INFO/FORMAT values.
 	rec.Ref = string(fields[3])
+	// Reduce IUPAC ambiguity codes to one of their
+	// constituent bases (per VCFv4.5 §1.6.1.1 REF must be
+	// A/C/G/T/N). This mutates rec.Ref in place; callers
+	// that need the original sequence can re-derive it
+	// from REF+ALT.
+	rec.Ref = reduceIUPACBases(rec.Ref)
 	if rec.Ref == "" {
 		return nil, &ParseError{Line: lineNo, Field: "REF",
 			Msg: "empty reference allele"}
@@ -961,6 +967,56 @@ func parseInfoColumn(s string, h *Header, lineNo int) (map[string]InfoValue, err
 var contigNamePattern = `[0-9A-Za-z!#$%&+./:;?@^_|~-][0-9A-Za-z!#$%&*+./:;=?@^_|~-]*`
 
 // validContigName reports whether s matches contigNamePattern.
+// iupacReduction maps each uppercase IUPAC ambiguity code
+// to one of its constituent A/C/G/T bases. Lower case input
+// is reduced by folding case and then copying the result
+// back to the input case. Per VCFv4.5 §1.6.1.1 REF must be
+// only A/C/G/T/N; we reduce IUPAC codes to satisfy the rule
+// without rejecting real-world records that contain them.
+var iupacReduction = map[byte]byte{
+	'R': 'A', // A or G
+	'Y': 'C', // C or T
+	'S': 'C', // G or C
+	'W': 'A', // A or T
+	'K': 'G', // G or T
+	'M': 'A', // A or C
+	'B': 'C', // C, G or T
+	'D': 'A', // A, G or T
+	'H': 'A', // A, C or T
+	'V': 'A', // A, C or G
+}
+
+// reduceIUPACBases rewrites each IUPAC ambiguity code in s
+// to one of its constituent bases, preserving the case of
+// the input. A, C, G, T, N (any case) are returned
+// unchanged.
+func reduceIUPACBases(s string) string {
+	if !strings.ContainsAny(s, "RYSWKMBDHVryswkmbdhv") {
+		return s
+	}
+	out := []byte(s)
+	for i, c := range out {
+		// Fold ASCII case without going through rune to
+		// keep gosec happy.
+		var upper byte
+		switch {
+		case c >= 'a' && c <= 'z':
+			upper = c - ('a' - 'A')
+		default:
+			upper = c
+		}
+		base, ok := iupacReduction[upper]
+		if !ok {
+			continue
+		}
+		if c >= 'a' && c <= 'z' {
+			base += 'a' - 'A'
+		}
+		out[i] = base
+	}
+	return string(out)
+}
+
 // validMD5Hex reports whether s is 32 lowercase hex characters,
 // the format VCFv4.5 §1.4.7 prescribes for ##contig MD5. We
 // do not recompute the digest because the sequence is not in
