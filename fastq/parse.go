@@ -48,6 +48,11 @@ const DefaultMaxLineLength = 10 << 20 // 10 MB
 // Callers can disable auto-detect and force an offset via
 // [Decoder.SetPhredOffset].
 //
+// Solexa Solexa+64 data uses the same byte range as Phred+64
+// but a different formula. Callers with known Solexa+64 data
+// should call [Decoder.SetPhredEncoding] (Solexa) before
+// reading. The library does not auto-detect Solexa.
+//
 // A Decoder is not safe for concurrent use; create one per
 // goroutine.
 type Decoder struct {
@@ -58,6 +63,9 @@ type Decoder struct {
 	// Phred offset config.
 	phredOffset uint8
 	autoDetect  bool
+
+	// Phred formula config.
+	phredEncoding PhredEncoding
 
 	// After the first record, this holds the detected (or
 	// configured) offset used for all records.
@@ -88,6 +96,7 @@ func NewDecoderWithMaxLine(r io.Reader, maxLineLength int) *Decoder {
 		scanner:       sc,
 		maxLineLength: maxLineLength,
 		phredOffset:   DefaultPhredOffset,
+		phredEncoding: PhredEncodingPhred,
 		autoDetect:    true,
 	}
 }
@@ -101,12 +110,28 @@ func (d *Decoder) SetPhredOffset(offset uint8) {
 	d.autoDetect = false
 }
 
+// SetPhredEncoding sets the formula the Qual bytes are
+// intended to be decoded with. The default is
+// PhredEncodingPhred; Solexa data should set
+// PhredEncodingSolexa. The byte range of the Qual line is
+// unaffected by this setting — see [PhredEncoding] for the
+// formula difference.
+func (d *Decoder) SetPhredEncoding(e PhredEncoding) {
+	d.phredEncoding = e
+}
+
 // PhredOffset returns the offset in effect for the most
 // recently decoded record (or the configured default if no
 // record has been decoded yet). After the first record, this
 // is stable for the lifetime of the Decoder.
 func (d *Decoder) PhredOffset() uint8 {
 	return d.phredOffset
+}
+
+// PhredEncoding returns the encoding in effect for the
+// Decoder (default [PhredEncodingPhred]).
+func (d *Decoder) PhredEncoding() PhredEncoding {
+	return d.phredEncoding
 }
 
 // Record returns the next FASTQ record, or (nil, [io.EOF])
@@ -185,6 +210,7 @@ func (d *Decoder) Record() (*Record, error) {
 	}
 	rec.Qual = append(rec.Qual, qual...)
 	rec.PhredOffset = d.phredOffset
+	rec.PhredEncoding = d.phredEncoding
 	return rec, nil
 }
 

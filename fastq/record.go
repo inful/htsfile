@@ -42,6 +42,12 @@ type Record struct {
 	// PhredOffset is the offset used to decode Qual (33 for
 	// Sanger / Illumina 1.8+, 64 for older Illumina 1.3–1.7).
 	PhredOffset uint8
+
+	// PhredEncoding is the formula the Qual bytes are
+	// intended to be decoded with. Defaults to
+	// PhredEncodingPhred; callers parsing Solexa+64 data
+	// should call [Decoder.SetPhredEncoding] before reading.
+	PhredEncoding PhredEncoding
 }
 
 // Length returns the number of bases in the record
