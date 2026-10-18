@@ -10,14 +10,15 @@ the [samtools/hts-specs](https://samtools.github.io/hts-specs/) family
 and adjacent bioinformatics formats.
 
 > **Where to continue from this point in a new session:**
-> Tiers 1–3 are complete (SAM v1, BAM v1, GFF3, FASTA, BCF
-> v2.1 read-only, Tabix v1 read-only, CSI v1 read-only).
-> Tier 4 status: FASTQ shipped in v0.3.0; CRAM v3 is at the
-> design-survey stage (see `cram/SPEC.md`); htsget/refget and
-> crypt4gh are pending. The index-generation question (writers
-> for BCF / Tabix / CSI) is still flagged under open decisions
-> and should be resolved before any release that ships those
-> writers. The roadmap is up to date as of the latest commit
+> Tiers 1–3 are complete. Tier 4 status: FASTQ shipped in
+> v0.3.0; Tabix + CSI writers + BCF record encoder shipped
+> in v0.4.0 + v0.5.0 (every format the library reads now has a
+> Writer; CLI roundtrip works for all of them). CRAM v3 is
+> still at the design-survey stage (see `cram/SPEC.md`); the
+> codec gap blocks implementation. htsget/refget and
+> crypt4gh remain pending (htsget/refget's architectural
+> shape — separate directory vs separate Go module — is
+> explicitly deferred per the ROADMAP §Open decisions). The roadmap is up to date as of the latest commit
 > on `main`. See the [CHANGELOG](CHANGELOG.md) for what just
 > landed and `git log --oneline` for the commit history.
 
@@ -347,11 +348,12 @@ htsget/refget and crypt4gh remain pending.
       packages now expose `Writer` + `Write(*Index)`. The CLI
       `roundtrip` subcommand works for `.tbi` and `.csi`
       files. Closes the Tabix + CSI halves of this item.
-- [ ] **Index generation — BCF writer.** Still deferred.
-      The BCF writer requires per-sample FORMAT data support
-      (binary FORMAT/sample format), which v1's BCF reader
-      explicitly deferred for the same reason. See the v0.2.0
-      release notes for the BCF reader's read-only rationale.
+- [x] **Index generation — BCF writer (record-side).**
+      The v0.5.0 release added the BCF record encoder; it
+      writes records without per-sample FORMAT data (matching
+      v1's BCF reader scope). The remaining asymmetry is the
+      per-sample binary FORMAT encoding; deferred unless a
+      real-world use case surfaces.
       follow-up. Tabix + CSI writers shipped (see the Tier 4
       item above). BCF writer still deferred for per-sample
       FORMAT data.

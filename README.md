@@ -283,7 +283,8 @@ htsfile roundtrip reads.sam > out.sam     # SAM round-trip
 htsfile roundtrip genes.gff3 > out.gff3   # GFF3 round-trip
 htsfile roundtrip sequences.fa > out.fa  # FASTA round-trip (80-char wrapping)
 # roundtrip does not support .bam or .bcf files (both are
-# read-only in v1). .tbi and .csi round-trip is supported.
+# read-only in v1). .bam and .bcf round-trip is supported
+# as of v0.5.0. .tbi and .csi round-trip is supported.
 
 # Print a header summary
 htsfile summary sample.vcf
@@ -410,7 +411,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | 4-bit packed SEQ / packed CIGAR / qual |   ✅   |
 | All 5 BCF INFO type codes (Integer, Float, Flag, Character, String) | ✅ |
 | `ModeDefault` and `ModeStrict` validators | ✅ |
-| **BCF writer (round-trip)**            |   ❌   |
+| **BCF writer (record-side)**           |   ✅   |
 | Per-sample FORMAT column               |   ❌   |
 | BCF 2.2 (latest version) support       |   ❌   |
 

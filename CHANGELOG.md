@@ -7,6 +7,75 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] — 2026-10-18
+
+This release closes the "close symmetry" Phase 1 described
+in the pinned context: every format the library reads now has
+a Writer, and the CLI roundtrip subcommand works for all of
+them.
+
+Six new commits:
+
+- feat(bgzf): add BGZF block writer (commit `a7a2895`)
+- feat(bam/bai): add BAI index writer (commit `c478b9c`)
+- feat(bam): add BAM record encoder (commit `43bbe5d`)
+- feat(bcf): add BCF record encoder (commit `3af191d`)
+- feat(cli): enable roundtrip for BAM and BCF (commit `6098edf`)
+- docs: document the writers + CLI round-trip in CHANGELOG, README, and ROADMAP
+
+### Added
+
+- **BGZF block writer** (`internal/bgzf.Writer`). Symmetric
+  counterpart of the existing Reader. Buffers up to 64 KiB
+  per block (the spec maximum), flushes on full or on Close.
+  Emits the canonical 28-byte empty EOF marker. The CDATA in
+  the EOF marker is the empty-deflate-stream sequence (`03 00`)
+  so the marker decodes cleanly through any flate reader. The
+  header layout is fixed at 18 bytes: 4 (magic + CM + FLG) + 4
+  (MTIME) + 2 (XFL) + 2 (XLEN) + 2 (SI1 + SI2) + 2 (SLEN) + 2
+  (BSIZE). Foundational for both BAM and BCF writers (both use
+  BGZF compression).
+
+- **BAI index writer** (`bam/bai.Writer`). Symmetric
+  counterpart of the existing Reader. Takes a pre-built *Index
+  and serializes; bins are emitted in ascending Number order
+  for deterministic output.
+
+- **BAM record encoder** (`bam.Encoder`). Writes BGZF-
+  compressed BAM. Surfaces the `bam.Encoder` type with
+  `NewEncoder`, `WriteHeader`, `WriteRecord`, `Close`. Records
+  round-trip cleanly including all 11 non-B-array aux tag
+  types (B arrays require a sub-type field on `Tag` that
+  the struct doesn't currently carry — documented
+  limitation).
+
+- **BCF record encoder** (`bcf.Encoder`). Writes BGZF-
+  compressed BCF v2.1. Records are written WITHOUT per-sample
+  FORMAT data (matching the v1 BCF reader's scope). n_fmt is
+  always 0; the decoder skips the FORMAT block when n_fmt == 0,
+  so the produced stream round-trips cleanly through the
+  existing decoder. Surfaces the `bcf.Encoder` type with
+  `NewEncoder`, `WriteHeader`, `WriteRecord`, `Close`.
+
+- **CLI round-trip for BAM and BCF.** The `htsfile roundtrip`
+  subcommand now works for `.bam` and `.bcf` files (in addition
+  to the previously-supported formats). BAM round-trip is
+  full; BCF round-trip is partial — header and typed record
+  fields preserve, per-sample FORMAT data is dropped.
+
+### ROADMAP §Open decisions
+
+The "Index generation — Tabix + CSI writers" item landed in
+v0.4.0. The new v0.5.0 work is the symmetric counterpart of
+v0.4.0: every format the library reads now has a Writer. The
+BCF writer still omits per-sample FORMAT data (matching v1's
+decoder scope); per-sample binary FORMAT encoding is the only
+remaining reader/writer asymmetry and is the natural v2
+follow-up if/when needed.
+
+[0.5.0]: https://github.com/inful/htsfile/compare/v0.4.0...v0.5.0
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.5.0...HEAD
+
 ## [0.4.0] — 2026-10-18
 
 This release closes the Tabix + CSI halves of the ROADMAP
