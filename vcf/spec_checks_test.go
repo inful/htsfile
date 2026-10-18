@@ -829,6 +829,138 @@ func TestValidator_METAValuesDefaultModeSkipsCheck(t *testing.T) {
 	}
 }
 
+func TestValidator_ImpreciseRequiresCIPOSForPreciseAlt(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.7: "If a precise ALT allele
+	// is present in a record with the IMPRECISE flag,
+	// CIPOS must be explicitly set for that allele, even
+	// if it is 0,0."
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=IMPRECISE,Number=0,Type=Flag,Description=\"x\">\n" +
+		"##INFO=<ID=CIPOS,Number=.,Type=Integer,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		{"imp imprecise + cipos present", "chr1\t100\t.\tA\tC\t.\t.\tIMPRECISE;CIPOS=0,0", false},
+		{"imp imprecise + cipos missing", "chr1\t100\t.\tA\tC\t.\t.\tIMPRECISE", true},
+		{"no imprecise flag + no cipos", "chr1\t100\t.\tA\tC\t.\t.\t.", false},
+		{"breakend allele + imprecise", "chr1\t100\t.\tA\tG]chr1:200]\t.\t.\tIMPRECISE", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "IMPRECISE flag is set but CIPOS is missing") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_SVLENRequiredForSymbolicAlt(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.7: "SVLEN must be specified
+	// for symbolic structural variant alleles."
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=DEL,Description=\"x\">\n" +
+		"##INFO=<ID=SVLEN,Number=A,Type=Integer,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, alt, info string
+		want         bool
+	}{
+		{"svlen present", "<DEL>", "SVLEN=100", false},
+		{"svlen missing (only 1 entry)", "<DEL>,<DUP>", "SVLEN=100", true},
+		{"svlen missing entirely", "<DEL>", ".", true},
+		{"non-symbolic alt", "C", ".", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + "chr1\t100\t.\tA\t" + c.alt + "\t.\t.\t" + c.info + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "requires SVLEN to be specified") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_LAAPrecedesLocalAlleleKeys(t *testing.T) {
+	// Per VCFv4.5 §1.6.2: "LAA must also be present and
+	// precede all fields other than GT."
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=LAA,Number=.,Type=Integer,Description=\"l\">\n" +
+		"##FORMAT=<ID=LAD,Number=.,Type=Integer,Description=\"l\">\n" +
+		"##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"d\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, format, sample string
+		want                bool
+	}{
+		{"GT LAA LAD", "GT:LAA:LAD", "0/1:2:5,10", false},
+		{"GT LAD before LAD", "GT:LAA:LAD", "0/1:2:5,10", false},
+		{"LAD before LAA", "GT:LAD:LAA", "0/1:5,10:2", true},
+		{"GT DP LAA LAD", "GT:DP:LAA:LAD", "0/1:30:2:5,10", false},
+		{"GT LAA DP LAD (non-local allele after LAA is fine)", "GT:LAA:DP:LAD", "0/1:2:30:5,10", false},
+		{"LAA missing", "GT:LAD", "0/1:5,10", false}, // caught by T2.1 already
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC,G\t.\t.\t.\t" + c.format + "\t" + c.sample + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "local-allele field") && strings.Contains(iss.Msg, "must appear after LAA") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_LocalAlleleRequiresLAA(t *testing.T) {
 	// Per VCFv4.5 §1.6.2: "If any local-allele field is
 	// present, LAA must also be present". A sample that

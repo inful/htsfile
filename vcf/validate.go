@@ -601,6 +601,42 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 	altCount := len(rec.Alt)
 	line := rec.Line
 
+	// IMPRECISE + precise ALT requires CIPOS (§1.6.1.7):
+	// "If a precise ALT allele is present in a record
+	// with the IMPRECISE flag, CIPOS must be explicitly
+	// set for that allele, even if it is 0,0."
+	if impreciseFlagged(rec) {
+		for i, alt := range rec.Alt {
+			if isBreakend(alt) {
+				continue
+			}
+			if !ciposCovers(rec, i) {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "INFO/CIPOS",
+					Msg: fmt.Sprintf("IMPRECISE flag is set but CIPOS is missing for precise ALT %q; §1.6.1.7 requires CIPOS for every precise allele when IMPRECISE is set", alt),
+				})
+			}
+		}
+	}
+
+	// SVLEN required for symbolic structural variant
+	// alleles (§1.6.1.7): "SVLEN must be specified for
+	// symbolic structural variant alleles." A missing
+	// SVLEN entry is -1 in the typed-core Ints slice.
+	for i, alt := range rec.Alt {
+		if !isSymbolicSV(alt) {
+			continue
+		}
+		if !svlenPresent(rec, i) {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "INFO/SVLEN",
+				Msg: fmt.Sprintf("symbolic ALT %q requires SVLEN to be specified (§1.6.1.7)", alt),
+			})
+		}
+	}
+
 	for key := range rec.Info {
 		val := rec.Info[key]
 		def, declared := h.Infos[key]
@@ -1339,6 +1375,14 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 				})
 			}
 		}
+
+		// LAA must precede all FORMAT keys other than GT
+		// (per §1.6.2: "If any local-allele field is present,
+		// LAA must also be present and precede all fields
+		// other than GT").
+		if _, hasLAA := g.Fields["LAA"]; hasLAA {
+			issues = append(issues, checkLAAPosition(rec, sIdx, idx, line)...)
+		}
 		// LAA value range and distinctness (per VCFv4.5
 		// §1.6.1.4). LAA must be distinct 1-based indices
 		// into ALT.
@@ -1653,6 +1697,19 @@ var localAlleleKeys = [...]string{
 	"LGL", "LGP", "LPL", "LPP",
 }
 
+// isLocalAlleleKey reports whether k is a local-allele
+// FORMAT key. Matches the keys listed in
+// localAlleleKeys; "LAA" itself is not considered a
+// local-allele key here (it is the container).
+func isLocalAlleleKey(k string) bool {
+	for _, lk := range localAlleleKeys {
+		if k == lk {
+			return true
+		}
+	}
+	return false
+}
+
 // missingLAAFields returns the local-allele FORMAT keys
 // declared on the sample whose LAA field is missing or
 // empty.
@@ -1804,6 +1861,95 @@ func hasAnyInfoField(info map[string]InfoValue, keys ...string) bool {
 // equality check on zero values to avoid false
 // positives.
 func isMissing(n int64) bool { return n <= 0 }
+
+// impreciseFlagged reports whether the record carries
+// the ##INFO=<ID=IMPRECISE,Number=0,Type=Flag,...>
+// declaration and the IMPRECISE flag is set.
+func impreciseFlagged(rec *Record) bool {
+	iv, ok := rec.Info["IMPRECISE"]
+	if !ok {
+		return false
+	}
+	return iv.Flag
+}
+
+// ciposCovers reports whether the CIPOS INFO field
+// carries an entry for the i-th ALT allele. The
+// IMPRECISE rule cares only that the field has the
+// expected slot — [0,0] is a valid explicit value per
+// the spec ("CIPOS must be explicitly set for that
+// allele, even if it is 0,0"). What is missing is
+// the absence of the pair (i.e. the field has fewer
+// than i*2+2 entries, or the field is missing).
+func ciposCovers(rec *Record, i int) bool {
+	iv, ok := rec.Info["CIPOS"]
+	if !ok || iv.Missing {
+		return false
+	}
+	return i*2+1 < len(iv.Ints)
+}
+
+// isSymbolicSV reports whether a is a symbolic
+// structural-variant ALT allele (not <*>, not a
+// breakend, not a bare IUPAC code).
+func isSymbolicSV(a string) bool {
+	if !strings.HasPrefix(a, "<") || !strings.HasSuffix(a, ">") {
+		return false
+	}
+	if a == "<*>" || strings.ContainsAny(a, "[]") {
+		return false
+	}
+	return isCNVAllele(a)
+}
+
+// svlenPresent reports whether the SVLEN INFO field
+// carries a present (non-missing) entry for the i-th
+// ALT allele.
+func svlenPresent(rec *Record, i int) bool {
+	iv, ok := rec.Info["SVLEN"]
+	if !ok || iv.Missing {
+		return false
+	}
+	if i >= len(iv.Ints) {
+		return false
+	}
+	v := iv.Ints[i]
+	return !isMissing(v)
+}
+
+// checkLAAPosition enforces VCFv4.5 §1.6.2: "LAA must
+// also be present and precede all fields other than GT".
+// Extracted from checkSamples to keep the per-sample
+// loop under the cognitive-complexity lint cap.
+func checkLAAPosition(rec *Record, sIdx, idx, line int) []ValidationError {
+	laaIdx := -1
+	for i, k := range rec.Format {
+		if k == "LAA" {
+			laaIdx = i
+			break
+		}
+	}
+	if laaIdx < 0 {
+		return nil
+	}
+	var issues []ValidationError
+	for i, k := range rec.Format {
+		if i == laaIdx || k == "GT" {
+			continue
+		}
+		if !isLocalAlleleKey(k) {
+			continue
+		}
+		if i < laaIdx {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/%s/sample[%d]", k, sIdx),
+				Msg:   fmt.Sprintf("local-allele field %q must appear after LAA in the FORMAT column", k),
+			})
+		}
+	}
+	return issues
+}
 
 // checkLAA validates a sample's LAA field. Per VCFv4.5
 // §1.6.1.4, LAA is a list of 1-based indices into ALT and
