@@ -11,6 +11,67 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.8.0] — 2026-10-18
+
+This release closes out the v4.5 spec-compliance work begun in
+v0.7.0: 15 commits since v0.7.0, all in the `vcf` package. The
+checks are additions only — no breaking changes to the public
+API. Existing files that don't trigger the new checks continue
+to validate as before.
+
+### Added — VCF v4.5 spec compliance
+
+- **POS / REF must fit within `##contig` length**
+  (`e0709ea`). POS and POS+len(REF)-1 must not exceed the
+  declared contig length (per §1.6.1.2). Records on an
+  undeclared contig or one without a length are unaffected.
+
+- **Symbolic ALT `<ID>` must be declared in `##ALT`**
+  (`eee560f`). Records using `<DEL>`, `<DUP>`, etc. must have a
+  matching `##ALT=<ID=...>` line. Breakend forms and `<*>`
+  are accepted as the spec defines them rather than via `##ALT`.
+
+- **Declared END must match the computed value**
+  (`2bdfd3c`). When a record carries END, the value must equal
+  the computed END (POS+len(REF)-1, plus SVLEN/LEN adjustments
+  for symbolic ALT alleles).
+
+- **ID column rejects `,` and `=`** (`ba45d9e`). The parser
+  already rejected whitespace and semicolon in column 3;
+  comma and equals are added so IDs round-trip cleanly through
+  BCF v2.2.
+
+- **Reserved FORMAT keys PL / GL / GP** (`9933e54`). All three
+  use `Number=G`. PL must be Integer; GL and GP must be Float.
+  `IsReservedFormatKey` now returns true for all three.
+
+- **GT must be first FORMAT field** (`1913e5a`). Per §1.6.2,
+  GT must be the first key in the FORMAT column when declared.
+  Records without GT are not flagged.
+
+- **PL (Number=G) and AD (Number=R) cardinality regression
+  tests** (`e65561c`). The existing `Number.Cardinality` path
+  already returns the right count for both: PL is
+  `genotypeCount(alleleCount, ploidy)`, AD is `altCount+1`.
+  Locks in behaviour with tests.
+
+- **Ploidy consistency across samples in a record**
+  (`cf102ca`). Per §1.6.2, all samples in a record must share
+  the same ploidy. Mixed ploidies make Number=G / Number=P
+  cardinality ambiguous.
+
+- **Mitochondrial chromosome exemptions** (`7e072fb`). Per
+  §1.6.1.6, mtDNA uses a circular coordinate system. POS can
+  legitimately exceed the contig length and END can wrap past
+  the origin. The POS-length and END-match checks skip
+  mtDNA. Recognised names: MT, Mt, mt, chrM, chrm, M, chrMT,
+  chrMt, MTDNA, mtdna.
+
+- **`##contig` species / taxonomy sub-fields** (`02f1bdd`).
+  Previously these landed in the catch-all `c.Other`; now they
+  are parsed into typed fields on the `Contig` struct
+  (`Species`, `Taxonomy`) and round-trip through the encoder.
+
 ## [0.7.0] — 2026-10-18
 
 This release rounds out the VCF v4.5 spec compliance surface
@@ -299,7 +360,8 @@ follow-up if/when needed.
 
 [0.5.0]: https://github.com/inful/htsfile/compare/v0.4.0...v0.5.0
 [0.7.0]: https://github.com/inful/htsfile/compare/v0.6.0...v0.7.0
-[Unreleased]: https://github.com/inful/htsfile/compare/v0.7.0...HEAD
+[0.8.0]: https://github.com/inful/htsfile/compare/v0.7.0...v0.8.0
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.8.0...HEAD
 
 ## [0.4.0] — 2026-10-18
 
