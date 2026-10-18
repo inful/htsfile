@@ -366,6 +366,37 @@ htsget/refget and crypt4gh remain pending.
 - [ ] **htsget / refget** — separate package from the per-format
       work, scope TBD (see §Open decisions for the two
       architectural readings).
+- [ ] **VCF v4.5 spec compliance — remaining checks.** The
+      high-value batch landed in this release (POS ≤ contig
+      length, symbolic ALT declared in `##ALT`, END matches
+      computed value, ID column character set). Remaining:
+
+  - **PL / GL / GP cardinality = `ploidy*(ploidy-1)/2 + ploidy`**
+    (the "Number=G" formula). Needs per-sample ploidy from
+    GT. Medium scope.
+  - **AD cardinality = len(REF) + len(ALT)** for
+    `Number=A`. Same plumbing as above.
+  - **`Number=G` reserved keys must have `Type=Float` or
+    `Type=Integer`** (PL, GL, GP). The reserved-key table
+    knows `Number=G` but does not yet validate the Type
+    against it.
+  - **GT must be the first FORMAT field** if present
+    (recommended, not required).
+  - **Ploidy consistency across a record** — when GTs
+    have different ploidies, `Number=G` and `Number=P`
+    cardinality must use the maximum ploidy per record.
+  - **`##contig` species / taxonomy / assembly** field
+    validation.
+  - **Mitochondrial DNA (`chrM`) special-case rules** from
+    §1.6.1.6 (mtDNA uses a circular-aware coordinate system).
+  - **Compressed `.vcf.gz` reader pipeline** (BGZF wrapper
+    + tabix/CSI region access). All the building blocks
+    exist (`internal/bgzf`, `tabix`, `csi`); no wired-up
+    `vcf.Open(path)` that returns a streaming decoder.
+
+  Tracked here as Tier 3 follow-up; not blockers for any
+  released feature. The full list of checks shipped in
+  v0.7.0 lives in the `v0.7.0` CHANGELOG entry.
 - [ ] **CRAM v3** — design-survey stage only. Codecs 3–8 are
       not in Go stdlib and the no-runtime-deps rule precludes
       samtools/htscodecs. Resume when stdlib adds the codecs,
