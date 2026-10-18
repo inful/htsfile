@@ -10,10 +10,11 @@ the [samtools/hts-specs](https://samtools.github.io/hts-specs/) family
 and adjacent bioinformatics formats.
 
 > **Where to continue from this point in a new session:** start with
-> **Tier 2 (FASTA)**. BAM and GFF3 Tier 2 have landed. The
-> roadmap is up to date as of the latest commit on `main`.
-> See the [CHANGELOG](CHANGELOG.md) for what just landed and
-> `git log --oneline` for the commit history.
+> **Tier 3 (BCF v2.1 / Tabix / CSI)**. All of Tier 2 has landed
+> (BAM, GFF3, FASTA — including the CLI refactor that was
+> pinned for FASTA). The roadmap is up to date as of the latest
+> commit on `main`. See the [CHANGELOG](CHANGELOG.md) for what
+> just landed and `git log --oneline` for the commit history.
 
 ## Design principles
 
@@ -146,9 +147,24 @@ in the style established for the BED v1 work.
         feature line.
       - FASTA emission after `###` is intentionally out of
         scope for v1.
-- [ ] **FASTA** — sequence foundation. Two record types (header
+- [x] **FASTA** — sequence foundation. Two record types (header
       starting with `>` + multi-line sequence). Optional `.fai`
-      index file for random access. *Next up.*
+      index file for random access. *Completed.* Includes:
+      - `fasta/` — streaming `Decoder`, round-trippable `Encoder`
+        with configurable sequence-line wrapping (default 80),
+        per-record `Validator` (`ModeDefault` + `ModeStrict`
+        alphabet check).
+      - `fasta/fai/` — `.fai` index parser (5 tab-separated
+        fields per reference: name, length, offset, lineBases,
+        lineWidth). Read-only; generation out of scope.
+      - CLI: `check`, `roundtrip`, `summary` for `.fa` /
+        `.fasta` / `.fna` / `.ffn` / `.faa`; content sniff
+        `>` header line.
+
+  Also in this commit: the ≥3-packages CLI duplication
+  refactor the ROADMAP flagged. The five per-format `runCheck*`
+  duplicates have been replaced by a single shared
+  `runIssueReport` helper plus per-package adapters.
 
 ### Tier 3 — VCF ecosystem and indexing
 
@@ -210,14 +226,15 @@ rather than per-tier to avoid duplication.
   CHANGELOG entry under `[Unreleased]`. Mirror the SAM v1 commit
   (`3484a4f`) as the template.
 
-- **CLI duplication.** `runCheck{VCF,BED,SAM,BAM,GFF}`,
-  `runRoundtrip{VCF,BED,SAM,GFF}`, and
-  `runSummary{VCF,BED,SAM,BAM,GFF}` are intentionally
-  near-duplicates and carry `//nolint:dupl` with rationale.
-  The duplication is structural across per-format entry points.
-  GFF3 crossed the ≥3-packages threshold the ROADMAP flagged
-  for refactor; the refactor (extract an issue-reporting
-  helper) is queued for the next format landing (FASTA).
+- **CLI duplication.** The five per-format `runCheck*`
+  functions used to be near-duplicates with `//nolint:dupl`.
+  The ≥3-packages refactor flagged in this ROADMAP has now
+  landed: a single shared `runIssueReport` helper plus
+  per-package adapters replaces the duplicated sort/print/
+  count loop. The `runRoundtrip*` and `runSummary*` families
+  are still parallel (different stats per format make a
+  shared abstraction less clear), but each new format keeps
+  the same pattern and the per-format lines are short.
 
 ## What we have today
 
@@ -229,8 +246,10 @@ rather than per-tier to avoid duplication.
 | `bam/`         | v1     | 76.2%    | Decoder (with `NewDecoderWithMaxLine`), Validator, errors, types, B-array round-trip, CLI smoke |
 | `bam/bai/`     | n/a    | 84.1%    | Index parser + `Reg2Bins` helper |
 | `internal/bgzf/` | n/a  | 77.5%    | Block decoder (BSIZE, CRC32, ISIZE, EOF marker) |
-| `gff/`         | v3     | 75.4%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, multi-value attrs, CLI smoke |
-| `cmd/htsfile/` | n/a    | n/a      | CLI: `check`, `roundtrip`, `summary`, `version`; auto-dispatch by `.vcf`/`.bed`/`.sam`/`.bam`/`.gff`/`.gff3` extension + content sniff for stdin |
+| `gff/`         | v3     | 75.7%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, multi-value attrs, CLI smoke |
+| `fasta/`       | n/a    | 75.6%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, round-trip, CLI smoke |
+| `fasta/fai/`   | n/a    | 80.6%    | Index parser (5 fields: name, length, offset, lineBases, lineWidth) |
+| `cmd/htsfile/` | n/a    | n/a      | CLI: `check`, `roundtrip`, `summary`, `version`; auto-dispatch by `.vcf`/`.bed`/`.sam`/`.bam`/`.gff`/`.gff3`/`.fa`/`.fasta`/`.fna`/`.ffn`/`.faa` extension + content sniff for stdin; shared `runIssueReport` helper replaces the 5-way `runCheck*` duplication |
 
 All three format packages follow the same shape (one `Decoder`, one
 `Encoder`, one `Validator`, one `Record`/`Header` type, one
@@ -245,13 +264,25 @@ These are the unresolved questions for the next tier of work.
 Each has a recommendation; the recommendation should be confirmed
 before starting implementation.
 
-### For Tier 2 — FASTA
+### For Tier 3 — VCF ecosystem and indexing
 
-- [ ] **FASTA index scope.** Read-only, write, or both?
-      *Recommendation:* read-only for v1 (consistent with
-      ROADMAP's "Index generation" out-of-scope note). If
-      streaming-only access turns out to be enough, this can
-      stay read-only forever.
+These are the unresolved questions for Tier 3. The BCF / Tabix /
+CSI trio share infrastructure (sorted position indexes over
+BGZF-compressed files) so the question of *when* to extract a
+shared `index/` package is the main open decision.
+
+- [ ] **BCF v2.1 scope.** Read-only or read/write? BCF is the
+      binary counterpart of VCF; per the ROADMAP's
+      "Index generation" out-of-scope note, read-only is
+      recommended for v1.
+- [ ] **Tabix / CSI generation.** Both are *generated* from
+      sorted, indexed input. Confirm read-only-for-v1 like BAI.
+- [ ] **Shared `index/` extraction.** With BCF + Tabix + CSI +
+      BAI = 4 consumers, the threshold for extraction has
+      passed; we can extract a `bimodal` helper (BGZF
+      seek + 16-bit-interval bins) once Tier 3 is fully
+      designed. Defer until at least one of the three is
+      implemented.
 
 ## Anti-patterns we have learned to avoid
 

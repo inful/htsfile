@@ -1,21 +1,22 @@
 // Command htsfile is a small command-line interface over the
-// vcf, bed, sam, bam, and gff packages.
+// vcf, bed, sam, bam, gff, and fasta packages.
 //
 // Usage:
 //
-//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3]
-//	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam | file.gff[3]
-//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3]
+//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta]
+//	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam | file.gff[3] | file.fa[sta]
+//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta]
 //	htsfile version
 //
 // The format is auto-detected from the file extension (.vcf,
-// .bed, .sam, .bam, .gff, .gff3). For stdin ("-") or unknown
-// extensions, the first non-empty line is sniffed:
-// "##fileformat" → VCF; "track", "browser", or a tab-separated
-// chrom/start/end triple → BED; "@HD" or an 11-column
-// tab-separated record with integer FLAG/MAPQ → SAM; the
-// gzip+FEXTRA prefix → BAM; "##gff-version" or a 9-column
-// tab-separated feature line → GFF3.
+// .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .fna, .ffn,
+// .faa). For stdin ("-") or unknown extensions, the first
+// non-empty line is sniffed: "##fileformat" → VCF; "track",
+// "browser", or a tab-separated chrom/start/end triple → BED;
+// "@HD" or an 11-column tab-separated record with integer
+// FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM;
+// "##gff-version" or a 9-column tab-separated feature line →
+// GFF3; a ">" header line → FASTA.
 //
 // Subcommands:
 //
@@ -42,6 +43,7 @@ import (
 
 	"github.com/inful/htsfile/bam"
 	"github.com/inful/htsfile/bed"
+	"github.com/inful/htsfile/fasta"
 	"github.com/inful/htsfile/gff"
 	"github.com/inful/htsfile/sam"
 	"github.com/inful/htsfile/vcf"
@@ -69,6 +71,7 @@ const (
 	formatSAM
 	formatBAM
 	formatGFF
+	formatFASTA
 )
 
 func (f format) String() string {
@@ -83,6 +86,8 @@ func (f format) String() string {
 		return "BAM"
 	case formatGFF:
 		return "GFF3"
+	case formatFASTA:
+		return "FASTA"
 	default:
 		return "unknown"
 	}
@@ -121,7 +126,7 @@ func main() {
 }
 
 func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|->
+	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|file.fa[sta]|->
 
 Commands:
   check       Validate the file. Exits non-zero if any errors are found.
@@ -131,7 +136,7 @@ Commands:
               --crlf       use CR+LF line endings
   summary     Print a summary of the file (header / column count / records).
 
-Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3). For
+Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta). For
 stdin ("-") or unknown extensions, the first non-empty line is sniffed.
 BAM v1 is read-only: the roundtrip subcommand does not support .bam files.`)
 }
@@ -187,6 +192,12 @@ func detectFormat(path string) (format, io.Reader, error) {
 			return formatUnknown, nil, err
 		}
 		return formatGFF, f, nil
+	case ".fa", ".fasta", ".fna", ".ffn", ".faa":
+		f, err := openFileOrStdin(path)
+		if err != nil {
+			return formatUnknown, nil, err
+		}
+		return formatFASTA, f, nil
 	}
 	// Unknown extension (or no extension) — open once, buffer, and sniff.
 	return sniffFormat(path)
@@ -240,6 +251,12 @@ func sniffFormat(path string) (format, io.Reader, error) {
 		// will also be detected below via the 9-column rule).
 		if strings.HasPrefix(line, "##gff-version") {
 			return formatGFF, br, nil
+		}
+		// FASTA header line: '>' prefix. The sequence data
+		// that follows is multi-line so we only need to look
+		// at the first non-blank line.
+		if strings.HasPrefix(line, ">") {
+			return formatFASTA, br, nil
 		}
 		// Tab-separated triple: BED.
 		fields := strings.Split(line, "\t")
@@ -335,6 +352,218 @@ func looksLikeSAMRecord(fields []string) bool {
 	return true
 }
 
+// ---------------------------------------------------------------------------
+// Shared issue reporter (extracted from the 5-way duplicated
+// runCheck{VCF,BED,SAM,BAM,GFF} functions).
+//
+// Each per-format package has its own Issue type with its own
+// Severity constants. To avoid forcing every package to share a
+// common Issue shape (which would couple unrelated packages), the
+// reporter works on a normalised reportIssue struct and each
+// runCheck* function converts its native Issue slice to
+// []reportIssue before calling runIssueReport.
+// ---------------------------------------------------------------------------
+
+// reportSeverity is the unified severity used by the shared
+// reporter. Each per-package SeverityError / SeverityWarning
+// constant maps to one of these via the sevFrom* adapters.
+type reportSeverity int
+
+const (
+	reportWarning reportSeverity = iota
+	reportError
+)
+
+// String returns the lowercase name of the severity — matches
+// the strings used by every per-package Severity.String() so
+// the printed output is unchanged.
+func (s reportSeverity) String() string {
+	switch s {
+	case reportWarning:
+		return "warning"
+	case reportError:
+		return "error"
+	}
+	return "unknown"
+}
+
+// reportIssue is the normalised shape consumed by the shared
+// reporter. Record is the 1-based record index within the
+// alignment section; 0 means "no record index" (e.g. for
+// VCF issues that have a record number, BED/SAM/BAM/GFF that
+// don't).
+type reportIssue struct {
+	Line     int
+	Record   int
+	Field    string
+	Severity reportSeverity
+	Msg      string
+}
+
+// runIssueReport sorts issues, prints them, counts severities,
+// and returns an error if any errors were found (or warnings,
+// if exitOnWarnings is true). The output format matches the
+// pre-refactor per-package inline loop exactly:
+//
+//	line N        [error] field: message
+//	line N rec M   [error] field: message  (when Record > 0)
+//
+//	<path>: N error(s), M warning(s)
+//
+// followed by exit code 1 if errors (or warnings with
+// --warnings) were found.
+func runIssueReport(path string, issues []reportIssue, exitOnWarnings bool) error {
+	if len(issues) == 0 {
+		return nil
+	}
+	sort.SliceStable(issues, func(i, j int) bool {
+		if issues[i].Line != issues[j].Line {
+			return issues[i].Line < issues[j].Line
+		}
+		if issues[i].Record != issues[j].Record {
+			return issues[i].Record < issues[j].Record
+		}
+		if issues[i].Severity != issues[j].Severity {
+			return issues[i].Severity < issues[j].Severity
+		}
+		return issues[i].Field < issues[j].Field
+	})
+	var nErr, nWarn int
+	for _, iss := range issues {
+		switch iss.Severity {
+		case reportError:
+			nErr++
+		case reportWarning:
+			nWarn++
+		}
+		if iss.Record > 0 {
+			fmt.Printf("line %d rec %d  [%s] %s: %s\n",
+				iss.Line, iss.Record, iss.Severity, iss.Field, iss.Msg)
+		} else {
+			fmt.Printf("line %d  [%s] %s: %s\n",
+				iss.Line, iss.Severity, iss.Field, iss.Msg)
+		}
+	}
+	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
+	if nErr > 0 {
+		return fmt.Errorf("%d error(s) found", nErr)
+	}
+	if exitOnWarnings && nWarn > 0 {
+		return fmt.Errorf("%d warning(s) found", nWarn)
+	}
+	return nil
+}
+
+// reportFromVCF converts a slice of VCF issues to the shared
+// reportIssue shape.
+func reportFromVCF(in []vcf.ValidationError) []reportIssue {
+	out := make([]reportIssue, len(in))
+	for i, iss := range in {
+		s := reportWarning
+		if iss.Severity == vcf.SeverityError {
+			s = reportError
+		}
+		out[i] = reportIssue{
+			Line:     iss.Line,
+			Record:   iss.Record,
+			Field:    iss.Field,
+			Severity: s,
+			Msg:      iss.Msg,
+		}
+	}
+	return out
+}
+
+// reportFromBED converts BED issues to the shared shape.
+func reportFromBED(in []bed.Issue) []reportIssue {
+	out := make([]reportIssue, len(in))
+	for i, iss := range in {
+		s := reportWarning
+		if iss.Severity == bed.SeverityError {
+			s = reportError
+		}
+		out[i] = reportIssue{
+			Line:     iss.Line,
+			Field:    iss.Field,
+			Severity: s,
+			Msg:      iss.Msg,
+		}
+	}
+	return out
+}
+
+// reportFromSAM converts SAM issues to the shared shape.
+func reportFromSAM(in []sam.Issue) []reportIssue {
+	out := make([]reportIssue, len(in))
+	for i, iss := range in {
+		s := reportWarning
+		if iss.Severity == sam.SeverityError {
+			s = reportError
+		}
+		out[i] = reportIssue{
+			Line:     iss.Line,
+			Field:    iss.Field,
+			Severity: s,
+			Msg:      iss.Msg,
+		}
+	}
+	return out
+}
+
+// reportFromBAM converts BAM issues to the shared shape.
+func reportFromBAM(in []bam.Issue) []reportIssue {
+	out := make([]reportIssue, len(in))
+	for i, iss := range in {
+		s := reportWarning
+		if iss.Severity == bam.SeverityError {
+			s = reportError
+		}
+		out[i] = reportIssue{
+			Line:     iss.Line,
+			Field:    iss.Field,
+			Severity: s,
+			Msg:      iss.Msg,
+		}
+	}
+	return out
+}
+
+// reportFromGFF converts GFF issues to the shared shape.
+func reportFromGFF(in []gff.Issue) []reportIssue {
+	out := make([]reportIssue, len(in))
+	for i, iss := range in {
+		s := reportWarning
+		if iss.Severity == gff.SeverityError {
+			s = reportError
+		}
+		out[i] = reportIssue{
+			Line:     iss.Line,
+			Field:    iss.Field,
+			Severity: s,
+			Msg:      iss.Msg,
+		}
+	}
+	return out
+}
+
+// reportFromFASTA converts FASTA issues to the shared shape.
+func reportFromFASTA(in []fasta.Issue) []reportIssue {
+	out := make([]reportIssue, len(in))
+	for i, iss := range in {
+		s := reportWarning
+		if iss.Severity == fasta.SeverityError {
+			s = reportError
+		}
+		out[i] = reportIssue{
+			Line:     iss.Line,
+			Field:    iss.Field,
+			Severity: s,
+			Msg:      iss.Msg,
+		}
+	}
+	return out
+}
+
 // runCheck parses and validates the file at args[0].
 func runCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
@@ -363,18 +592,14 @@ func runCheck(args []string) error {
 		return runCheckBAM(r, path, *strict, *warnings)
 	case formatGFF:
 		return runCheckGFF(r, path, *strict, *warnings)
+	case formatFASTA:
+		return runCheckFASTA(r, path, *strict, *warnings)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
 }
 
-//nolint:dupl // runCheckVCF / runCheckBED / runCheckSAM are intentionally parallel
 func runCheckVCF(f io.Reader, path string, strict, warnings bool) error {
-	// per-format entry points. They share the same control flow (parse,
-	// validate, report) but operate on distinct record types from
-	// independent packages. Abstracting them behind a common interface
-	// would require a generic helper and yield diminishing returns
-	// for the third duplicate.
 	mode := vcf.ModeDefault
 	if strict {
 		mode = vcf.ModeStrict
@@ -395,46 +620,14 @@ func runCheckVCF(f io.Reader, path string, strict, warnings bool) error {
 		}
 		recs = append(recs, rec)
 	}
-	val := vcf.NewValidator(mode)
-	issues := val.Validate(hdr, recs)
+	issues := vcf.NewValidator(mode).Validate(hdr, recs)
 	if len(issues) == 0 {
 		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
 		return nil
 	}
-	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Record != issues[j].Record {
-			return issues[i].Record < issues[j].Record
-		}
-		if issues[i].Line != issues[j].Line {
-			return issues[i].Line < issues[j].Line
-		}
-		if issues[i].Severity != issues[j].Severity {
-			return issues[i].Severity < issues[j].Severity
-		}
-		return issues[i].Field < issues[j].Field
-	})
-	var nErr, nWarn int
-	for _, iss := range issues {
-		switch iss.Severity {
-		case vcf.SeverityError:
-			nErr++
-		case vcf.SeverityWarning:
-			nWarn++
-		}
-		fmt.Printf("line %d rec %d  [%s] %s: %s\n",
-			iss.Line, iss.Record, iss.Severity, iss.Field, iss.Msg)
-	}
-	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
-	if nErr > 0 {
-		return fmt.Errorf("%d error(s) found", nErr)
-	}
-	if warnings && nWarn > 0 {
-		return fmt.Errorf("%d warning(s) found", nWarn)
-	}
-	return nil
+	return runIssueReport(path, reportFromVCF(issues), warnings)
 }
 
-//nolint:dupl // See runCheckVCF: same shape, different package.
 func runCheckBED(f io.Reader, path string, strict, warnings bool) error {
 	mode := bed.ModeDefault
 	if strict {
@@ -457,43 +650,14 @@ func runCheckBED(f io.Reader, path string, strict, warnings bool) error {
 		}
 		recs = append(recs, rec)
 	}
-	val := bed.NewValidator(mode)
-	issues := val.Validate(track, recs)
+	issues := bed.NewValidator(mode).Validate(track, recs)
 	if len(issues) == 0 {
 		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
 		return nil
 	}
-	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Line != issues[j].Line {
-			return issues[i].Line < issues[j].Line
-		}
-		if issues[i].Severity != issues[j].Severity {
-			return issues[i].Severity < issues[j].Severity
-		}
-		return issues[i].Field < issues[j].Field
-	})
-	var nErr, nWarn int
-	for _, iss := range issues {
-		switch iss.Severity {
-		case bed.SeverityError:
-			nErr++
-		case bed.SeverityWarning:
-			nWarn++
-		}
-		fmt.Printf("line %d  [%s] %s: %s\n",
-			iss.Line, iss.Severity, iss.Field, iss.Msg)
-	}
-	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
-	if nErr > 0 {
-		return fmt.Errorf("%d error(s) found", nErr)
-	}
-	if warnings && nWarn > 0 {
-		return fmt.Errorf("%d warning(s) found", nWarn)
-	}
-	return nil
+	return runIssueReport(path, reportFromBED(issues), warnings)
 }
 
-//nolint:dupl // See runCheckVCF: same shape, different package.
 func runCheckSAM(f io.Reader, path string, strict, warnings bool) error {
 	mode := sam.ModeDefault
 	if strict {
@@ -516,40 +680,12 @@ func runCheckSAM(f io.Reader, path string, strict, warnings bool) error {
 		}
 		recs = append(recs, rec)
 	}
-	val := sam.NewValidator(mode)
-	issues := val.Validate(hdr, recs)
+	issues := sam.NewValidator(mode).Validate(hdr, recs)
 	if len(issues) == 0 {
 		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
 		return nil
 	}
-	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Line != issues[j].Line {
-			return issues[i].Line < issues[j].Line
-		}
-		if issues[i].Severity != issues[j].Severity {
-			return issues[i].Severity < issues[j].Severity
-		}
-		return issues[i].Field < issues[j].Field
-	})
-	var nErr, nWarn int
-	for _, iss := range issues {
-		switch iss.Severity {
-		case sam.SeverityError:
-			nErr++
-		case sam.SeverityWarning:
-			nWarn++
-		}
-		fmt.Printf("line %d  [%s] %s: %s\n",
-			iss.Line, iss.Severity, iss.Field, iss.Msg)
-	}
-	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
-	if nErr > 0 {
-		return fmt.Errorf("%d error(s) found", nErr)
-	}
-	if warnings && nWarn > 0 {
-		return fmt.Errorf("%d warning(s) found", nWarn)
-	}
-	return nil
+	return runIssueReport(path, reportFromSAM(issues), warnings)
 }
 
 // runRoundtrip parses the file at args[0] and re-emits it.
@@ -579,6 +715,8 @@ func runRoundtrip(args []string) error {
 		return runRoundtripBAM()
 	case formatGFF:
 		return runRoundtripGFF(r, *crlf)
+	case formatFASTA:
+		return runRoundtripFASTA(r, *crlf)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -717,6 +855,8 @@ func runSummary(args []string) error {
 		return runSummaryBAM(r, path)
 	case formatGFF:
 		return runSummaryGFF(r, path)
+	case formatFASTA:
+		return runSummaryFASTA(r, path)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -837,11 +977,6 @@ func runSummarySAM(f io.Reader, path string) error {
 	return nil
 }
 
-// runCheckBAM parses and validates a BAM file. The format
-// mirrors runCheckSAM but the records come from the bam
-// package's binary decoder.
-//
-//nolint:dupl // See runCheckVCF: same shape, different package.
 func runCheckBAM(f io.Reader, path string, strict, warnings bool) error {
 	mode := bam.ModeDefault
 	if strict {
@@ -864,40 +999,12 @@ func runCheckBAM(f io.Reader, path string, strict, warnings bool) error {
 		}
 		recs = append(recs, rec)
 	}
-	val := bam.NewValidator(mode)
-	issues := val.Validate(hdr, recs)
+	issues := bam.NewValidator(mode).Validate(hdr, recs)
 	if len(issues) == 0 {
 		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
 		return nil
 	}
-	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Line != issues[j].Line {
-			return issues[i].Line < issues[j].Line
-		}
-		if issues[i].Severity != issues[j].Severity {
-			return issues[i].Severity < issues[j].Severity
-		}
-		return issues[i].Field < issues[j].Field
-	})
-	var nErr, nWarn int
-	for _, iss := range issues {
-		switch iss.Severity {
-		case bam.SeverityError:
-			nErr++
-		case bam.SeverityWarning:
-			nWarn++
-		}
-		fmt.Printf("line %d  [%s] %s: %s\n",
-			iss.Line, iss.Severity, iss.Field, iss.Msg)
-	}
-	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
-	if nErr > 0 {
-		return fmt.Errorf("%d error(s) found", nErr)
-	}
-	if warnings && nWarn > 0 {
-		return fmt.Errorf("%d warning(s) found", nWarn)
-	}
-	return nil
+	return runIssueReport(path, reportFromBAM(issues), warnings)
 }
 
 // runRoundtripBAM returns an error explaining that BAM v1 is
@@ -908,9 +1015,6 @@ func runRoundtripBAM() error {
 	return errors.New("roundtrip: BAM v1 is read-only in this build (no BAM writer)")
 }
 
-// runCheckGFF parses and validates a GFF3 file.
-//
-//nolint:dupl // See runCheckVCF: same shape, different package.
 func runCheckGFF(f io.Reader, path string, strict, warnings bool) error {
 	mode := gff.ModeDefault
 	if strict {
@@ -933,40 +1037,12 @@ func runCheckGFF(f io.Reader, path string, strict, warnings bool) error {
 		}
 		recs = append(recs, rec)
 	}
-	val := gff.NewValidator(mode)
-	issues := val.Validate(hdr, recs)
+	issues := gff.NewValidator(mode).Validate(hdr, recs)
 	if len(issues) == 0 {
 		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
 		return nil
 	}
-	sort.SliceStable(issues, func(i, j int) bool {
-		if issues[i].Line != issues[j].Line {
-			return issues[i].Line < issues[j].Line
-		}
-		if issues[i].Severity != issues[j].Severity {
-			return issues[i].Severity < issues[j].Severity
-		}
-		return issues[i].Field < issues[j].Field
-	})
-	var nErr, nWarn int
-	for _, iss := range issues {
-		switch iss.Severity {
-		case gff.SeverityError:
-			nErr++
-		case gff.SeverityWarning:
-			nWarn++
-		}
-		fmt.Printf("line %d  [%s] %s: %s\n",
-			iss.Line, iss.Severity, iss.Field, iss.Msg)
-	}
-	fmt.Printf("%s: %d error(s), %d warning(s)\n", path, nErr, nWarn)
-	if nErr > 0 {
-		return fmt.Errorf("%d error(s) found", nErr)
-	}
-	if warnings && nWarn > 0 {
-		return fmt.Errorf("%d warning(s) found", nWarn)
-	}
-	return nil
+	return runIssueReport(path, reportFromGFF(issues), warnings)
 }
 
 // runRoundtripGFF parses a GFF3 file and re-emits it to stdout.
@@ -1124,4 +1200,92 @@ func bedTypeFromColumns(counts map[int]int) string {
 		parts[i] = fmt.Sprintf("BED%d", k)
 	}
 	return "mixed (" + strings.Join(parts, "+") + ")"
+}
+
+// runCheckFASTA parses and validates a FASTA file.
+func runCheckFASTA(f io.Reader, path string, strict, warnings bool) error {
+	mode := fasta.ModeDefault
+	if strict {
+		mode = fasta.ModeStrict
+	}
+	dec := fasta.NewDecoder(f)
+	var recs []*fasta.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	issues := fasta.NewValidator(mode).Validate(recs)
+	if len(issues) == 0 {
+		var totalBases int64
+		for _, r := range recs {
+			totalBases += r.Length()
+		}
+		fmt.Printf("%s: clean (%d records, %d bases)\n", path, len(recs), totalBases)
+		return nil
+	}
+	return runIssueReport(path, reportFromFASTA(issues), warnings)
+}
+
+// runRoundtripFASTA parses a FASTA file and re-emits it to
+// stdout with 80-char sequence wrapping.
+func runRoundtripFASTA(f io.Reader, crlf bool) error {
+	dec := fasta.NewDecoder(f)
+	var recs []*fasta.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	var enc *fasta.Encoder
+	if crlf {
+		enc = fasta.NewEncoderCRLF(os.Stdout)
+	} else {
+		enc = fasta.NewEncoder(os.Stdout)
+	}
+	for _, rec := range recs {
+		if err := enc.EncodeRecord(rec); err != nil {
+			return fmt.Errorf("encode record: %w", err)
+		}
+	}
+	return enc.Flush()
+}
+
+// runSummaryFASTA prints a summary of the FASTA file.
+func runSummaryFASTA(f io.Reader, path string) error {
+	dec := fasta.NewDecoder(f)
+	var nRec int
+	var totalBases int64
+	ids := make(map[string]int)
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		nRec++
+		totalBases += rec.Length()
+		if rec.ID != "" {
+			ids[rec.ID]++
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", path)
+	fmt.Fprintf(&b, "  records:    %d\n", nRec)
+	fmt.Fprintf(&b, "  bases:      %d\n", totalBases)
+	fmt.Fprintf(&b, "  unique IDs: %d\n", len(ids))
+	_, _ = fmt.Fprint(os.Stdout, b.String())
+	return nil
 }

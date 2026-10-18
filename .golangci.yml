@@ -82,6 +82,10 @@ linters:
       - path: gff/cli_test\.go
         linters:
           - gosec
+      # And the FASTA package's CLI smoke tests.
+      - path: fasta/cli_test\.go
+        linters:
+          - gosec
 
 run:
   timeout: 5m

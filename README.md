@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
-file formats. It currently targets five specifications from
+file formats. It currently targets six specifications from
 [samtools/hts-specs](https://github.com/samtools/hts-specs) and
 the Sequence Ontology:
 
@@ -14,9 +14,10 @@ the Sequence Ontology:
 - **SAM v1** — Sequence Alignment/Map (header + 11-column records + optional tags)
 - **BAM v1** — Binary SAM (BGZF-compressed) with read-only BAI index reader
 - **GFF3** — Generic Feature Format Version 3 (9 columns + free-form attributes)
+- **FASTA** — Sequence records (`>` header + multi-line sequence); read-only `.fai` index reader
 
-See [ROADMAP.md](ROADMAP.md) for the planned expansion (FASTA,
-FASTQ, BCF v2.1, Tabix/CSI).
+See [ROADMAP.md](ROADMAP.md) for the planned expansion (FASTQ,
+BCF v2.1, Tabix/CSI).
 
 The implementation aims to be:
 
@@ -161,16 +162,41 @@ and the validator's `ModeStrict` cross-references `Parent` IDs
 against the document's `ID` set. The encoder is round-trippable:
 `htsfile roundtrip foo.gff > out.gff` re-emits a clean file.
 
+### FASTA Parsing
+
+The `fasta` package reads and writes FASTA sequence records:
+
+```go
+dec := fasta.NewDecoder(r)
+for {
+    rec, err := dec.Record()
+    if errors.Is(err, io.EOF) { break }
+    // rec.ID, rec.Description, rec.Sequence, rec.Raw
+    // rec.Length() returns the base count
+}
+```
+
+The parser accepts any sequence-line wrapping (or no wrapping at
+all) and stores the sequence as a byte slice with embedded
+whitespace stripped. The encoder re-wraps at 80 chars by default
+(override with `enc.SetLineWidth(n)`). The validator's `ModeStrict`
+checks every byte against a configurable alphabet (default:
+IUPAC nucleotide codes plus `*` and `-`). The sibling `fasta/fai`
+package reads `.fai` index files for random-access into large
+FASTA files; index generation is out of scope for v1.
+
 ## CLI
 
 A small command-line tool ships in `cmd/htsfile`. Format is
 auto-detected from the file extension (`.vcf`, `.bed`, `.sam`,
-`.bam`, `.gff`, `.gff3`); for stdin (`-`) or unknown extensions,
-the first non-empty line is sniffed (`##fileformat` → VCF;
-`track`, `browser`, or a tab-separated `chrom\tstart\tend`
-triple → BED; `@HD` or an 11-column tab-separated record with
-integer FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM;
-`##gff-version` or a 9-column tab-separated feature line → GFF3).
+`.bam`, `.gff`, `.gff3`, `.fa`, `.fasta`, `.fna`, `.ffn`,
+`.faa`); for stdin (`-`) or unknown extensions, the first
+non-empty line is sniffed (`##fileformat` → VCF; `track`,
+`browser`, or a tab-separated `chrom\tstart\tend` triple → BED;
+`@HD` or an 11-column tab-separated record with integer
+FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM;
+`##gff-version` or a 9-column tab-separated feature line →
+GFF3; a `>` header line → FASTA).
 
 ```sh
 # Validate a file
@@ -181,6 +207,7 @@ htsfile check peaks.bed                   # BED is auto-detected by extension
 htsfile check reads.sam                   # SAM is auto-detected by extension
 htsfile check aligned.bam                 # BAM is auto-detected by extension
 htsfile check genes.gff3                  # GFF3 is auto-detected by extension
+htsfile check sequences.fa                # FASTA is auto-detected by extension
 
 # Re-emit a file (verifies round-trip)
 htsfile roundtrip sample.vcf > out.vcf
@@ -188,6 +215,7 @@ htsfile roundtrip --crlf sample.vcf       # CR+LF line endings
 htsfile roundtrip peaks.bed > out.bed     # BED round-trip
 htsfile roundtrip reads.sam > out.sam     # SAM round-trip
 htsfile roundtrip genes.gff3 > out.gff3   # GFF3 round-trip
+htsfile roundtrip sequences.fa > out.fa  # FASTA round-trip (80-char wrapping)
 # roundtrip does not support .bam files (BAM v1 is read-only).
 
 # Print a header summary
@@ -196,6 +224,7 @@ htsfile summary peaks.bed                 # BED summary: track, type, records, c
 htsfile summary reads.sam                 # SAM summary: version, @SQ/@RG/@PG counts, records
 htsfile summary aligned.bam               # BAM summary: version, @SQ/@RG/@PG counts, records
 htsfile summary genes.gff3                # GFF3 summary: version, pragmas, seqids, types, records
+htsfile summary sequences.fa              # FASTA summary: records, bases, unique IDs
 ```
 
 ## Status
@@ -274,10 +303,22 @@ htsfile summary genes.gff3                # GFF3 summary: version, pragmas, seqi
 | `ModeDefault` and `ModeStrict` validators (strict = Parent ID cross-references) | ✅ |
 | FASTA emission after `###`             |   ❌   |
 
+### fasta/ package (FASTA)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| `>` header + multi-line sequence records | ✅   |
+| Sequence bytes preserved verbatim (whitespace stripped) | ✅ |
+| Configurable sequence-line wrapping on encode (default 80) | ✅ |
+| `ModeDefault` and `ModeStrict` validators (strict = alphabet check) | ✅ |
+| Header parsing (ID + Description split on whitespace) | ✅ |
+| `.fai` index reader (`fasta/fai`, read-only) | ✅ |
+| `.fai` index generation                |   ❌   |
+| Multi-sequence FASTA (multi-FASTA, .mfa) | ❌  |
+
 ### Planned (see [ROADMAP.md](ROADMAP.md))
 
-- **Tier 2 (next)**: FASTA
-- **Tier 3**: BCF v2.1, Tabix, CSI
+- **Tier 3 (next)**: BCF v2.1, Tabix, CSI
 - **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ
 
 ## Releases

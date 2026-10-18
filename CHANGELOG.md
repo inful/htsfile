@@ -9,6 +9,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **FASTA format support.** A new `fasta` package
+  (`github.com/inful/htsfile/fasta`) implements parsing,
+  writing, and validation for the FASTA sequence format.
+  Streaming `Decoder`, round-trippable `Encoder` with
+  configurable sequence-line wrapping (default 80 chars), and
+  a per-record `Validator` with `ModeDefault` (non-empty ID,
+  non-empty sequence) and `ModeStrict` (alphabet check
+  against a configurable character set, default IUPAC
+  nucleotide codes). The parser accepts any sequence-line
+  wrapping (including unwrapped single-line records) and
+  preserves the original character case; the encoder re-wraps
+  at the configured width.
+
+  The companion `fasta/fai` package reads `.fai` index files
+  (read-only, per the open-decision recommendation): 5
+  tab-separated fields per reference (name, length, offset,
+  lineBases, lineWidth). Index generation is out of scope
+  for v1 — it requires a multi-pass atomic-rename pipeline
+  that's a separate effort.
+
+  The `cmd/htsfile` CLI auto-dispatches by extension (`.fa`,
+  `.fasta`, `.fna`, `.ffn`, `.faa`) and sniffs the first
+  non-empty line for stdin / unknown extensions (a `>` header
+  line indicates FASTA). `check`, `roundtrip`, and `summary`
+  all work for FASTA.
+
+- **CLI duplication refactor — shared issue reporter.** The
+  per-format `runCheck{VCF,BED,SAM,BAM,GFF}` functions had
+  grown into five near-duplicates of the same sort/print/count
+  loop, each carrying a `//nolint:dupl` with rationale. FASTA
+  was the ROADMAP-pinned trigger to refactor this. The
+  duplication is now replaced by a single `runIssueReport`
+  helper plus per-package adapters (`reportFrom{VCF,BED,SAM,
+  BAM,GFF,FASTA}`) that convert native `Issue` types to a
+  normalised `reportIssue` struct. The five `runCheck*`
+  functions shrink to their essential ~20 lines (parse +
+  validate + delegate). FASTA's `runCheckFASTA` is the first
+  caller that never needed a `//nolint:dupl`. This is the
+  refactor the ROADMAP flagged at the ≥3-packages threshold;
+  it now lands for the sixth format.
+
 - **GFF3 format support.** A new `gff` package
   (`github.com/inful/htsfile/gff`) implements parsing, writing,
   and validation for the Generic Feature Format Version 3.
