@@ -358,7 +358,7 @@ htsget/refget and crypt4gh remain pending.
       item above). BCF writer still deferred for per-sample
       FORMAT data.
 - [x] **CLI format translation — sam2bam / bam2sam / vcf2bcf /
-      bcf2vcf.** Landed in the Unreleased section of the
+      bcf2vcf.** Landed in the v0.6.0 section of the
       CHANGELOG as a CLI-only feature. Translators live in
       `cmd/htsfile/translate.go`; conversion is text ↔ binary
       with the per-sample FORMAT caveat above. Round-trips

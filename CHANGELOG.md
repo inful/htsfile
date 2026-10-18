@@ -106,7 +106,7 @@ remaining reader/writer asymmetry and is the natural v2
 follow-up if/when needed.
 
 [0.5.0]: https://github.com/inful/htsfile/compare/v0.4.0...v0.5.0
-[Unreleased]: https://github.com/inful/htsfile/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.6.0...HEAD
 
 ## [0.4.0] — 2026-10-18
 
