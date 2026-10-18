@@ -20,12 +20,15 @@
 // They are the natural addressing unit for BGZF block-level
 // random access.
 //
-// v1 scope: read-only parsing of the BAI file format and
-// exposure of the underlying structures. Region queries (the
-// next level up — "give me the chunks that overlap region X:Y-Z")
-// are out of scope for v1; they require a bin-assignment helper
-// and a chunk-overlap step that we'll add when a concrete use
-// case surfaces.
+// v1 scope: read-only parsing of the BAI file format plus
+// region queries over the parsed index. [Reg2Bins] returns
+// the candidate bin numbers for a half-open range; the
+// [Reference.Query] method applies that against an already-
+// parsed [Reference] and returns a [Query] describing the
+// BGZF regions the caller must scan to find alignments
+// overlapping the range. [Reference.FindOffset] is a
+// position-only variant for the common "give me everything
+// from this offset onwards" use case.
 package bai
 
 import (
