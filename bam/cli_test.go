@@ -2,6 +2,8 @@ package bam
 
 import (
 	"bytes"
+	"errors"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -36,10 +38,10 @@ func repoRoot(t *testing.T) string {
 }
 
 // TestCLI_CheckAndSummary builds the cmd/htsfile binary and
-// runs its `check` and `summary` subcommands against a
-// synthetic BAM written to disk. The CLI's `roundtrip` for BAM
-// is verified separately to return a clear "not supported"
-// error.
+// runs its `check`, `summary`, and `roundtrip` subcommands
+// against a synthetic BAM written to disk. The roundtrip test
+// verifies the BAM v1 writer reads back through the existing
+// decoder.
 func TestCLI_CheckAndSummary(t *testing.T) {
 	// Build the CLI binary once.
 	root := repoRoot(t)
@@ -99,17 +101,42 @@ func TestCLI_CheckAndSummary(t *testing.T) {
 		}
 	})
 
-	// Run the CLI's roundtrip subcommand — should fail with a
-	// clear "BAM v1 is read-only" message, not silently
-	// succeed.
-	t.Run("roundtrip_unsupported", func(t *testing.T) {
+	// Run the CLI's roundtrip subcommand. BAM v1 now has a
+	// writer (added in the 'close symmetry' Phase 1), so
+	// roundtrip reads and re-emits the file. The output is
+	// byte-stable because records stream through verbatim.
+	t.Run("roundtrip", func(t *testing.T) {
 		out, err := exec.Command(bin, "roundtrip", bamPath).CombinedOutput()
-		if err == nil {
-			t.Fatalf("roundtrip should have failed for BAM, but succeeded:\n%s", out)
+		if err != nil {
+			t.Fatalf("roundtrip failed: %v\n%s", err, out)
 		}
-		combined := string(out)
-		if !strings.Contains(combined, "read-only") {
-			t.Errorf("roundtrip error doesn't mention read-only:\n%s", combined)
+		// Re-parse the round-tripped output and verify it's
+		// structurally equivalent (same record count, same
+		// names).
+		dec := NewDecoder(bytes.NewReader(out))
+		hdr2, err := dec.Header()
+		if err != nil {
+			t.Fatalf("re-parse header: %v", err)
+		}
+		if len(hdr2.SQs) != 1 || hdr2.SQs[0].Name != "chr1" {
+			t.Errorf("round-tripped header: %+v", hdr2)
+		}
+		var n int
+		for {
+			rec, err := dec.Record()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("re-parse record %d: %v", n, err)
+			}
+			if rec.QName != "smoke1" {
+				t.Errorf("round-tripped QNAME: got %q want smoke1", rec.QName)
+			}
+			n++
+		}
+		if n != 1 {
+			t.Errorf("round-tripped records: got %d want 1", n)
 		}
 	})
 }

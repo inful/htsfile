@@ -2,6 +2,7 @@ package bcf
 
 import (
 	"bytes"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -69,14 +70,34 @@ func TestCLI_CheckAndSummary(t *testing.T) {
 		}
 	})
 
-	t.Run("roundtrip_unsupported", func(t *testing.T) {
+	t.Run("roundtrip", func(t *testing.T) {
+		// BCF v1 round-trip is partial: header and typed
+		// record fields round-trip, but per-sample FORMAT
+		// data is dropped (matching the v1 decoder's
+		// scope). The decoder reads the round-tripped bytes
+		// and we verify the same record count + contig
+		// count.
 		out, err := exec.Command(bin, "roundtrip", bcfPath).CombinedOutput()
-		if err == nil {
-			t.Fatalf("roundtrip should have failed for BCF, but succeeded:\n%s", out)
+		if err != nil {
+			t.Fatalf("roundtrip failed: %v\n%s", err, out)
 		}
-		combined := string(out)
-		if !strings.Contains(combined, "read-only") && !strings.Contains(combined, "BCF writer") {
-			t.Errorf("roundtrip error doesn't mention read-only:\n%s", combined)
+		dec := NewDecoder(bytes.NewReader(out))
+		if _, err := dec.Header(); err != nil {
+			t.Fatalf("re-parse header: %v", err)
+		}
+		var n int
+		for {
+			_, err := dec.Record()
+			if errors.Is(err, io.EOF) {
+				break
+			}
+			if err != nil {
+				t.Fatalf("re-parse record %d: %v", n, err)
+			}
+			n++
+		}
+		if n != 1 {
+			t.Errorf("round-tripped records: got %d want 1", n)
 		}
 	})
 }

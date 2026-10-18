@@ -855,7 +855,7 @@ func runRoundtrip(args []string) error {
 	case formatSAM:
 		return runRoundtripSAM(r, *crlf)
 	case formatBAM:
-		return runRoundtripBAM()
+		return runRoundtripBAM(r)
 	case formatGFF:
 		return runRoundtripGFF(r, *crlf)
 	case formatFASTA:
@@ -863,7 +863,7 @@ func runRoundtrip(args []string) error {
 	case formatFASTQ:
 		return runRoundtripFASTQ(r, *crlf)
 	case formatBCF:
-		return runRoundtripBCF()
+		return runRoundtripBCF(r)
 	case formatTabix:
 		return runRoundtripTabix(r)
 	case formatCSI:
@@ -1166,12 +1166,32 @@ func runCheckBAM(f io.Reader, path string, strict, warnings bool) error {
 	return runIssueReport(path, reportFromBAM(issues), warnings)
 }
 
-// runRoundtripBAM returns an error explaining that BAM v1 is
-// read-only and the roundtrip subcommand does not support it.
-// The error is intentionally clear so users who try the
-// subcommand on a .bam file see the reason.
-func runRoundtripBAM() error {
-	return errors.New("roundtrip: BAM v1 is read-only in this build (no BAM writer)")
+// runRoundtripBAM reads a BAM file and re-emits it to stdout.
+// Records stream through verbatim — no sorting — so the
+// output is byte-for-byte deterministic given the same input.
+func runRoundtripBAM(f io.Reader) error {
+	dec := bam.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	enc := bam.NewEncoder(os.Stdout)
+	if err := enc.WriteHeader(hdr); err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		if err := enc.WriteRecord(rec); err != nil {
+			return fmt.Errorf("write record: %w", err)
+		}
+	}
+	return enc.Close()
 }
 
 func runCheckGFF(f io.Reader, path string, strict, warnings bool) error {
@@ -1576,12 +1596,34 @@ func runCheckBCF(f io.Reader, path string, strict, warnings bool) error {
 	return runIssueReport(path, reportFromBCF(issues), warnings)
 }
 
-// runRoundtripBCF returns an error explaining that BCF v1 is
-// read-only and the roundtrip subcommand does not support it.
-// The full BCF writer (with sample data round-trip) is a v2
-// follow-up.
-func runRoundtripBCF() error {
-	return errors.New("roundtrip: BCF v1 is read-only in this build (no BCF writer; deferred to v2)")
+// runRoundtripBCF reads a BCF file and re-emits it to stdout.
+// Records are written without per-sample FORMAT data (matching
+// the v1 BCF reader's scope), so the output is "round-trip
+// partial" — header and typed record fields are preserved but
+// any per-sample genotype data in the source is dropped.
+func runRoundtripBCF(f io.Reader) error {
+	dec := bcf.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	enc := bcf.NewEncoder(os.Stdout)
+	if err := enc.WriteHeader(hdr); err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		if err := enc.WriteRecord(rec); err != nil {
+			return fmt.Errorf("write record: %w", err)
+		}
+	}
+	return enc.Close()
 }
 
 // runSummaryBCF prints a summary of the BCF file's header
