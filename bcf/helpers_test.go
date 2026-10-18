@@ -26,24 +26,31 @@ var _ = fmt.Sprintf
 type builder struct {
 	path        string
 	f           *os.File
-	hdrOrder    []string // INFO IDs in declaration order (from sampleHeader)
+	hdr         *Header // parsed sampleHeader; used for LookupInfoIndex etc.
+	hdrOrder    []string // cached: hdr.InfosOrder
 	hdrFilters  []string
 	hdrContigs  []string
 }
 
 func newBuilder(t *testing.T) *builder {
+	return newBuilderWithHeader(t, sampleHeader)
+}
+
+// newBuilderWithHeader builds a builder that writes the given
+// header text. Use this when a test needs a header that
+// differs from sampleHeader (e.g. for variable-count INFO
+// fields, additional ##FILTER declarations, etc.).
+func newBuilderWithHeader(t *testing.T, headerText string) *builder {
 	t.Helper()
 	f, err := os.CreateTemp(t.TempDir(), "bcf-test-*.bcf")
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Parse sampleHeader to extract declaration orders so the
-	// INFO-key writer can compute the correct positional
-	// index for each INFO key.
-	hdr := ParseHeader(sampleHeader)
+	hdr := ParseHeader(headerText)
 	return &builder{
 		path:       f.Name(),
 		f:          f,
+		hdr:        hdr,
 		hdrOrder:   hdr.InfosOrder,
 		hdrFilters: hdr.Filters,
 		hdrContigs: hdr.Contigs,
@@ -164,17 +171,13 @@ func (b *builder) writeRecord(t *testing.T, r *testRecord) {
 		def := r.infoDefs[id]
 		val := r.Info[id]
 		// Look up the key index from the header's
-		// InfosOrder, not from local infoOrder. BCF stores
-		// the key as a positional index into the header's
-		// INFO declaration list.
-		hdrIdx := -1
-		for i, hdrID := range b.hdrOrder {
-			if hdrID == id {
-				hdrIdx = i
-				break
-			}
-		}
-		if hdrIdx < 0 {
+		// InfosOrder via the package's LookupInfoIndex
+		// helper. BCF stores the key as a positional index
+		// into the header's ##INFO declaration list; the
+		// test's local infoOrder does NOT match the
+		// header's declaration order.
+		hdrIdx, ok := b.hdr.LookupInfoIndex(id)
+		if !ok {
 			panic(fmt.Sprintf("test bug: %q not in header InfosOrder (have %v)", id, b.hdrOrder))
 		}
 		var keyBytes [2]byte

@@ -574,6 +574,26 @@ func (h *Header) InfoAt(idx int) (*InfoDef, bool) {
 	return def, ok
 }
 
+// LookupInfoIndex returns the positional index of id in the
+// header's ##INFO declaration order. BCF records store
+// INFO keys as uint16 indices into that order, not as names;
+// a writer (future) and the test builder (today) must use
+// this index to avoid the off-by-N bug where a local
+// declaration order differs from the header's.
+//
+// Returns (-1, false) if id is not declared.
+func (h *Header) LookupInfoIndex(id string) (int, bool) {
+	if h == nil {
+		return -1, false
+	}
+	for i, declaredID := range h.InfosOrder {
+		if declaredID == id {
+			return i, true
+		}
+	}
+	return -1, false
+}
+
 // FormatAt returns the n-th FORMAT declaration in source order.
 func (h *Header) FormatAt(idx int) (*FormatDef, bool) {
 	if h == nil || idx < 0 || idx >= len(h.FormatsOrder) {
@@ -582,6 +602,21 @@ func (h *Header) FormatAt(idx int) (*FormatDef, bool) {
 	id := h.FormatsOrder[idx]
 	def, ok := h.Formats[id]
 	return def, ok
+}
+
+// LookupFormatIndex returns the positional index of id in the
+// header's ##FORMAT declaration order. See [Header.LookupInfoIndex]
+// for the rationale.
+func (h *Header) LookupFormatIndex(id string) (int, bool) {
+	if h == nil {
+		return -1, false
+	}
+	for i, declaredID := range h.FormatsOrder {
+		if declaredID == id {
+			return i, true
+		}
+	}
+	return -1, false
 }
 
 // _ = strings.HasPrefix keeps the strings import visible
