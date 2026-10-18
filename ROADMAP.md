@@ -366,48 +366,38 @@ htsget/refget and crypt4gh remain pending.
 - [ ] **htsget / refget** — separate package from the per-format
       work, scope TBD (see §Open decisions for the two
       architectural readings).
-- [x] **VCF v4.5 spec compliance — high-value batch.**
-      Shipped:
-      - POS / REF must fit within `##contig` length
-        (`e0709ea`).
-      - Symbolic ALT `<ID>` must be declared in `##ALT`
-        (`eee560f`).
-      - Declared END must match the computed value
-        (`2bdfd3c`).
-      - ID column rejects `,` and `=` (`ba45d9e`).
-      - Reserved FORMAT keys PL/GL/GP added with
-        Number=G and the right Type (`9933e54`).
-      - GT must be the first FORMAT field (`1913e5a`).
-      - Regression tests for PL (Number=G) and AD
-        (Number=R) cardinality, both already covered by
-        the existing `Number.Cardinality` path
-        (`e65561c`).
-      - Ploidy consistency across samples in a record
-        (`cf102ca`).
-      - Mitochondrial chromosome exemptions: POS and
-        END checks skip mtDNA per §1.6.1.6 (`7e072fb`).
-      - `##contig` species / taxonomy sub-fields
-        promoted to typed fields on `Contig`, with
-        round-trip through the encoder (`02f1bdd`).
+- [x] **VCF v4.5 spec compliance — all 17 tasks done.**
+      Shipped across v0.7.0, v0.8.0, and the v0.9.0
+      batch:
 
-  Remaining:
+      *Parser hardening (T1.1, T1.2, T1.4, T1.5, T1.6):*
+      FILTER "0" reserved, FILTER no whitespace / ';',
+      ##ALT first-level type check, contig name not a
+      reserved symbolic allele, <NON_REF> alias for
+      <*>, IUPAC ambiguity reduction in ALT.
 
-  - **Compressed `.vcf.gz` reader pipeline** (BGZF wrapper
-    + tabix/CSI region access). All the building blocks
-    exist (`internal/bgzf`, `tabix`, `csi`); no wired-up
-    `vcf.Open(path)` that returns a streaming decoder.
+      *Per-record (T2.1 – T2.10):* LAA required when
+      local-allele fields present, PS/PSL mutual
+      exclusion, CIPOS/CIEND/CILEN cardinality,
+      MEINFO/METRANS cardinality, CICN cardinality,
+      CNV/DEL/DUP shared SVLEN when FORMAT CN, <CNV:TR>
+      requires RUS or RUL, FT no whitespace/semicolons,
+      RN-determined fields cardinality, RUS length vs
+      RUL value.
 
-  The full per-task compliance plan lives in
-  [vcf/SPEC_COMPLIANCE.md](vcf/SPEC_COMPLIANCE.md): 17
-  remaining tasks across 4 phases (parser hardening,
-  per-record checks, cross-record checks, feature work),
-  each with a spec quote, scope, and acceptance criteria.
-  That file is the source of truth for picking up new
-  work in fresh sessions.
+      *Cross-record (T3.1 – T3.3):* CHROM contiguous
+      block, ID uniqueness across records, breakend
+      mate PSL/PSO consistency.
 
-  Tracked here as Tier 3 follow-up; not blockers for any
-  released feature. The full list of checks shipped in
-  v0.7.0 lives in the `v0.7.0` CHANGELOG entry.
+      *Feature (T4.1, T4.2):* `vcf.Open(path)`
+      auto-detects plain VCF vs BGZF; IUPAC ambiguity
+      reduction in ALT.
+
+      T1.3 (##META Values enforcement) was deferred as
+      low impact.
+
+      The full per-task compliance plan lives in
+      [vcf/SPEC_COMPLIANCE.md](vcf/SPEC_COMPLIANCE.md).
 - [ ] **CRAM v3** — design-survey stage only. Codecs 3–8 are
       not in Go stdlib and the no-runtime-deps rule precludes
       samtools/htscodecs. Resume when stdlib adds the codecs,

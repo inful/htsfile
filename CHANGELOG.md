@@ -11,6 +11,112 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.9.0] — 2026-10-18
+
+This release finishes the VCF v4.5 spec-compliance work
+started in v0.7.0 and v0.8.0. All 17 remaining tasks in
+`vcf/SPEC_COMPLIANCE.md` are done; the only deferred item
+is T1.3 (`##META` Values enforcement), which is
+low-impact and can land later if needed.
+
+### Added — parser hardening
+
+- **`FILTER="0"` is reserved** (`d6f8384`).
+  Per §1.6.1 the literal `0` cannot appear as a
+  filter value; both the bare-zero and mixed-zero
+  forms are rejected at parse time.
+
+- **`##ALT` first-level type is one of
+  `DEL | INS | DUP | INV | CNV`** (`ac1d4b5`).
+  Per §1.4.4 the structural-variant first level must
+  be one of those five tokens (or a bare IUPAC code
+  — see below). Subtypes via `:` are accepted.
+
+- **Contig ID must not be a reserved symbolic allele**
+  (`e56fa7a`). `##contig=<ID=DEL,…>` and similar
+  reserved symbolic-allele names are rejected per
+  §1.4.7.
+
+- **`<NON_REF>` is an alias for `<*>`** (`154f733`).
+  The ALT parser normalises the gVCF alias form to the
+  canonical `<*>` so downstream code only sees one
+  form.
+
+- **IUPAC ambiguity-code reduction in ALT** (`f1cb3a0`).
+  Per §1.4.4 the parser reduces `R, Y, S, W, K, M, B,
+  D, H, V` in ALT to their first-alphabetically
+  constituent base when the corresponding `##ALT`
+  declaration exists. An undeclared IUPAC code in ALT
+  is rejected by the validator.
+
+### Added — per-record checks
+
+- **LAA required when local-allele fields present**
+  (`8fb631c`). `LAD / LADF / LADR / LEC / LGL / LGP /
+  LPL / LPP` without a non-empty LAA fires a
+  SeverityError in ModeStrict.
+
+- **PS and PSL mutual exclusion per sample**
+  (`5e9c7c1`). Per §1.6.2 a sample carrying both `PS`
+  and `PSL` (with non-empty values) fires a
+  SeverityError.
+
+- **`CIPOS / CIEND / CILEN` cardinality = `2 × len(ALT)`**
+  (`b633a2b`). Per §1.6.1.7 each confidence-interval
+  field must contain exactly `2 * len(ALT)` entries
+  when present.
+
+- **`MEINFO / METRANS` cardinality = `4 × len(ALT)`**
+  (`dc22cff`). Each mobile-element field must contain
+  exactly `4 * len(ALT)` entries.
+
+- **`CICN` cardinality = `2 × len(ALT)`** (`76737f9`).
+
+- **`<CNV> / <DEL> / <DUP>` alleles share `SVLEN` when
+  `FORMAT CN` is declared** (`df189f1`). Per the
+  FORMAT-keys section of §1.6.1.7 the SVLEN of every
+  CNV-family ALT must match.
+
+- **`<CNV:TR>` requires `RUS` or `RUL`** (`0c2a109`).
+  Per the tandem-repeats section of §1.6.1.7 a record
+  carrying `<CNV:TR>` without `RUS` and without `RUL`
+  is invalid.
+
+- **`FT` per-sample no whitespace or `;`** (`87d350f`).
+  Per §1.6.2 each FT token must be free of whitespace
+  and semicolons.
+
+- **`RUS / RUL / RUC / RB / CIRUC / CIRB` length =
+  sum of `RN`; `RUS` length matches `RUL`** (`924d61a`).
+  Both rules from §1.6.1.7.
+
+### Added — cross-record checks (streaming Validator)
+
+- **CHROM contiguous block** (`f1e9858`). Per §1.6.1
+  every CHROM block must be contiguous; the streaming
+  Validator tracks every CHROM seen and fires when a
+  reorder is detected.
+
+- **ID uniqueness across records** (`d90c7da`). Per
+  §1.6.1 no identifier should appear in more than
+  one data record.
+
+- **Breakend mate PSL / PSO consistency** (`d1cdb32`).
+  Per §1.6.2 PSO the PSL and PSO of two records forming
+  a breakend mate pair must match. The check keys by
+  both the record's own IDs and its MATEID so either
+  mate may arrive first.
+
+### Added — feature
+
+- **`vcf.Open(path)`** (`c0427d3`). A new public
+  helper that opens a path and returns a streaming
+  `*Decoder`. The first two bytes are sniffed for the
+  gzip magic; on match the reader is wrapped in
+  `internal/bgzf.NewReader`, otherwise the raw stream
+  is read directly. Both plain `.vcf` and compressed
+  `.vcf.gz` use the same call site.
+
 ## [0.8.0] — 2026-10-18
 
 This release closes out the v4.5 spec-compliance work begun in
@@ -361,7 +467,8 @@ follow-up if/when needed.
 [0.5.0]: https://github.com/inful/htsfile/compare/v0.4.0...v0.5.0
 [0.7.0]: https://github.com/inful/htsfile/compare/v0.6.0...v0.7.0
 [0.8.0]: https://github.com/inful/htsfile/compare/v0.7.0...v0.8.0
-[Unreleased]: https://github.com/inful/htsfile/compare/v0.8.0...HEAD
+[0.9.0]: https://github.com/inful/htsfile/compare/v0.8.0...v0.9.0
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.9.0...HEAD
 
 ## [0.4.0] — 2026-10-18
 
