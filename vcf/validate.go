@@ -552,6 +552,19 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 				})
 			}
 		}
+
+		// CICN: 2 entries per ALT allele (VCFv4.5
+		// §1.6.1.7).
+		if key == "CICN" {
+			if len(val.Floats) > 0 && len(val.Floats) != 2*altCount {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "INFO/" + key,
+					Msg: fmt.Sprintf("CICN must contain exactly %d entries (2 * %d ALT alleles); got %d",
+						2*altCount, altCount, len(val.Floats)),
+				})
+			}
+		}
 	}
 	return issues
 }
