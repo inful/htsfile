@@ -1423,6 +1423,61 @@ func TestValidator_PloidyConsistencyAcrossRecord(t *testing.T) {
 	})
 }
 
+func TestParser_IUPACALTReduction(t *testing.T) {
+	// Per VCFv4.5 §1.4.4: symbolic alleles can be used
+	// to represent genuinely ambiguous IUPAC codes
+	// (e.g. ##ALT=<ID=R,Description="IUPAC code R =
+	// A/G">). When such an ALT allele appears in a record
+	// and the corresponding ##ALT is declared, the parser
+	// reduces the allele to one of its constituent bases.
+	in := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=R,Description=\"IUPAC code R = A/G\">\n" +
+		"##ALT=<ID=M,Description=\"IUPAC code M = A/C\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+		"chr1\t100\t.\tA\tR,M\t.\t.\t.\n"
+	dec := NewDecoder(strings.NewReader(in))
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if len(rec.Alt) != 2 || rec.Alt[0] != "A" || rec.Alt[1] != "A" {
+		t.Errorf("rec.Alt = %q, want [A A]", rec.Alt)
+	}
+}
+
+func TestParser_IUPACALTUndeclaredRejected(t *testing.T) {
+	// An IUPAC code used as an ALT without a matching
+	// ##ALT declaration is rejected by the
+	// symbolic-ALT-declaration check in the validator
+	// (ModeStrict).
+	in := "##fileformat=VCFv4.2\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+		"chr1\t100\t.\tA\tR\t.\t.\t.\n"
+	dec := NewDecoder(strings.NewReader(in))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+	found := false
+	for _, iss := range issues {
+		if iss.Field == "ALT[0]" && strings.Contains(iss.Msg, "not declared in any ##ALT") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected validation issue for undeclared IUPAC ALT, got: %+v", issues)
+	}
+}
+
 func TestValidator_MitochondrialChromExemptions(t *testing.T) {
 	// VCFv4.5 §1.6.1.6: the mitochondrial reference is
 	// circular. POS may exceed the contig length and END

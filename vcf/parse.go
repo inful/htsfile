@@ -531,16 +531,25 @@ func (h *Header) applyStructured(key string, pairs []fieldPair, lineNo int) erro
 		// DEL, INS, DUP, INV, or CNV. Implementations
 		// are free to add subtypes via ":" but the
 		// first segment must be one of these five.
+		// IUPAC ambiguity codes (R, Y, S, W, K, M,
+		// B, D, H, V) are also accepted as bare
+		// symbolic-allele IDs.
 		first := d.ID
 		if i := strings.IndexByte(d.ID, ':'); i >= 0 {
 			first = d.ID[:i]
 		}
-		switch first {
-		case "DEL", "INS", "DUP", "INV", "CNV":
-			// ok
-		default:
-			return &ParseError{Line: lineNo, Field: "ALT",
-				Msg: fmt.Sprintf("ALT ID %q has first-level type %q; must be one of DEL, INS, DUP, INV, CNV", d.ID, first)}
+		if iupacIDs[first] {
+			// IUPAC code as a bare symbolic-allele
+			// ID is accepted (no colon-separated
+			// subtypes for IUPAC codes).
+		} else {
+			switch first {
+			case "DEL", "INS", "DUP", "INV", "CNV":
+				// ok
+			default:
+				return &ParseError{Line: lineNo, Field: "ALT",
+					Msg: fmt.Sprintf("ALT ID %q has first-level type %q; must be one of DEL, INS, DUP, INV, CNV, or an IUPAC code", d.ID, first)}
+			}
 		}
 		if _, exists := h.Alts[d.ID]; exists {
 			return &ParseError{Line: lineNo, Field: "ALT",
@@ -802,6 +811,19 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 				rec.Alt[i] = "<*>"
 			}
 		}
+		// IUPAC ambiguity codes in ALT are reduced to
+		// one of their constituent bases when the ID is
+		// declared via ##ALT (per VCFv4.5 §1.4.4). An
+		// undeclared IUPAC code in ALT is rejected by the
+		// existing symbolic-ALT declaration check
+		// (Validator.checkRecord).
+		for i, a := range rec.Alt {
+			if id := iupacIDFromAllele(a); id != "" {
+				if _, declared := h.Alts[id]; declared {
+					rec.Alt[i] = reduceIUPACBases(a)
+				}
+			}
+		}
 	}
 
 	// QUAL (col 6)
@@ -1053,6 +1075,23 @@ func reduceIUPACBases(s string) string {
 		out[i] = base
 	}
 	return string(out)
+}
+
+// iupacIDs lists the IUPAC ambiguity codes the spec
+// treats as eligible symbolic-allele IDs (§1.4.4).
+var iupacIDs = map[string]bool{
+	"R": true, "Y": true, "S": true, "W": true, "K": true,
+	"M": true, "B": true, "D": true, "H": true, "V": true,
+}
+
+// iupacIDFromAllele returns the IUPAC code ID when a is
+// a bare IUPAC allele (no surrounding angle brackets).
+// Returns "" otherwise.
+func iupacIDFromAllele(a string) string {
+	if !iupacIDs[a] {
+		return ""
+	}
+	return a
 }
 
 // validMD5Hex reports whether s is 32 lowercase hex characters,

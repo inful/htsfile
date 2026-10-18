@@ -484,15 +484,28 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 			// ##ALT. Breakend forms (containing '[' or
 			// ']') and the special <*> allele are
 			// exempt — they are defined by the spec
-			// rather than by a ##ALT entry.
-			if strings.HasPrefix(a, "<") && strings.HasSuffix(a, ">") &&
-				a != "<*>" && !strings.ContainsAny(a, "[]") {
+			// rather than by a ##ALT entry. Bare IUPAC
+			// ambiguity codes (R, Y, S, W, K, M, B, D,
+			// H, V) are checked the same way; they are
+			// also only valid when declared via ##ALT.
+			switch {
+			case a == "<*>" || strings.ContainsAny(a, "[]"):
+				// skip
+			case strings.HasPrefix(a, "<") && strings.HasSuffix(a, ">"):
 				id := a[1 : len(a)-1]
 				if _, ok := h.Alts[id]; !ok {
 					issues = append(issues, ValidationError{
 						Severity: SeverityError, Record: idx + 1, Line: line,
 						Field: fmt.Sprintf("ALT[%d]", i),
 						Msg:   fmt.Sprintf("symbolic allele %q is not declared in any ##ALT line", a),
+					})
+				}
+			case iupacIDs[a]:
+				if _, ok := h.Alts[a]; !ok {
+					issues = append(issues, ValidationError{
+						Severity: SeverityError, Record: idx + 1, Line: line,
+						Field: fmt.Sprintf("ALT[%d]", i),
+						Msg:   fmt.Sprintf("IUPAC code %q is not declared in any ##ALT line", a),
 					})
 				}
 			}
@@ -1459,6 +1472,12 @@ func validAltAllele(a string) bool {
 	}
 	// Breakend: bracket-balanced form starting or ending with [ or ].
 	if isBreakend(a) {
+		return true
+	}
+	// Bare IUPAC ambiguity code (R, Y, S, W, K, M, B, D,
+	// H, V) is a valid symbolic-allele ALT form per
+	// VCFv4.5 §1.4.4.
+	if iupacIDs[a] {
 		return true
 	}
 	// Plain nucleotide string.
