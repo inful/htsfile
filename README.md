@@ -423,8 +423,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | `ModeDefault` and `ModeStrict` validators | ✅ |
 | **BCF writer (record-side)**           |   ✅   |
 | Per-sample FORMAT column (v2)          |   ✅   |
-| BCF 2.2 read support (`Decoder.Version`) | ✅ |
-| BCF 2.2 write support (encoder stays at 2.1) | ❌ |
+| BCF 2.2 read/write (`SetBCFVersion`, `Decoder.Version`) | ✅ |
 | CLI translation (`vcf2bcf` / `bcf2vcf`) |   ✅   |
 
 ### tabix/ package (Tabix v1)
@@ -495,10 +494,6 @@ include:
   ecosystem; would be a separate package if added.
 - **Multi-FASTA / .mfa** (FASTA) — no widely-adopted
   specification.
-- **BCF 2.2 write support** (BCF) — the decoder reads 2.2;
-  the encoder still emits 2.1. Promoting the encoder
-  requires implementing the 2.2 long-allele encoding and
-  the additional reserved keys.
 
 Items marked `🔜` are deferred features with an active
 implementation path; see ROADMAP.md for the priority order.

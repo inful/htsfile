@@ -140,7 +140,7 @@ func (d *Decoder) readSampleTypedValue(def *FormatDef) (SampleValue, error) {
 		}
 		val.Str = string(b[:])
 	case "String":
-		if t != typeString {
+		if t != typeString && t != typeLong {
 			return SampleValue{}, fmt.Errorf("string field: unexpected type=%d", t)
 		}
 		val.Strs = make([]string, count)
@@ -167,9 +167,9 @@ func (d *Decoder) readSampleTypedValue(def *FormatDef) (SampleValue, error) {
 }
 
 // writeSample emits one per-sample block given the FORMAT
-// layout. The ALT count is needed for A/R cardinality; pass
-// len(r.Alt).
-func writeSample(w *bytes.Buffer, s *Sample, formatKeys []uint16, hdr *Header) error {
+// layout. The version selects the long-string type tag
+// (0xF) for BCF 2.2; pass 1 for BCF 2.1.
+func writeSample(w *bytes.Buffer, s *Sample, formatKeys []uint16, hdr *Header, version uint8) error {
 	for _, keyIdx := range formatKeys {
 		def, ok := hdr.FormatAt(int(keyIdx))
 		if !ok {
@@ -180,7 +180,7 @@ func writeSample(w *bytes.Buffer, s *Sample, formatKeys []uint16, hdr *Header) e
 			w.WriteByte(typeMissing)
 			continue
 		}
-		if err := writeSampleTypedValue(w, &val, def); err != nil {
+		if err := writeSampleTypedValue(w, &val, def, version); err != nil {
 			return fmt.Errorf("bcf: FORMAT key %d (%s): %w", keyIdx, def.ID, err)
 		}
 	}
@@ -188,8 +188,9 @@ func writeSample(w *bytes.Buffer, s *Sample, formatKeys []uint16, hdr *Header) e
 }
 
 // writeSampleTypedValue is the encoder counterpart to
-// readSampleTypedValue.
-func writeSampleTypedValue(w *bytes.Buffer, val *SampleValue, def *FormatDef) error {
+// readSampleTypedValue. The version selects the long-string
+// type tag (0xF) for BCF 2.2.
+func writeSampleTypedValue(w *bytes.Buffer, val *SampleValue, def *FormatDef, version uint8) error {
 	_, isVar := ParseNumber(def.Number)
 	if isVar {
 		// Variable-length: emit a uint32 count followed by
@@ -234,7 +235,18 @@ func writeSampleTypedValue(w *bytes.Buffer, val *SampleValue, def *FormatDef) er
 		w.WriteByte(typeString)
 		w.WriteByte(val.Str[0])
 	case "String":
-		w.WriteByte(typeString)
+		// For BCF 2.2, strings of length 15 or more use
+		// the typeLong (0xF) tag instead of typeString (7).
+		strType := typeString
+		if version == 2 {
+			for _, s := range val.Strs {
+				if len(s) >= 15 {
+					strType = typeLong
+					break
+				}
+			}
+		}
+		w.WriteByte(strType)
 		for _, s := range val.Strs {
 			var lb [4]byte
 			if s == "" {

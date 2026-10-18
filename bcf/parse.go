@@ -164,17 +164,18 @@ func (d *Decoder) Record() (*Record, error) {
 		return nil, err
 	}
 	// ALT: a sequence of typed-string entries (each with
-	// type byte 7). The list is terminated by the first
-	// non-string type byte, which begins the FILTER field.
-	// An ALT count of zero is implicit (no typed-string
-	// bytes appear between REF and FILTER).
+	// type byte 7 or, in BCF 2.2, 0xF for long strings).
+	// The list is terminated by the first non-string type
+	// byte, which begins the FILTER field. An ALT count of
+	// zero is implicit (no typed-string bytes appear between
+	// REF and FILTER).
 	var alt []string
 	for {
 		peek, err := d.peekByte()
 		if err != nil {
 			return nil, err
 		}
-		if peek != typeString {
+		if peek != typeString && peek != typeLong {
 			break
 		}
 		a, err := d.readTypedString()
@@ -247,6 +248,11 @@ func (d *Decoder) readFormatKeys(nFmt uint16) ([]uint16, error) {
 
 // readTypedString reads a type byte + optional length-prefixed
 // string body. Returns "" when the field is missing.
+//
+// BCF 2.1 strings use typeString (7) + uint32 length + bytes.
+// BCF 2.2 adds typeLong (0xF) as an equivalent form, used by
+// the encoder for strings of length 15 or more. The decoder
+// accepts either.
 func (d *Decoder) readTypedString() (string, error) {
 	t, err := d.readByte()
 	if err != nil {
@@ -255,7 +261,7 @@ func (d *Decoder) readTypedString() (string, error) {
 	switch t {
 	case typeMissing:
 		return "", nil
-	case typeString:
+	case typeString, typeLong:
 		var l uint32
 		if err := binary.Read(d.br, binary.LittleEndian, &l); err != nil {
 			return "", err

@@ -38,13 +38,34 @@ type Encoder struct {
 	hdrWritten bool
 	closed     bool
 
+	// version is the BCF minor version to emit (1 for 2.1,
+	// 2 for 2.2). Defaults to 1.
+	version uint8
+
 	// Cached contig index for fast CHROM → int32 mapping.
 	contigIdx map[string]int32
 }
 
-// NewEncoder wraps w in an [Encoder].
+// NewEncoder wraps w in an [Encoder]. The default BCF
+// version is 2.1; call [Encoder.SetBCFVersion] before
+// [Encoder.WriteHeader] to emit 2.2.
 func NewEncoder(w io.Writer) *Encoder {
-	return &Encoder{w: bgzf.NewWriter(w)}
+	return &Encoder{w: bgzf.NewWriter(w), version: 1}
+}
+
+// SetBCFVersion selects the BCF minor version to emit.
+// Pass 1 for BCF 2.1, 2 for BCF 2.2. Must be called before
+// [Encoder.WriteHeader]; calling it after the header is
+// written returns an error.
+func (e *Encoder) SetBCFVersion(v uint8) error {
+	if e.hdrWritten {
+		return errors.New("bcf: SetBCFVersion after WriteHeader")
+	}
+	if v != 1 && v != 2 {
+		return fmt.Errorf("bcf: unsupported BCF version %d (want 1 or 2)", v)
+	}
+	e.version = v
+	return nil
 }
 
 // WriteHeader emits the BCF file header: magic + l_text +
@@ -73,7 +94,12 @@ func (e *Encoder) WriteHeader(hdr *Header) error {
 		text = serialiseHeader(hdr)
 	}
 	var payload bytes.Buffer
-	payload.Write(Magic[:])
+	// Select the magic for the configured version.
+	magic := Magic
+	if e.version == 2 {
+		magic = magic22
+	}
+	payload.Write(magic[:])
 	var lt [4]byte
 	binary.LittleEndian.PutUint32(lt[:], uint32(len(text)))
 	payload.Write(lt[:])
@@ -120,7 +146,7 @@ func (e *Encoder) WriteRecord(r *Record) error {
 	if !ok {
 		return fmt.Errorf("bcf: record CHROM %q not in header", r.CHROM)
 	}
-	payload, err := encodeRecord(r, chromIdx, e.hdr)
+	payload, err := encodeRecord(r, chromIdx, e.hdr, e.version)
 	if err != nil {
 		return fmt.Errorf("bcf: encoding record: %w", err)
 	}
@@ -143,7 +169,7 @@ func (e *Encoder) Close() error {
 // encodeRecord serializes one Record into the BGZF block
 // payload: prefix (CHROM + POS + rlen + n_info + n_fmt) +
 // ID + REF + ALT + FILTER + QUAL + INFO + per-sample FORMAT.
-func encodeRecord(r *Record, chromIdx int32, hdr *Header) ([]byte, error) {
+func encodeRecord(r *Record, chromIdx int32, hdr *Header, version uint8) ([]byte, error) {
 	var payload bytes.Buffer
 	// Prefix: CHROM (int32) + POS (int32) + rlen (int32) +
 	// n_info (uint32) + n_fmt (uint16) = 18 bytes.
@@ -162,12 +188,12 @@ func encodeRecord(r *Record, chromIdx int32, hdr *Header) ([]byte, error) {
 	binary.LittleEndian.PutUint16(prefix[16:18], nFmt)
 	payload.Write(prefix[:18])
 	// ID (typed string).
-	writeTypedString(&payload, r.ID)
+	writeTypedString(&payload, r.ID, version)
 	// REF (typed string).
-	writeTypedString(&payload, r.Ref)
+	writeTypedString(&payload, r.Ref, version)
 	// ALT (zero or more typed strings, terminated by FILTER).
 	for _, alt := range r.Alt {
-		writeTypedString(&payload, alt)
+		writeTypedString(&payload, alt, version)
 	}
 	// FILTER (typed: missing | single int32 | array of int32).
 	writeTypedFilter(&payload, r.Filter, hdr)
@@ -186,7 +212,7 @@ func encodeRecord(r *Record, chromIdx int32, hdr *Header) ([]byte, error) {
 			payload.Write(ib[:])
 		}
 		for i := range r.Samples {
-			if err := writeSample(&payload, &r.Samples[i], r.Format, hdr); err != nil {
+			if err := writeSample(&payload, &r.Samples[i], r.Format, hdr, version); err != nil {
 				return nil, err
 			}
 		}
@@ -195,13 +221,20 @@ func encodeRecord(r *Record, chromIdx int32, hdr *Header) ([]byte, error) {
 }
 
 // writeTypedString emits a type byte + optional length prefix
-// + string body. Missing (empty) is typeMissing.
-func writeTypedString(w *bytes.Buffer, s string) {
+// + string body. Missing (empty) is typeMissing. For BCF 2.2
+// (version == 2) strings of length 15 or more use the typeLong
+// form (type byte 0xF + uint32 length) instead of the standard
+// typeString (7) form. The reader accepts both.
+func writeTypedString(w *bytes.Buffer, s string, version uint8) {
 	if s == "" {
 		w.WriteByte(typeMissing)
 		return
 	}
-	w.WriteByte(typeString)
+	if version == 2 && len(s) >= 15 {
+		w.WriteByte(typeLong)
+	} else {
+		w.WriteByte(typeString)
+	}
 	var lb [4]byte
 	binary.LittleEndian.PutUint32(lb[:], uint32(len(s)))
 	w.Write(lb[:])

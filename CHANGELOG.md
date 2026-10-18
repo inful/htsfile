@@ -50,6 +50,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   the encoder mirrors. Records with `Format` nil / empty
   are byte-identical to v1 output (n_fmt = 0).
 
+- **BCF 2.2 read/write**. The decoder already accepted
+  the 2.2 magic; the encoder now does too. New API:
+  `Encoder.SetBCFVersion(v uint8)` (1 for 2.1, 2 for 2.2)
+  must be called before `WriteHeader`. The decoder exposes
+  `Decoder.Version() uint8` so callers can detect 2.2 input.
+
+  BCF 2.2 introduces a long-string type tag (`0xF` +
+  `uint32` length) for strings of length 15 or more. The
+  encoder emits `typeLong` when the configured version is
+  2 and any string in the record meets the length threshold
+  (ID, REF, ALT, or per-sample FORMAT string). The decoder
+  accepts either `typeString` (7) or `typeLong` (0xF) for
+  these fields.
+
 - **`.fai` index generation** (`fai.Build`, `fai.Writer`).
   Build reads a FASTA document and returns an `*Index` in source
   order; `Writer.Write` serialises an `*Index` in canonical

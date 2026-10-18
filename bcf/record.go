@@ -24,8 +24,18 @@ const (
 	// width is field-dependent: QUAL uses float64, INFO
 	// fields use float32).
 	typeFloat uint8 = 5
-	// typeString marks a string payload (length-prefixed).
+	// typeString marks a string payload (length-prefixed,
+	// uint32 length). For BCF 2.1 the length is the only
+	// prefix. For BCF 2.2 strings whose length exceeds 14
+	// characters use typeLong (0xF) instead, with a uint32
+	// length prefix.
 	typeString uint8 = 7
+	// typeLong marks a long string (BCF 2.2). The payload
+	// is a uint32 length followed by that many bytes; this
+	// form is required for strings whose length is 15 or
+	// more, where the type 7 + length encoding runs out of
+	// space in the type-byte's high nibble.
+	typeLong uint8 = 0xF
 
 	// bcfFilterMissing is the sentinel value stored in the
 	// FILTER typed array when no filter applies (PASS or
