@@ -39,9 +39,9 @@ const (
 )
 
 // Record is one BCF alignment record. The shared per-record
-// fields (CHROM, POS, ID, REF, ALT, FILTER, QUAL, INFO) are
-// populated by the Decoder. The per-sample FORMAT column is
-// out of scope for v1.
+// fields (CHROM, POS, ID, REF, ALT, FILTER, QUAL, INFO,
+// FORMAT list, and per-sample data) are populated by the
+// Decoder.
 //
 // Zero value is not meaningful; obtain Records from
 // [Decoder.Record].
@@ -88,6 +88,18 @@ type Record struct {
 	// parsed; field types are coerced according to the
 	// header's ##INFO declarations.
 	Info map[string]InfoValue
+
+	// Format is the list of FORMAT-key header indices
+	// (uint16) in the order the encoder emitted / the
+	// decoder read them. Each entry also appears as a key
+	// in every Sample's Fields map. Empty when the record
+	// has no per-sample data.
+	Format []uint16
+
+	// Samples is the per-sample data, one entry per sample
+	// declared in the header (in header order). Empty when
+	// the record has no per-sample data.
+	Samples []Sample
 }
 
 // InfoValue holds the typed value(s) for a single BCF INFO

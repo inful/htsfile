@@ -24,11 +24,11 @@ import (
 //	for _, r := range recs { enc.WriteRecord(r) }
 //	enc.Close()
 //
-// v1 scope: records are written without per-sample FORMAT
-// data (matching what the v1 decoder accepts). n_fmt is
-// always emitted as 0; the decoder skips the FORMAT block
-// when n_fmt == 0, which means the produced stream round-
-// trips cleanly through the existing decoder.
+// v2 scope: per-sample FORMAT data is encoded when the
+// record's Format field is non-empty. n_fmt is set from
+// len(r.Format); one uint16 index per FORMAT key, then one
+// typed-value block per sample, in the same order as the
+// header's sample list.
 //
 // An Encoder is not safe for concurrent use.
 type Encoder struct {
@@ -99,9 +99,8 @@ func (e *Encoder) WriteHeader(hdr *Header) error {
 
 // WriteRecord emits one BCF record: CHROM (int32) + POS
 // (int32) + rlen (int32, unused) + n_info (uint32) +
-// n_fmt (uint16, always 0 in v1) + ID + REF + ALT + FILTER
-// + QUAL + INFO. The per-sample FORMAT block is skipped
-// (n_fmt = 0).
+// n_fmt (uint16) + ID + REF + ALT + FILTER + QUAL + INFO +
+// (per-sample FORMAT block when n_fmt > 0).
 //
 // A nil record is a no-op. CHROM must appear in the header's
 // Contig dictionary (LookupContig returns it); an unknown
@@ -143,7 +142,7 @@ func (e *Encoder) Close() error {
 
 // encodeRecord serializes one Record into the BGZF block
 // payload: prefix (CHROM + POS + rlen + n_info + n_fmt) +
-// ID + REF + ALT + FILTER + QUAL + INFO.
+// ID + REF + ALT + FILTER + QUAL + INFO + per-sample FORMAT.
 func encodeRecord(r *Record, chromIdx int32, hdr *Header) ([]byte, error) {
 	var payload bytes.Buffer
 	// Prefix: CHROM (int32) + POS (int32) + rlen (int32) +
@@ -159,7 +158,8 @@ func encodeRecord(r *Record, chromIdx int32, hdr *Header) ([]byte, error) {
 	binary.LittleEndian.PutUint32(prefix[8:12], 0)
 	nInfo := uint32(len(r.Info))
 	binary.LittleEndian.PutUint32(prefix[12:16], nInfo)
-	// n_fmt (uint16 LE) — always 0 in v1 (skip FORMAT block).
+	nFmt := uint16(len(r.Format))
+	binary.LittleEndian.PutUint16(prefix[16:18], nFmt)
 	payload.Write(prefix[:18])
 	// ID (typed string).
 	writeTypedString(&payload, r.ID)
@@ -177,6 +177,19 @@ func encodeRecord(r *Record, chromIdx int32, hdr *Header) ([]byte, error) {
 	// header index plus a typed value).
 	if err := writeTypedInfo(&payload, r.Info, hdr); err != nil {
 		return nil, err
+	}
+	// Per-sample FORMAT block.
+	if nFmt > 0 {
+		for _, keyIdx := range r.Format {
+			var ib [2]byte
+			binary.LittleEndian.PutUint16(ib[:], keyIdx)
+			payload.Write(ib[:])
+		}
+		for i := range r.Samples {
+			if err := writeSample(&payload, &r.Samples[i], r.Format, hdr); err != nil {
+				return nil, err
+			}
+		}
 	}
 	return payload.Bytes(), nil
 }

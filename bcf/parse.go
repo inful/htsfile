@@ -100,9 +100,10 @@ func (d *Decoder) Header() (*Header, error) {
 // no more records are available. Calling Record after EOF
 // continues to return (nil, [io.EOF]).
 //
-// v1 supports the shared per-record fields (CHROM, POS, ID,
-// REF, ALT, FILTER, QUAL, INFO). The FORMAT column (per-
-// sample genotype data) is skipped.
+// v2 supports the shared per-record fields (CHROM, POS, ID,
+// REF, ALT, FILTER, QUAL, INFO) and the per-sample FORMAT
+// block. Records with n_fmt == 0 (no per-sample data) round
+// trip without a FORMAT section.
 func (d *Decoder) Record() (*Record, error) {
 	if !d.hdrRead {
 		if _, err := d.Header(); err != nil {
@@ -131,15 +132,7 @@ func (d *Decoder) Record() (*Record, error) {
 			Msg: "failed to read n_fmt: " + err.Error()}
 	}
 	nFmt := binary.LittleEndian.Uint16(nFmtBytes[:])
-	if nFmt > 0 {
-		// Skip the FORMAT-typed and per-sample data. Each
-		// sample contributes (n_fmt + 1) typed fields; the
-		// first typed array is the FORMAT list, the rest
-		// are per-sample values.
-		if err := d.skipFmtBlock(); err != nil {
-			return nil, err
-		}
-	}
+	_ = nFmt // consumed later in the per-sample block
 	// ID (1 byte type + optional 4-byte length + bytes).
 	id, err := d.readTypedString()
 	if err != nil {
@@ -198,7 +191,38 @@ func (d *Decoder) Record() (*Record, error) {
 		Filter:    filters,
 		Info:      info,
 	}
+	// Per-sample FORMAT block.
+	if nFmt > 0 {
+		formatKeys, err := d.readFormatKeys(nFmt)
+		if err != nil {
+			return nil, err
+		}
+		rec.Format = formatKeys
+		sampleNames := d.hdr.SampleNames
+		rec.Samples = make([]Sample, len(sampleNames))
+		for i := range sampleNames {
+			s, err := d.readSample(formatKeys)
+			if err != nil {
+				return nil, err
+			}
+			rec.Samples[i] = *s
+		}
+	}
 	return rec, nil
+}
+
+// readFormatKeys reads the n_fmt uint16 header indices that
+// form the per-record FORMAT list.
+func (d *Decoder) readFormatKeys(nFmt uint16) ([]uint16, error) {
+	keys := make([]uint16, nFmt)
+	for i := uint16(0); i < nFmt; i++ {
+		var b [2]byte
+		if _, err := io.ReadFull(d.br, b[:]); err != nil {
+			return nil, fmt.Errorf("bcf: read FORMAT[%d]: %w", i, err)
+		}
+		keys[i] = binary.LittleEndian.Uint16(b[:])
+	}
+	return keys, nil
 }
 
 // readTypedString reads a type byte + optional length-prefixed
@@ -527,15 +551,12 @@ func (d *Decoder) skipTypedInfoValue() error {
 	return nil
 }
 
-// skipFmtBlock is a placeholder for v1: BCF v1 does not
-// expose FORMAT/sample data, so encountering a non-empty
-// FORMAT block is an explicit error rather than a silent
-// skip. Callers receive a clear ParseError pointing at the
-// limitation. v2 (or a follow-up) should add real FORMAT
-// parsing once the use case is concrete.
+// skipFmtBlock is no longer used; the v2 FORMAT reader
+// consumes the per-sample block above. Kept for backwards
+// compatibility with any external callers.
 func (d *Decoder) skipFmtBlock() error {
 	return &ParseError{Field: "FORMAT",
-		Msg: "BCF v1 does not parse FORMAT/sample data; use a v1-compatible sample-free VCF/BCF or wait for v2"}
+		Msg: "skipFmtBlock is no longer used; v2 reads the per-sample block directly"}
 }
 
 // peekByte reads one byte without consuming it from the
