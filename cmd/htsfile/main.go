@@ -5,6 +5,10 @@
 //
 //	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.fq | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
 //	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam | file.gff[3] | file.fa[sta] | file.fq
+//	htsfile sam2bam < file.sam > file.bam    # convert SAM to BAM
+//	htsfile bam2sam < file.bam > file.sam    # convert BAM to SAM
+//	htsfile vcf2bcf < file.vcf > file.bcf    # convert VCF to BCF
+//	htsfile bcf2vcf < file.bcf > file.vcf    # convert BCF to VCF
 //	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.fq | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
 //	htsfile version
 //
@@ -131,6 +135,14 @@ func main() {
 		err = runCheck(args)
 	case "roundtrip":
 		err = runRoundtrip(args)
+	case "sam2bam":
+		err = runTranslate(args, runSAMToBAM, "sam2bam", ".sam")
+	case "bam2sam":
+		err = runTranslate(args, runBAMToSAM, "bam2sam", ".bam")
+	case "vcf2bcf":
+		err = runTranslate(args, runVCFToBCF, "vcf2bcf", ".vcf")
+	case "bcf2vcf":
+		err = runTranslate(args, runBCFToVCF, "bcf2vcf", ".bcf")
 	case "summary":
 		err = runSummary(args)
 	case "version":
@@ -159,12 +171,19 @@ Commands:
               --warnings   also exit non-zero on warnings
   roundtrip   Re-emit the file to stdout.
               --crlf       use CR+LF line endings
+  sam2bam     Convert SAM text to BAM binary (stdout).
+  bam2sam     Convert BAM binary to SAM text (stdout).
+  vcf2bcf     Convert VCF text to BCF binary (stdout).
+  bcf2vcf     Convert BCF binary to VCF text (stdout).
   summary     Print a summary of the file (header / column count / records).
 
 Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .fq, .bcf, .tbi, .csi). For
 stdin ("-") or unknown extensions, the first non-empty line is sniffed.
-BAM v1, BCF v1, Tabix, and CSI are all read-only: the roundtrip subcommand
-does not support these formats. check and summary work for everything.`)
+BAM v1 and BCF v1 are all read-only as text formats, but they
+can round-trip through themselves (.bam → .bam, .bcf → .bcf).
+The translation subcommands (sam2bam, bam2sam, vcf2bcf, bcf2vcf)
+convert between text and binary forms. check and summary work
+for everything.`)
 }
 
 // openFileOrStdin returns the named file, or os.Stdin if path is "-".
@@ -978,6 +997,30 @@ func runRoundtripSAM(f io.Reader, crlf bool) error {
 		}
 	}
 	return enc.Flush()
+}
+
+// runTranslate implements the four format-translation
+// subcommands (sam2bam, bam2sam, vcf2bcf, bcf2vcf). Each
+// takes a single file argument whose extension must match the
+// input format, and writes the converted output to stdout.
+// The caller passes the per-format conversion function and
+// the input extension for the extension check.
+func runTranslate(args []string, fn func(io.Reader, io.Writer) error, name, inExt string) error {
+	if len(args) != 1 {
+		return fmt.Errorf("%s: expected exactly one file argument", name)
+	}
+	path := args[0]
+	ext := strings.ToLower(filepath.Ext(path))
+	if ext != inExt {
+		return fmt.Errorf("%s: input file %q must have extension %s", name, path, inExt)
+	}
+	//nolint:gosec // path comes from CLI args; the extension check above is the safety boundary.
+	f, err := os.Open(path)
+	if err != nil {
+		return fmt.Errorf("%s: open: %w", name, err)
+	}
+	defer func() { _ = f.Close() }()
+	return fn(f, os.Stdout)
 }
 
 // runSummary prints a one-line summary of the file.

@@ -7,6 +7,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] — 2026-10-18
+
+This release adds the four text↔binary translation subcommands
+to the CLI. Round-trip through every format combination tested
+in `cmd/htsfile/translate_test.go` is clean. The BCF↔VCF side
+drops per-sample FORMAT data (matching the v1 BCF reader scope).
+
+### Added
+
+- **CLI format-translation subcommands.** Four new
+  subcommands — `sam2bam`, `bam2sam`, `vcf2bcf`, `bcf2vcf` —
+  convert between text and binary forms of the alignment and
+  variant formats. Each takes a single file argument whose
+  extension is checked and writes the converted output to
+  stdout. Wired through the existing CLI dispatcher in
+  `cmd/htsfile/main.go`.
+
+  ```sh
+  htsfile sam2bam reads.sam > reads.bam
+  htsfile bam2sam aligned.bam > aligned.sam
+  htsfile vcf2bcf variants.vcf > variants.bcf
+  htsfile bcf2vcf variants.bcf > variants.vcf
+  ```
+
+- **Translation helpers** in `cmd/htsfile/translate.go`:
+  per-format header and record converters (e.g.
+  `samToBAMHeader`, `bamToSAMRecord`, `vcfToBCFHeader`,
+  `bcfToVCFRecord`), packed-CIGAR pack/unpack, bin
+  computation. The BCF↔VCF translator drops per-sample FORMAT
+  data (matching the v1 BCF reader's scope); VCF "." IDs
+  are normalised to the BCF typeMissing form.
+
 ## [0.5.0] — 2026-10-18
 
 This release closes the "close symmetry" Phase 1 described
