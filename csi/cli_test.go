@@ -53,14 +53,22 @@ func TestCLI_CheckAndSummary(t *testing.T) {
 		}
 	})
 
-	t.Run("roundtrip_unsupported", func(t *testing.T) {
+	t.Run("roundtrip", func(t *testing.T) {
+		// CSI now has a Writer (v2 follow-up resolved); round-trip
+		// reads the synthetic index and re-emits it. The Writer
+		// sorts chunks deterministically by Beg, so the output
+		// re-parses into a logically-equivalent Index.
 		out, err := exec.Command(bin, "roundtrip", idxPath).CombinedOutput()
-		if err == nil {
-			t.Fatalf("roundtrip should have failed for CSI, but succeeded:\n%s", out)
+		if err != nil {
+			t.Fatalf("roundtrip failed: %v\n%s", err, out)
 		}
-		combined := string(out)
-		if !strings.Contains(combined, "read-only") {
-			t.Errorf("roundtrip error doesn't mention read-only:\n%s", combined)
+		idx2, err := NewReader(bytes.NewReader(out)).Read()
+		if err != nil {
+			t.Fatalf("re-parse: %v", err)
+		}
+		if idx2.MinShift != 14 || idx2.Depth != 5 {
+			t.Errorf("round-tripped min_shift/depth: got %d/%d want 14/5",
+				idx2.MinShift, idx2.Depth)
 		}
 	})
 }

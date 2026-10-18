@@ -54,14 +54,22 @@ func TestCLI_CheckAndSummary(t *testing.T) {
 		}
 	})
 
-	t.Run("roundtrip_unsupported", func(t *testing.T) {
+	t.Run("roundtrip", func(t *testing.T) {
+		// Tabix now has a Writer (v2 follow-up resolved); round-trip
+		// reads the synthetic index and re-emits it. The Writer
+		// sorts chunks deterministically by Beg, so the output
+		// re-parses into a logically-equivalent Index.
 		out, err := exec.Command(bin, "roundtrip", idxPath).CombinedOutput()
-		if err == nil {
-			t.Fatalf("roundtrip should have failed for Tabix, but succeeded:\n%s", out)
+		if err != nil {
+			t.Fatalf("roundtrip failed: %v\n%s", err, out)
 		}
-		combined := string(out)
-		if !strings.Contains(combined, "read-only") {
-			t.Errorf("roundtrip error doesn't mention read-only:\n%s", combined)
+		// Read the round-tripped output back and verify it parses.
+		idx2, err := NewReader(bytes.NewReader(out)).Read()
+		if err != nil {
+			t.Fatalf("re-parse: %v", err)
+		}
+		if len(idx2.References) != 1 || len(idx2.References[0].Bins[4681]) != 1 {
+			t.Errorf("round-tripped index missing expected data: %+v", idx2)
 		}
 	})
 }

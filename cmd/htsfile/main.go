@@ -32,9 +32,10 @@
 //	summary   print a one-line summary of the file's header.
 //	version   print the htsfile version (set via -ldflags at build time).
 //
-// BAM v1, BCF v1, Tabix, and CSI are all read-only in v1;
-// `roundtrip` is not supported for any of them. `check` and
-// `summary` work normally for everything.
+// BAM v1 and BCF v1 are read-only in v1; `roundtrip` is not
+// supported for them. Tabix and CSI round-trip is supported
+// (read → re-emit) starting with v0.4.0. `check` and `summary`
+// work normally for everything.
 package main
 
 import (
@@ -864,9 +865,9 @@ func runRoundtrip(args []string) error {
 	case formatBCF:
 		return runRoundtripBCF()
 	case formatTabix:
-		return runRoundtripTabix()
+		return runRoundtripTabix(r)
 	case formatCSI:
-		return runRoundtripCSI()
+		return runRoundtripCSI(r)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -1639,10 +1640,15 @@ func runCheckTabix(f io.Reader, path string) error {
 	return nil
 }
 
-// runRoundtripTabix returns an error explaining that Tabix is
-// read-only in v1.
-func runRoundtripTabix() error {
-	return errors.New("roundtrip: Tabix is read-only in this build (no index writer; deferred to v2)")
+// runRoundtripTabix reads a Tabix index and re-emits it to stdout.
+// The Writer sorts chunks deterministically by Beg, so the output
+// is byte-stable regardless of the input's map iteration order.
+func runRoundtripTabix(f io.Reader) error {
+	idx, err := tabix.NewReader(f).Read()
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	return tabix.NewWriter(os.Stdout).Write(idx)
 }
 
 // runSummaryTabix prints a summary of the Tabix file.
@@ -1685,10 +1691,15 @@ func runCheckCSI(f io.Reader, path string) error {
 	return nil
 }
 
-// runRoundtripCSI returns an error explaining that CSI is
-// read-only in v1.
-func runRoundtripCSI() error {
-	return errors.New("roundtrip: CSI is read-only in this build (no index writer; deferred to v2)")
+// runRoundtripCSI reads a CSI index and re-emits it to stdout.
+// The Writer sorts chunks deterministically by Beg, so the output
+// is byte-stable regardless of the input's map iteration order.
+func runRoundtripCSI(f io.Reader) error {
+	idx, err := csi.NewReader(f).Read()
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	return csi.NewWriter(os.Stdout).Write(idx)
 }
 
 // runSummaryCSI prints a summary of the CSI file.
