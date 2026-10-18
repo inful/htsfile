@@ -676,3 +676,46 @@ func TestValidator_POSWithinContigLength_Undeclared(t *testing.T) {
 		}
 	}
 }
+
+func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
+	// A symbolic ALT allele like <DEL> must be declared in
+	// ##ALT before it is used in a record. <*>, breakend
+	// forms, and a declared ##ALT pass without issue.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=DEL,Description=\"deletion\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, alt string
+		want      bool
+	}{
+		{"declared", "<DEL>", false},
+		{"undeclared", "<UNKNOWN>", true},
+		{"star allele is allowed", "<*>", false},
+		{"breakend is allowed", "A[chr1:200[", false},
+		{"non-symbolic", "C", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t" + c.alt + "\t.\t.\t.\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.HasPrefix(iss.Field, "ALT[") && strings.Contains(iss.Msg, "not declared in any ##ALT") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("ALT=%q: found=%v, want %v; issues=%+v", c.alt, found, c.want, issues)
+			}
+		})
+	}
+}

@@ -335,6 +335,22 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 					Msg:   "ALT allele equals REF",
 				})
 			}
+			// Symbolic ALT <ID> must be declared in
+			// ##ALT. Breakend forms (containing '[' or
+			// ']') and the special <*> allele are
+			// exempt — they are defined by the spec
+			// rather than by a ##ALT entry.
+			if strings.HasPrefix(a, "<") && strings.HasSuffix(a, ">") &&
+				a != "<*>" && !strings.ContainsAny(a, "[]") {
+				id := a[1 : len(a)-1]
+				if _, ok := h.Alts[id]; !ok {
+					issues = append(issues, ValidationError{
+						Severity: SeverityError, Record: idx + 1, Line: line,
+						Field: fmt.Sprintf("ALT[%d]", i),
+						Msg:   fmt.Sprintf("symbolic allele %q is not declared in any ##ALT line", a),
+					})
+				}
+			}
 		}
 	}
 
