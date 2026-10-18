@@ -365,7 +365,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | `ModeDefault` and `ModeStrict` validators | ✅ |
 | BAM **writer** (round-trip)             |   ✅   |
 | BAI index reader (`bam/bai`)            |   ✅   |
-| BAI-based region queries                |   🔜   |
+| BAI-based region queries (`Reference.Query`) | ✅ |
 | CLI translation (`sam2bam` / `bam2sam`) |   ✅   |
 
 ### gff/ package (GFF3)
@@ -422,7 +422,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | All 5 BCF INFO type codes (Integer, Float, Flag, Character, String) | ✅ |
 | `ModeDefault` and `ModeStrict` validators | ✅ |
 | **BCF writer (record-side)**           |   ✅   |
-| Per-sample FORMAT column               |   ❌   |
+| Per-sample FORMAT column (v2)          |   ✅   |
 | BCF 2.2 (latest version) support       |   ❌   |
 | CLI translation (`vcf2bcf` / `bcf2vcf`) |   ✅   |
 
@@ -479,6 +479,27 @@ make lint          # golangci-lint
 ## Specification
 
 Conforms to [VCFv4.5 and BCFv2.2](https://github.com/samtools/hts-specs/blob/master/VCFv4.5.tex).
+
+## Out of scope
+
+The `❌` rows in the per-package tables above that have no
+active implementation plan are documented as explicit
+out-of-scope items in [ROADMAP.md](ROADMAP.md). These
+include:
+
+- **BEDGraph, narrowPeak, broadPeak** (BED) — derivative
+  formats with their own spec, listed in the bed/ table
+  for completeness only.
+- **bigBed** (BED) — binary indexed format, its own
+  ecosystem; would be a separate package if added.
+- **Multi-FASTA / .mfa** (FASTA) — no widely-adopted
+  specification.
+- **BCF 2.2** (BCF) — newer revision of the BCF spec; the
+  current implementation targets BCF 2.1 which is the
+  dominant form in production data.
+
+Items marked `🔜` are deferred features with an active
+implementation path; see ROADMAP.md for the priority order.
 
 ## License
 
