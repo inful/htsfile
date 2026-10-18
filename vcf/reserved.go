@@ -85,6 +85,50 @@ func IsReservedFormatKey(key string) bool {
 	return ok
 }
 
+// MFamily returns the family prefix for a v4.5 base-modification
+// FORMAT key: "M" for the fraction field, "DPM" for the
+// total-read-depth field, "ADM" for the modified-read-depth
+// field. Returns "" if the key does not match any of these
+// patterns. The patterns are:
+//
+//	M<digits>[modifier]
+//	DPM<digits>[modifier]
+//	ADM<digits>[modifier]
+//
+// where <digits> is one or more decimal digits and [modifier]
+// is the optional ChEBI-derived code (e.g. "5mC", "0A") or
+// the trailing nucleotide (A/C/G/T/U/N).
+func MFamily(key string) string {
+	for _, prefix := range []string{"DPM", "ADM", "M"} {
+		if len(key) <= len(prefix) {
+			continue
+		}
+		if key[:len(prefix)] != prefix {
+			continue
+		}
+		// After the prefix, require at least one digit and
+		// no whitespace. The optional modifier code can be
+		// anything non-whitespace (the v4.5 spec lists a
+		// finite set; we are permissive).
+		rest := key[len(prefix):]
+		hasDigit := false
+		for i := 0; i < len(rest); i++ {
+			c := rest[i]
+			if c == ' ' || c == '\t' || c == '\n' || c == '\r' {
+				return ""
+			}
+			if !hasDigit && c >= '0' && c <= '9' {
+				hasDigit = true
+			}
+		}
+		if hasDigit {
+			return prefix
+		}
+		return ""
+	}
+	return ""
+}
+
 // IsBaseModKey reports whether key matches the v4.5 base-
 // modification pattern: "M" followed by a non-negative
 // decimal integer and an optional single nucleotide code

@@ -442,6 +442,37 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 					})
 				}
 			}
+
+			// Base-modification family value range (VCF v4.5).
+			//   M   : float in [0, 1]
+			//   DPM  : non-negative integer (read depth)
+			//   ADM  : non-negative integer (read depth)
+			// We rely on fv.Ints / fv.Floats, which decodeTyped
+			// populates from the raw values.
+			if fam := MFamily(key); fam != "" {
+				if fam == "M" {
+					for _, f := range fv.Floats {
+						if f < 0 || f > 1 {
+							issues = append(issues, ValidationError{
+								Severity: SeverityError, Record: idx + 1, Line: line,
+								Field: fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
+								Msg:   fmt.Sprintf("%s value %g is out of range [0, 1]", key, f),
+							})
+						}
+					}
+				} else {
+					// DPM / ADM: non-negative integer.
+					for _, n := range fv.Ints {
+						if n < 0 {
+							issues = append(issues, ValidationError{
+								Severity: SeverityError, Record: idx + 1, Line: line,
+								Field: fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
+								Msg:   fmt.Sprintf("%s value %d is negative", key, n),
+							})
+						}
+					}
+				}
+			}
 		}
 	}
 	return issues
