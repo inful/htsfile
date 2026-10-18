@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] — 2026-10-18
+
+This release closes the Tabix + CSI halves of the ROADMAP
+§Open decisions "Index generation" item. Four new commits:
+
+- feat(tabix): add Tabix index writer (commit `22ac357`)
+- feat(csi): add CSI index writer (commit `996a347`)
+- feat(cli): enable roundtrip for Tabix and CSI indexes (commit `9b1c2e3`)
+- docs: document Tabix + CSI writers (commit `c6731bc`)
+
 ### Added
 
 - **Tabix and CSI index writers.** Each package now has a
@@ -29,6 +39,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `.csi` files: it reads the file and re-emits it to stdout.
   BAM v1 and BCF v1 remain read-only (`roundtrip` returns a
   clear "read-only" error for those).
+
+[0.4.0]: https://github.com/inful/htsfile/compare/v0.3.0...v0.4.0
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.4.0...HEAD
 
 ## [0.3.0] — 2026-10-18
 
