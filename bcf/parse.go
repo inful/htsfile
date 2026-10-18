@@ -12,8 +12,15 @@ import (
 	"github.com/inful/htsfile/internal/bgzf"
 )
 
-// Magic is the six-byte BCF file signature: "BCF\x02\x01".
-var Magic = [6]byte{'B', 'C', 'F', 0x02, 0x01}
+// Magic is the six-byte BCF file signature. The first
+// three bytes are the ASCII "BCF". Byte 3 is the major
+// version (2). Byte 4 is the minor version (1 for BCF 2.1,
+// 2 for BCF 2.2). Byte 5 is reserved and must be zero.
+var Magic = [6]byte{'B', 'C', 'F', 0x02, 0x01, 0x00}
+
+// magic22 is the BCF 2.2 signature. The decoder accepts
+// either 2.1 or 2.2. The encoder emits 2.1.
+var magic22 = [6]byte{'B', 'C', 'F', 0x02, 0x02, 0x00}
 
 // Decoder reads a BCF v2.1 document incrementally from a
 // BGZF-compressed [io.Reader].
@@ -39,6 +46,11 @@ type Decoder struct {
 	hdr     *Header
 	hdrErr  error
 
+	// version is the minor-version byte from the BCF magic
+	// (1 for BCF 2.1, 2 for BCF 2.2). Zero before Header()
+	// is called.
+	version uint8
+
 	recordLine int
 }
 
@@ -50,6 +62,13 @@ func NewDecoder(r io.Reader) *Decoder {
 		bgzf: gz,
 		br:   bufio.NewReader(gz),
 	}
+}
+
+// Version returns the BCF minor-version byte from the magic
+// (1 for BCF 2.1, 2 for BCF 2.2). Returns 0 before Header()
+// has been called.
+func (d *Decoder) Version() uint8 {
+	return d.version
 }
 
 // Header reads the BCF magic + length-prefixed VCF-style
@@ -74,11 +93,12 @@ func (d *Decoder) Header() (*Header, error) {
 		d.hdrErr = err
 		return nil, err
 	}
-	if magic != Magic {
+	if magic != Magic && magic != magic22 {
 		d.hdrErr = &ParseError{Field: "magic",
 			Msg: fmt.Sprintf("not a BCF file: got %q", magic[:])}
 		return nil, d.hdrErr
 	}
+	d.version = magic[4]
 	// Length-prefixed header text.
 	var lText uint32
 	if err := binary.Read(d.br, binary.LittleEndian, &lText); err != nil {
