@@ -18,8 +18,9 @@ import (
 //
 // An Encoder is not safe for concurrent use.
 type Encoder struct {
-	w          *bufio.Writer
-	lineEnding []byte
+	w            *bufio.Writer
+	lineEnding   []byte
+	fastaWritten bool
 }
 
 // NewEncoder wraps w in an [Encoder] with default LF line endings.
