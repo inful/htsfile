@@ -793,11 +793,21 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 	// FILTER (col 7)
 	filterStr := string(fields[6])
 	if filterStr != "." {
+		seen := make(map[string]bool, 2)
 		for _, f := range strings.Split(filterStr, ";") {
 			if strings.ContainsAny(f, " \t;") {
 				return nil, &ParseError{Line: lineNo, Field: "FILTER",
 					Msg: "filter contains whitespace or ';': " + f}
 			}
+			if f == "0" {
+				return nil, &ParseError{Line: lineNo, Field: "FILTER",
+					Msg: "'0' is reserved and must not be used as a filter String"}
+			}
+			if seen[f] {
+				return nil, &ParseError{Line: lineNo, Field: "FILTER",
+					Msg: "duplicate filter value: " + f}
+			}
+			seen[f] = true
 			rec.Filter = append(rec.Filter, f)
 		}
 	}

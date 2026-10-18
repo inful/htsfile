@@ -593,6 +593,24 @@ func TestDecoder_Errors(t *testing.T) {
 				"1\t100\trs1=a\tA\tC\t.\t.\t.\n",
 		},
 		{
+			"filter reserved zero",
+			"##fileformat=VCFv4.5\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+				"1\t100\t.\tA\tC\t.\t0\t.\n",
+		},
+		{
+			"filter reserved zero mixed",
+			"##fileformat=VCFv4.5\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+				"1\t100\t.\tA\tC\t.\tPASS;0\t.\n",
+		},
+		{
+			"filter duplicate value",
+			"##fileformat=VCFv4.5\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+				"1\t100\t.\tA\tC\t.\tPASS;PASS\t.\n",
+		},
+		{
 			"data line too few columns",
 			"##fileformat=VCFv4.5\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n1\t2\t.\tA\n",
 		},
