@@ -153,3 +153,126 @@ func TestReference_VariableWidthHandled(t *testing.T) {
 		t.Errorf("chr2:9 = %q, want A", b)
 	}
 }
+func TestReference_SemicolonCommentsIgnored(t *testing.T) {
+	// Wikipedia (FASTA format): in the original Pearson
+	// format, one or more comment lines prefixed with ';'
+	// may occur after the header. We skip them so they
+	// don't corrupt the base count or the offset
+	// arithmetic.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	const content = ">chr1\n; a comment about the sequence\nACGTACGT\n; another comment\nACGTACGT\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	// chr1 has 16 bases total; the comment lines must
+	// not count toward length.
+	if got := len(ref.Contigs()); got != 1 {
+		t.Errorf("Contigs len: %d, want 1", got)
+	}
+	b, err := ref.BaseAt("chr1", 16)
+	if err != nil {
+		t.Fatalf("BaseAt chr1:16: %v", err)
+	}
+	if b != 'T' {
+		t.Errorf("chr1:16 = %q, want T", b)
+	}
+}
+
+func TestReference_InternalWhitespaceAndDigitsIgnored(t *testing.T) {
+	// Wikipedia: "Anything other than a valid character
+	// would be ignored (including spaces, tabulators,
+	// asterisks, etc)". We also strip digits because
+	// Wikipedia notes "Numerical digits are not allowed
+	// but are used in some databases to indicate the
+	// position in the sequence". Storing them as bases
+	// would misreport the base count.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	// Line 1: "AC GT ACGT" — 8 bases (space ignored).
+	// Line 2: "1ACGT2" — 4 bases (digit markers stripped).
+	const content = ">chr1\nAC GT ACGT\n1ACGT2\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	// Total bases = 8 + 4 = 12. With the space stripped,
+	// line 1 reads ACGTACGT (positions 1-8: A C G T A C
+	// G T), so chr1:8 is T (last base of line 1). Line 2
+	// reads ACGT (positions 9-12).
+	b, err := ref.BaseAt("chr1", 8)
+	if err != nil {
+		t.Fatalf("BaseAt chr1:8: %v", err)
+	}
+	if b != 'T' {
+		t.Errorf("chr1:8 = %q, want T", b)
+	}
+	b, err = ref.BaseAt("chr1", 9)
+	if err != nil {
+		t.Fatalf("BaseAt chr1:9: %v", err)
+	}
+	if b != 'A' {
+		t.Errorf("chr1:9 = %q, want A", b)
+	}
+	b, err = ref.BaseAt("chr1", 12)
+	if err != nil {
+		t.Fatalf("BaseAt chr1:12: %v", err)
+	}
+	if b != 'T' {
+		t.Errorf("chr1:12 = %q, want T", b)
+	}
+}
+
+func TestReference_NCBIStyleHeader(t *testing.T) {
+	// NCBI-style header with pipe-separated tokens and a
+	// description after whitespace: name is the full
+	// pipe-form prefix, not just the first token.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	const content = ">gi|5524211|gb|AAD44166.1| cytochrome b\nACGT\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	contigs := ref.Contigs()
+	if len(contigs) != 1 || contigs[0] != "gi|5524211|gb|AAD44166.1|" {
+		t.Errorf("Contigs = %v, want one entry with full pipe-form name", contigs)
+	}
+}
+
+func TestReference_LowercaseBases(t *testing.T) {
+	// Wikipedia: "lower-case letters are accepted and are
+	// mapped into upper-case". Our validator already
+	// uppercases for comparison, but the byte returned
+	// from BaseAt is whatever is on disk.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(path, []byte(">chr1\nacgt\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	b, err := ref.BaseAt("chr1", 2)
+	if err != nil {
+		t.Fatalf("BaseAt: %v", err)
+	}
+	if b != 'c' {
+		t.Errorf("chr1:2 = %q, want c (lowercase, as stored)", b)
+	}
+}

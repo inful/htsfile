@@ -55,9 +55,10 @@ type Reference struct {
 type faiEntry struct {
 	Length        int64 // total bases
 	Offset        int64 // byte offset of first base (past '>' line)
-	LineBases     int   // bases per line
-	LineWidth     int   // bytes per line (linebases + newline)
+	LineBases     int   // bases per line (used by .fai path)
+	LineWidth     int   // bytes per line including terminator (used by .fai path)
 	lineBasesSeen int   // running tally used while building the in-memory index
+	lineOffsets   []int64 // byte offset of each sequence line (scanned path only)
 }
 
 // Open opens a plain FASTA file at path. If a sibling
@@ -111,6 +112,19 @@ func (r *Reference) Contigs() []string {
 // BaseAt returns the 1-based base at the given position
 // on chrom. Returns an error if chrom is unknown, pos is
 // out of range, or the file cannot be read.
+//
+// Two access paths:
+//   - If the index was loaded from a sibling .fai, we
+//     use the simple offset+skipLines*linewidth+col
+//     formula. .fai is the canonical samtools format
+//     and lines are assumed contiguous and free of
+//     internal whitespace / digits.
+//   - If the index was built by streaming the file, we
+//     seek to the first-base offset and scan forward,
+//     line by line, counting bases while skipping
+//     spaces, tabs, asterisks, and digits. This is
+//     robust against comment lines and internal
+//     formatting. Cost is O(target-pos / lineBases).
 func (r *Reference) BaseAt(chrom string, pos int) (byte, error) {
 	if pos < 1 {
 		return 0, fmt.Errorf("fasta: position %d is 0-based; use 1-based", pos)
@@ -127,26 +141,97 @@ func (r *Reference) BaseAt(chrom string, pos int) (byte, error) {
 	if int64(pos) > e.Length {
 		return 0, fmt.Errorf("fasta: %s:%d past contig length %d", chrom, pos, e.Length)
 	}
-	// Compute the byte offset of the requested base
-	// within the file. The first base is at e.Offset.
-	// Each line carries LineBases bases and LineWidth
-	// bytes (including the newline).
 	zero := int64(pos - 1)
-	skipLines := zero / int64(e.LineBases)
-	col := int(zero % int64(e.LineBases))
-	off := e.Offset + skipLines*int64(e.LineWidth) + int64(col)
-	if _, err := r.file.Seek(off, io.SeekStart); err != nil {
+	if len(e.lineOffsets) == 0 {
+		// .fai path: assume contiguous lines.
+		skipLines := zero / int64(e.LineBases)
+		col := int(zero % int64(e.LineBases))
+		off := e.Offset + skipLines*int64(e.LineWidth) + int64(col)
+		if _, err := r.file.Seek(off, io.SeekStart); err != nil {
+			return 0, err
+		}
+		buf := make([]byte, 1)
+		if _, err := io.ReadFull(r.file, buf); err != nil {
+			return 0, err
+		}
+		b := buf[0]
+		if b == '\n' || b == '\r' {
+			return 0, fmt.Errorf("fasta: unexpected newline at %s:%d (file truncated?)", chrom, pos)
+		}
+		return b, nil
+	}
+	// Scanned path: seek to the first-base offset and
+	// scan forward, skipping ignored characters.
+	if _, err := r.file.Seek(e.Offset, io.SeekStart); err != nil {
 		return 0, err
 	}
-	buf := make([]byte, 1)
-	if _, err := io.ReadFull(r.file, buf); err != nil {
-		return 0, err
+	br := bufio.NewReader(r.file)
+	seen := int64(0)
+	for {
+		// Find the next '>' or EOF to bound this read;
+		// we scan line by line.
+		line, err := br.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return 0, err
+		}
+		stripped := strings.TrimRight(line, "\r\n")
+		if stripped == "" || strings.HasPrefix(stripped, ";") || strings.HasPrefix(stripped, ">") {
+			// End of this contig or comment line.
+			if err == io.EOF {
+				break
+			}
+			if strings.HasPrefix(stripped, ">") {
+				// Hit the next contig's header
+				// without finding the target — out
+				// of range.
+				return 0, fmt.Errorf("fasta: %s:%d not found (file may be truncated)", chrom, pos)
+			}
+			continue
+		}
+		// Walk through the line, counting bases.
+		for i := 0; i < len(stripped); i++ {
+			c := stripped[i]
+			if c == ' ' || c == '\t' || c == '*' {
+				continue
+			}
+			if c >= '0' && c <= '9' {
+				continue
+			}
+			if seen == zero {
+				return c, nil
+			}
+			seen++
+		}
+		if err == io.EOF {
+			break
+		}
 	}
-	b := buf[0]
-	if b == '\n' || b == '\r' {
-		return 0, fmt.Errorf("fasta: unexpected newline at %s:%d (file truncated?)", chrom, pos)
+	return 0, fmt.Errorf("fasta: %s:%d past contig length %d", chrom, pos, e.Length)
+}
+
+// stripIgnoredChars returns the sequence line with the
+// characters that the FASTA format explicitly says are
+// ignored (spaces, tabs, asterisks, and digits) removed.
+// Used by [initIndex] to compute the true base count of
+// each line so the offset arithmetic stays correct for
+// files written with human-readable spacing. Digits are
+// also stripped because Wikipedia notes they "are not
+// allowed but are used in some databases to indicate
+// the position in the sequence" — counting them would
+// misreport the base total.
+func stripIgnoredChars(line string) string {
+	out := make([]byte, 0, len(line))
+	for i := 0; i < len(line); i++ {
+		c := line[i]
+		if c == ' ' || c == '\t' || c == '*' {
+			continue
+		}
+		if c >= '0' && c <= '9' {
+			continue
+		}
+		out = append(out, c)
 	}
-	return b, nil
+	return string(out)
 }
 
 // initIndex streams the file once and builds an in-memory
@@ -208,7 +293,26 @@ func (r *Reference) initIndex() error {
 		if cur == nil {
 			return fmt.Errorf("fasta: sequence data before any header at offset %d", lineStart)
 		}
-		seqLine := strings.TrimRight(stripped, " \t\r\n")
+		// Deprecated Pearson `;` comment lines appear
+		// after the header and were meant to be ignored.
+		// Wikipedia (FASTA format): "one or more comments,
+		// distinguished by a semi-colon at the beginning
+		// of the line, may occur after the header". We
+		// skip them so they don't corrupt the offset
+		// arithmetic.
+		if strings.HasPrefix(stripped, ";") {
+			if err == io.EOF {
+				break
+			}
+			continue
+		}
+		// Internal whitespace (spaces, tabs) is allowed
+		// inside sequence lines per the format ("Anything
+		// other than a valid character would be ignored,
+		// including spaces, tabulators, asterisks, etc").
+		// Strip them so len(seqLine) is the base count,
+		// not the byte count.
+		seqLine := stripIgnoredChars(stripped)
 		// Per-contig line width: use the first line we
 		// see for this contig. The last line of a contig
 		// is usually shorter, but the formula
@@ -221,6 +325,12 @@ func (r *Reference) initIndex() error {
 		}
 		cur.lineBasesSeen += len(seqLine)
 		cur.Length = int64(cur.lineBasesSeen)
+		// Record the file offset of each sequence line so
+		// BaseAt can seek directly to the right line even
+		// when comment lines or blank lines appear in
+		// between (which would break the simple
+		// offset+skipLines*linewidth formula).
+		cur.lineOffsets = append(cur.lineOffsets, lineStart)
 		if err == io.EOF {
 			break
 		}
