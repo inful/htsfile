@@ -411,6 +411,82 @@ func TestValidator_Streaming_IDUniqueness(t *testing.T) {
 	}
 }
 
+func TestValidator_Streaming_BreakendMateConsistency(t *testing.T) {
+	// Per VCFv4.5 §1.6.2 PSO: "Variants in breakpoint
+	// notation must have the same PSL and PSO on both
+	// records."
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##INFO=<ID=MATEID,Number=A,Type=String,Description=\"x\">\n" +
+		"##INFO=<ID=PSL,Number=P,Type=String,Description=\"x\">\n" +
+		"##INFO=<ID=PSO,Number=P,Type=Integer,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name  string
+		lines []string
+		want  bool
+	}{
+		{
+			"mates PSL/PSO match",
+			[]string{
+				"chr1\t100\tbnd_W\tG\tG]chr1:200]\t.\t.\tMATEID=bnd_U;PSL=chr1*100*1;PSO=3\tGT\t0|1",
+				"chr1\t200\tbnd_U\tG\tG]chr1:100]\t.\t.\tMATEID=bnd_W;PSL=chr1*100*1;PSO=3\tGT\t1|0",
+			},
+			false,
+		},
+		{
+			"mates PSL mismatch",
+			[]string{
+				"chr1\t100\tbnd_W\tG\tG]chr1:200]\t.\t.\tMATEID=bnd_U;PSL=chr1*100*1;PSO=3\tGT\t0|1",
+				"chr1\t200\tbnd_U\tG\tG]chr1:100]\t.\t.\tMATEID=bnd_W;PSL=other;PSO=3\tGT\t1|0",
+			},
+			true,
+		},
+		{
+			"mates PSO mismatch",
+			[]string{
+				"chr1\t100\tbnd_W\tG\tG]chr1:200]\t.\t.\tMATEID=bnd_U;PSL=chr1*100*1;PSO=3\tGT\t0|1",
+				"chr1\t200\tbnd_U\tG\tG]chr1:100]\t.\t.\tMATEID=bnd_W;PSL=chr1*100*1;PSO=9\tGT\t1|0",
+			},
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + strings.Join(c.lines, "\n") + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			var recs []*Record
+			for {
+				r, err := dec.Record()
+				if err != nil {
+					break
+				}
+				recs = append(recs, r)
+			}
+			v := NewValidator(ModeStrict)
+			_ = v.HeaderChecks(hdr)
+			issues := make([]ValidationError, 0, len(recs)*2)
+			for _, r := range recs {
+				issues = append(issues, v.Next(hdr, r)...)
+			}
+			found := false
+			for _, iss := range issues {
+				if (iss.Field == "INFO/PSL" || iss.Field == "INFO/PSO") && strings.Contains(iss.Msg, "does not match the mate record") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_Streaming_PhaseStyleConsistent(t *testing.T) {
 	// Two records with the same PS and consistent phasing
 	// style must not produce any phase-style issue.

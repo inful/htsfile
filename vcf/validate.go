@@ -73,6 +73,22 @@ type Validator struct {
 	// record" rule. The map keys are ID strings; the
 	// values are unused.
 	seenIDs map[string]struct{}
+
+	// mateRecords maps a MATEID to the first record
+	// that declared it, so we can later compare the
+	// PSL/PSO of breakend mate pairs (§1.6.2 PSO).
+	mateRecords map[string]*mateSnapshot
+}
+
+// mateSnapshot captures the PSL and PSO of the first
+// record encountered with a given MATEID. The second
+// record with the same MATEID is checked against this
+// snapshot for the §1.6.2 rule:
+//   "Variants in breakpoint notation must have the
+//    same PSL and PSO on both records."
+type mateSnapshot struct {
+	psl []string
+	pso []int64
 }
 
 // phaseKey identifies a (sample, PS) pair. PS of "" means
@@ -119,6 +135,7 @@ func (v *Validator) Reset() {
 	v.phaseStyle = nil
 	v.seenChroms = nil
 	v.seenIDs = nil
+	v.mateRecords = nil
 }
 
 // HeaderChecks runs the header-only checks and the
@@ -191,6 +208,74 @@ func (v *Validator) Next(h *Header, rec *Record) []ValidationError {
 			})
 		}
 		v.seenIDs[id] = struct{}{}
+	}
+
+	// Breakend mate PSL / PSO consistency (§1.6.2 PSO:
+	// "Variants in breakpoint notation must have the
+	// same PSL and PSO on both records"). Records must
+	// carry a MATEID; only records whose ALT is a
+	// breakend form participate. We key by BOTH the
+	// record's own IDs and its MATEID so the first mate
+	// to arrive registers under both keys, and the
+	// second mate to arrive finds the first regardless
+	// of arrival order.
+	for _, a := range rec.Alt {
+		if !isBreakend(a) {
+			continue
+		}
+		mateID, ok := rec.Info["MATEID"]
+		if !ok || mateID.Missing || len(mateID.Strs) == 0 {
+			continue
+		}
+		mid := mateID.Strs[0]
+		if mid == "" {
+			continue
+		}
+		if v.mateRecords == nil {
+			v.mateRecords = make(map[string]*mateSnapshot)
+		}
+		pslFV := rec.Info["PSL"]
+		psoFV := rec.Info["PSO"]
+		var psl []string
+		var pso []int64
+		if pslFV.HasValue() {
+			psl = pslFV.Strs
+		}
+		if psoFV.HasValue() {
+			pso = psoFV.Ints
+		}
+		snap := &mateSnapshot{psl: psl, pso: pso}
+		// Check against any of the record's own IDs.
+		matched := false
+		for _, id := range rec.ID {
+			if id == "." {
+				continue
+			}
+			if existing, seen := v.mateRecords[id]; seen {
+				checkMateMatch(existing, snap, mid, idx, rec.Line, &issues)
+				matched = true
+				break
+			}
+		}
+		if !matched {
+			if existing, seen := v.mateRecords[mid]; seen {
+				checkMateMatch(existing, snap, mid, idx, rec.Line, &issues)
+			}
+		}
+		// Register the record under its own IDs and its
+		// MATEID so the mate finds it whichever arrives
+		// first.
+		for _, id := range rec.ID {
+			if id == "." {
+				continue
+			}
+			if _, already := v.mateRecords[id]; !already {
+				v.mateRecords[id] = snap
+			}
+		}
+		if _, already := v.mateRecords[mid]; !already {
+			v.mateRecords[mid] = snap
+		}
 	}
 
 	// Update cross-record state. We do this even in
@@ -1530,6 +1615,53 @@ func missingLAAFields(g Genotype) []string {
 		missing = append(missing, key)
 	}
 	return missing
+}
+
+// samePSL reports whether two PSL slices match element
+// by element. Two empty/nil slices match.
+func samePSL(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// samePSO reports whether two PSO slices match element
+// by element. Two empty/nil slices match.
+func samePSO(a, b []int64) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}
+
+// checkMateMatch compares two breakend mate snapshots
+// and appends SeverityErrors on mismatch.
+func checkMateMatch(existing, snap *mateSnapshot, mid string, idx, line int, issues *[]ValidationError) {
+	if !samePSL(existing.psl, snap.psl) {
+		*issues = append(*issues, ValidationError{
+			Severity: SeverityError, Record: idx + 1, Line: line,
+			Field: "INFO/PSL",
+			Msg:   fmt.Sprintf("PSL for MATEID %q does not match the mate record", mid),
+		})
+	}
+	if !samePSO(existing.pso, snap.pso) {
+		*issues = append(*issues, ValidationError{
+			Severity: SeverityError, Record: idx + 1, Line: line,
+			Field: "INFO/PSO",
+			Msg:   fmt.Sprintf("PSO for MATEID %q does not match the mate record", mid),
+		})
+	}
 }
 
 // checkCNVAllelesShareSVLEN enforces the VCFv4.5
