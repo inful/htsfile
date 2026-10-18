@@ -611,6 +611,12 @@ func TestDecoder_Errors(t *testing.T) {
 				"1\t100\t.\tA\tC\t.\tPASS;PASS\t.\n",
 		},
 		{
+			"alt bad first-level type",
+			"##fileformat=VCFv4.5\n" +
+				"##ALT=<ID=BAD,Description=\"x\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
 			"data line too few columns",
 			"##fileformat=VCFv4.5\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n1\t2\t.\tA\n",
 		},

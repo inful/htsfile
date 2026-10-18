@@ -526,6 +526,22 @@ func (h *Header) applyStructured(key string, pairs []fieldPair, lineNo int) erro
 			return &ParseError{Line: lineNo, Field: "ALT",
 				Msg: "missing required ID"}
 		}
+		// VCFv4.5 §1.4.4: the first level type of a
+		// symbolic structural variant ALT ID must be
+		// DEL, INS, DUP, INV, or CNV. Implementations
+		// are free to add subtypes via ":" but the
+		// first segment must be one of these five.
+		first := d.ID
+		if i := strings.IndexByte(d.ID, ':'); i >= 0 {
+			first = d.ID[:i]
+		}
+		switch first {
+		case "DEL", "INS", "DUP", "INV", "CNV":
+			// ok
+		default:
+			return &ParseError{Line: lineNo, Field: "ALT",
+				Msg: fmt.Sprintf("ALT ID %q has first-level type %q; must be one of DEL, INS, DUP, INV, CNV", d.ID, first)}
+		}
 		if _, exists := h.Alts[d.ID]; exists {
 			return &ParseError{Line: lineNo, Field: "ALT",
 				Msg: "duplicate ID " + d.ID}
