@@ -24,12 +24,12 @@ var _ = fmt.Sprintf
 // io.Reader; a file is the simplest backing store that works
 // with that model.
 type builder struct {
-	path        string
-	f           *os.File
-	hdr         *Header // parsed sampleHeader; used for LookupInfoIndex etc.
-	hdrOrder    []string // cached: hdr.InfosOrder
-	hdrFilters  []string
-	hdrContigs  []string
+	path       string
+	f          *os.File
+	hdr        *Header  // parsed sampleHeader; used for LookupInfoIndex etc.
+	hdrOrder   []string // cached: hdr.InfosOrder
+	hdrFilters []string
+	hdrContigs []string
 }
 
 func newBuilder(t *testing.T) *builder {

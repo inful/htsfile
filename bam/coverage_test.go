@@ -146,9 +146,9 @@ func TestValidator_StrictModeBadPOS(t *testing.T) {
 	// POS = 0 with flag bit 0x4 (unmapped) clear — strict mode rejects.
 	if err := b.writeRecord(&Record{
 		QName: "bad", RefID: 0, Pos: 0, MapQ: 60, Bin: 4681,
-		Flag:   0, // not unmapped
-		Cigar:  []uint32{cigar(CigarM, 5)},
-		Seq:    "ACGTA", Qual: []byte("IIIII"),
+		Flag:  0, // not unmapped
+		Cigar: []uint32{cigar(CigarM, 5)},
+		Seq:   "ACGTA", Qual: []byte("IIIII"),
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -214,8 +214,8 @@ func TestValidator_StrictModeBadNextRefID(t *testing.T) {
 	// NextRefID = 5 with only 1 reference — strict mode rejects.
 	if err := b.writeRecord(&Record{
 		QName: "bad", RefID: 0, Pos: 100, MapQ: 60, Bin: 4681,
-		Cigar:     []uint32{cigar(CigarM, 5)},
-		Seq:       "ACGTA", Qual: []byte("IIIII"),
+		Cigar: []uint32{cigar(CigarM, 5)},
+		Seq:   "ACGTA", Qual: []byte("IIIII"),
 		NextRefID: 5,
 	}); err != nil {
 		t.Fatal(err)

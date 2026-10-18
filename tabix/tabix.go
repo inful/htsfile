@@ -146,17 +146,17 @@ func (r *Reader) readReference() (*Reference, error) {
 		intervals[i] = VirtualOffset(ioff)
 	}
 	// Optional n_no_coor field. The Tabix format does not
-// include a version byte, so there is no in-band way to
-// tell whether n_no_coor is present. In practice modern
-// Tabix files (since samtools 0.1.18) always include it.
-//
-// v1 reads n_no_coor unconditionally. For multi-reference
-// files written by an older encoder without the field, this
-// will misalign the next reference's data and produce
-// invalid results — there's no clean way to detect the
-// absence without a version marker. We document the
-// limitation: if you need to read such files, use CSI
-// (which has an explicit version byte).
+	// include a version byte, so there is no in-band way to
+	// tell whether n_no_coor is present. In practice modern
+	// Tabix files (since samtools 0.1.18) always include it.
+	//
+	// v1 reads n_no_coor unconditionally. For multi-reference
+	// files written by an older encoder without the field, this
+	// will misalign the next reference's data and produce
+	// invalid results — there's no clean way to detect the
+	// absence without a version marker. We document the
+	// limitation: if you need to read such files, use CSI
+	// (which has an explicit version byte).
 	ref := &Reference{Bins: bins, Intervals: intervals}
 	var noCoor uint64
 	if err := binary.Read(r.r, binary.LittleEndian, &noCoor); err != nil {

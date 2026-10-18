@@ -267,22 +267,22 @@ func (d *Decoder) Record() (*Record, error) {
 		nameRNext = d.hdr.SQs[nextRefID].Name
 	}
 	rec := &Record{
-		Line:       d.recordLine,
-		QName:      readName,
-		Flag:       flag,
-		RefID:      refID,
-		Pos:        pos,
-		MapQ:       mapq,
-		Bin:        bin,
-		Cigar:      cigar,
-		NextRefID:  nextRefID,
-		NextPos:    nextPos,
-		TLen:       int64(tlen),
-		Seq:        decodeSeq(seq, seqLen),
-		Qual:       qual,
-		Tags:       tags,
-		NameRName:  nameRName,
-		NameRNext:  nameRNext,
+		Line:      d.recordLine,
+		QName:     readName,
+		Flag:      flag,
+		RefID:     refID,
+		Pos:       pos,
+		MapQ:      mapq,
+		Bin:       bin,
+		Cigar:     cigar,
+		NextRefID: nextRefID,
+		NextPos:   nextPos,
+		TLen:      int64(tlen),
+		Seq:       decodeSeq(seq, seqLen),
+		Qual:      qual,
+		Tags:      tags,
+		NameRName: nameRName,
+		NameRNext: nameRNext,
 	}
 	return rec, nil
 }

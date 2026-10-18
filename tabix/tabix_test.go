@@ -171,7 +171,7 @@ func TestReg2Bins(t *testing.T) {
 
 func TestLinearIndexOffset(t *testing.T) {
 	tests := []struct {
-		pos int64
+		pos  int64
 		want int64
 	}{
 		{0, 0},

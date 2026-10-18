@@ -82,7 +82,10 @@ func (w *bgzfWriter) writeEOFMarker() error {
 
 // writeBAMHeader writes the BAM magic, SAM header text, and
 // reference dictionary to the BGZF-wrapped stream.
-func (b *builder) writeBAMHeader(samText string, refs []struct{ name string; length int64 }) error {
+func (b *builder) writeBAMHeader(samText string, refs []struct {
+	name   string
+	length int64
+}) error {
 	var payload bytes.Buffer
 	payload.Write(bamMagic[:])
 	var lt [4]byte
@@ -599,9 +602,9 @@ func TestRecord_PairedRead(t *testing.T) {
 	}
 	// First mate.
 	if err := b.writeRecord(&Record{
-		QName:     "pair1",
-		Flag:      FlagPaired | FlagProperPair | FlagFirst,
-		RefID:     0, Pos: 100,
+		QName: "pair1",
+		Flag:  FlagPaired | FlagProperPair | FlagFirst,
+		RefID: 0, Pos: 100,
 		MapQ:      60,
 		Bin:       4681,
 		Cigar:     []uint32{cigar(CigarM, 5)}, // 5M
@@ -614,9 +617,9 @@ func TestRecord_PairedRead(t *testing.T) {
 	}
 	// Second mate.
 	if err := b.writeRecord(&Record{
-		QName:     "pair1",
-		Flag:      FlagPaired | FlagProperPair | FlagLast,
-		RefID:     0, Pos: 200,
+		QName: "pair1",
+		Flag:  FlagPaired | FlagProperPair | FlagLast,
+		RefID: 0, Pos: 200,
 		MapQ:      60,
 		Bin:       4681,
 		Cigar:     []uint32{cigar(CigarM, 5)}, // 5M
@@ -662,9 +665,9 @@ func TestRecord_LongSequence(t *testing.T) {
 	qual := bytes.Repeat([]byte{'I'}, 200)
 	cigar := []uint32{cigar(CigarM, 200)} // 200M
 	if err := b.writeRecord(&Record{
-		QName:     "long",
-		RefID:     0, Pos: 500,
-		MapQ:      60, Bin: 4681,
+		QName: "long",
+		RefID: 0, Pos: 500,
+		MapQ: 60, Bin: 4681,
 		Cigar:     cigar,
 		Seq:       seq,
 		Qual:      qual,
@@ -709,8 +712,8 @@ func TestRecord_Tags(t *testing.T) {
 	if err := b.writeRecord(&Record{
 		QName: "tagged", RefID: 0, Pos: 100, MapQ: 60, Bin: 4681,
 		Cigar: []uint32{cigar(CigarM, 5)},
-		Seq:    "ACGTA", Qual: []byte("IIIII"),
-		Tags:   tags,
+		Seq:   "ACGTA", Qual: []byte("IIIII"),
+		Tags: tags,
 	}); err != nil {
 		t.Fatal(err)
 	}
