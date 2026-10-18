@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`.fai` index generation** (`fai.Build`, `fai.Writer`).
+  Build reads a FASTA document and returns an `*Index` in source
+  order; `Writer.Write` serialises an `*Index` in canonical
+  `.fai` format. The two together let callers produce `.fai`
+  files without a separate atomic-rename dance. Build handles
+  LF and CR-LF line endings and captures the byte offset of
+  each record's first base along with `lineBases` / `lineWidth`
+  from the first sequence line of the record.
+
 - **Semantic CIGAR parsing** (`sam.ParseCigar`,
   `sam.FormatCigar`, `sam.CigarUnit`, `sam.CigarOp`). The
   library previously stored CIGAR strings verbatim and left

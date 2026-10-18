@@ -14,7 +14,7 @@ the Sequence Ontology:
 - **SAM v1** — Sequence Alignment/Map (header + 11-column records + optional tags)
 - **BAM v1** — Binary SAM (BGZF-compressed) with read-only BAI index reader
 - **GFF3** — Generic Feature Format Version 3 (9 columns + free-form attributes)
-- **FASTA** — Sequence records (`>` header + multi-line sequence); read-only `.fai` index reader
+- **FASTA** — Sequence records (`>` header + multi-line sequence); `.fai` index reader + generator
 - **FASTQ** — Short-read sequencing records (`@` header + sequence + `+` + qualities), with Phred+33 / Phred+64 auto-detection
 - **BCF v2.1** — Binary VCF (BGZF-compressed). Writer added in
   v0.5.0 (no per-sample FORMAT).
@@ -393,8 +393,8 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | Configurable sequence-line wrapping on encode (default 80) | ✅ |
 | `ModeDefault` and `ModeStrict` validators (strict = alphabet check) | ✅ |
 | Header parsing (ID + Description split on whitespace) | ✅ |
-| `.fai` index reader (`fasta/fai`, read-only) | ✅ |
-| `.fai` index generation                |   ❌   |
+| `.fai` index reader (`fasta/fai`)        | ✅ |
+| `.fai` index generation (`fai.Build`)   | ✅ |
 | Multi-sequence FASTA (multi-FASTA, .mfa) | ❌  |
 
 ### fastq/ package (FASTQ v1)

@@ -25,9 +25,16 @@
 // tells the reader how to skip sequence newlines during
 // random-access seeks.
 //
-// This package is read-only. Index generation is a separate
-// concern (multi-pass, atomic-rename) that the v1 release
-// does not implement.
+// This package supports both reading and writing .fai files.
+// Index generation from a FASTA document is exposed by
+// [Build]; serialising an [*Index] in canonical form is
+// exposed by [Writer.Write]. The two together cover the
+// `htsfile fai-build` use case without a separate
+// atomic-rename dance: callers compose them as
+//
+//	idx, err := fai.Build(fa)
+//	if err != nil { ... }
+//	fai.NewWriter(out).Write(idx)
 package fai
 
 import (
