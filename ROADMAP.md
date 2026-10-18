@@ -382,12 +382,11 @@ htsget/refget and crypt4gh remain pending.
         (Number=R) cardinality, both already covered by
         the existing `Number.Cardinality` path
         (`e65561c`).
+      - Ploidy consistency across samples in a record
+        (`cf102ca`).
 
   Remaining:
 
-  - **Ploidy consistency across a record** — when GTs
-    have different ploidies, `Number=G` and `Number=P`
-    cardinality must use the maximum ploidy per record.
   - **`##contig` species / taxonomy / assembly** field
     validation.
   - **Mitochondrial DNA (`chrM`) special-case rules** from
