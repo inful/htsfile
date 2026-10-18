@@ -437,3 +437,95 @@ func TestValidator_SVCLAIMNonSVAlleleMustBeDot(t *testing.T) {
 		t.Errorf("expected non-SV SVCLAIM issue, got: %+v", issues)
 	}
 }
+
+func TestIsReservedEventType(t *testing.T) {
+	// All 15 reserved values must return true.
+	for _, v := range []string{
+		"DEL", "DEL:ME", "INS", "INS:ME",
+		"DUP", "DUP:TANDEM", "DUP:DISPERSED",
+		"INV", "TRA", "TRA:BALANCED", "TRA:UNBALANCED",
+		"CHROMOTHRIPSIS", "CHROMOPLEXY", "BFB", "DOUBLEMINUTE",
+	} {
+		if !IsReservedEventType(v) {
+			t.Errorf("IsReservedEventType(%q): should be true", v)
+		}
+	}
+	// Implementation-defined (non-reserved) values return false.
+	for _, v := range []string{"CUSTOM", "MY_SV_TYPE", "DEL_CIRCULAR", ""} {
+		if IsReservedEventType(v) {
+			t.Errorf("IsReservedEventType(%q): should be false", v)
+		}
+	}
+}
+
+func TestValidator_EventTypeReserved(t *testing.T) {
+	// A reserved EVENTTYPE value must not produce an issue.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##INFO=<ID=EVENTTYPE,Number=A,Type=String,Description=\"event type\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	for _, et := range []string{"DEL", "INS", "DUP", "TRA", "DEL:ME", "DUP:TANDEM", "CHROMOTHRIPSIS"} {
+		dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC\t.\t.\tEVENTTYPE=" + et + "\n"))
+		hdr, err := dec.Header()
+		if err != nil {
+			t.Fatalf("Header: %v", err)
+		}
+		rec, err := dec.Record()
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+		for _, iss := range issues {
+			if iss.Field == "INFO/EVENTTYPE" {
+				t.Errorf("EVENTTYPE=%q: unexpected issue: %+v", et, iss)
+			}
+		}
+	}
+}
+
+func TestValidator_EventTypeUnreserved(t *testing.T) {
+	// An unreserved EVENTTYPE value: warning in default
+	// mode, error in ModeStrict.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##INFO=<ID=EVENTTYPE,Number=A,Type=String,Description=\"event type\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+
+	dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC\t.\t.\tEVENTTYPE=MY_SV\n"))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	// Default mode: warning.
+	issues := NewValidator(ModeDefault).Validate(hdr, []*Record{rec})
+	found := false
+	for _, iss := range issues {
+		if iss.Field == "INFO/EVENTTYPE" {
+			if iss.Severity != SeverityWarning {
+				t.Errorf("default mode: severity %v, want Warning", iss.Severity)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("default mode: expected EVENTTYPE warning, got: %+v", issues)
+	}
+	// Strict mode: error.
+	issues = NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+	found = false
+	for _, iss := range issues {
+		if iss.Field == "INFO/EVENTTYPE" {
+			if iss.Severity != SeverityError {
+				t.Errorf("strict mode: severity %v, want Error", iss.Severity)
+			}
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("strict mode: expected EVENTTYPE error, got: %+v", issues)
+	}
+}

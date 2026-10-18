@@ -305,6 +305,11 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	//   - non-SV: must be "." if present.
 	issues = append(issues, v.checkSVClaim(rec, idx)...)
 
+	// EVENTTYPE reserved-value check (§1.6.1.7). Non-
+	// reserved values are implementation-defined, so this
+	// warns by default and errors in ModeStrict.
+	issues = append(issues, v.checkEventType(rec, idx)...)
+
 	// FILTER values must be declared (or "PASS"/".").
 	issues = append(issues, v.checkFilter(h, rec, idx)...)
 
@@ -431,6 +436,68 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 					})
 				}
 			}
+		}
+	}
+	return issues
+}
+
+// reservedEventTypes is the set of EVENTTYPE values the spec
+// reserves (VCFv4.5 §1.6.1.7 "The following EVENTTYPE values
+// are reserved and should be used when appropriate"). The
+// spec also says "The semantics of other EVENTTYPE values
+// is implementation-defined" — the validator warns in
+// ModeStrict for non-reserved values, but they are not
+// strictly invalid.
+var reservedEventTypes = map[string]bool{
+	"DEL":             true,
+	"DEL:ME":          true,
+	"INS":             true,
+	"INS:ME":          true,
+	"DUP":             true,
+	"DUP:TANDEM":      true,
+	"DUP:DISPERSED":   true,
+	"INV":             true,
+	"TRA":             true,
+	"TRA:BALANCED":    true,
+	"TRA:UNBALANCED":  true,
+	"CHROMOTHRIPSIS":  true,
+	"CHROMOPLEXY":     true,
+	"BFB":             true,
+	"DOUBLEMINUTE":    true,
+}
+
+// IsReservedEventType reports whether value is one of the
+// spec-reserved EVENTTYPE values.
+func IsReservedEventType(value string) bool {
+	return reservedEventTypes[value]
+}
+
+// checkEventType warns when a record's EVENTTYPE value is
+// not in the reserved list. Implementation-defined values
+// are allowed (not an error) but flagged in ModeStrict so
+// callers can spot typos. The check is a no-op when the
+// record has no EVENTTYPE key.
+func (v *Validator) checkEventType(rec *Record, idx int) []ValidationError {
+	raw, ok := rec.Info["EVENTTYPE"]
+	if !ok {
+		return nil
+	}
+	var issues []ValidationError
+	for i, et := range raw.Strs {
+		if et == "" || et == "." {
+			continue
+		}
+		if !IsReservedEventType(et) {
+			iss := ValidationError{
+				Severity: SeverityWarning,
+				Record:    idx + 1, Line: rec.Line,
+				Field:    "INFO/EVENTTYPE",
+				Msg:      fmt.Sprintf("EVENTTYPE[%d]=%q is not in the spec's reserved set (semantics are implementation-defined)", i, et),
+			}
+			if v.Mode == ModeStrict {
+				iss.Severity = SeverityError
+			}
+			issues = append(issues, iss)
 		}
 	}
 	return issues
