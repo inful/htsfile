@@ -770,6 +770,50 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 	}
 }
 
+func TestValidator_INFOGeneralCardinality(t *testing.T) {
+	// Per VCFv4.5 §1.6.1: each INFO key with Number=A or
+	// Number=R must carry one value per declared allele
+	// (A = each ALT, R = REF + each ALT).
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=AF,Number=A,Type=Float,Description=\"x\">\n" +
+		"##INFO=<ID=AD,Number=R,Type=Integer,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, info string
+		want       bool
+	}{
+		{"Number=A correct", "AF=0.5", false},
+		{"Number=A wrong count", "AF=0.5,0.3", true},
+		{"Number=R correct", "AD=10,20", false},
+		{"Number=R wrong count", "AD=10,20,30", true},
+		{"Number=R missing", ".", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + "chr1\t100\t.\tA\tC\t.\t.\t" + c.info + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "expected") && strings.Contains(iss.Msg, "value(s) for Number=") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_METAValuesEnforced(t *testing.T) {
 	// Per VCFv4.5 §1.4.7 "Sample field format": when a
 	// ##META entry declares a Values list, every
