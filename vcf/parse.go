@@ -407,39 +407,9 @@ func (h *Header) parseHeaderLine(raw []byte, lineNo int) error {
 func (h *Header) applyStructured(key string, pairs []fieldPair, lineNo int) error {
 	switch key {
 	case "contig":
-		c := &Contig{Other: map[string]string{}}
-		for _, p := range pairs {
-			switch p.key {
-			case "ID":
-				c.ID = unquote(p.value)
-			case "length":
-				n, err := strconv.ParseInt(p.value, 10, 64)
-				if err != nil {
-					return &ParseError{Line: lineNo, Field: "contig/length",
-						Msg: "invalid length: " + p.value}
-				}
-				c.Length = n
-			case "md5":
-				c.MD5 = unquote(p.value)
-			case "URL":
-				c.URL = unquote(p.value)
-			default:
-				c.Other[p.key] = unquote(p.value)
-			}
-		}
-		if c.ID == "" {
-			return &ParseError{Line: lineNo, Field: "contig",
-				Msg: "missing required ID"}
-		}
-		// Contig name regex (SAM-compatible per VCFv4.5
-		// §1.4.7 "Contig field format"). The first character
-		// excludes '*' and '='; subsequent characters may
-		// include them. Reserved symbolic allele names
-		// (e.g. <*>, <DEL>) are not used as contig names.
-		if !validContigName(c.ID) {
-			return &ParseError{Line: lineNo, Field: "contig/ID",
-				Msg: fmt.Sprintf("contig name %q does not match the required regex %s",
-					c.ID, contigNamePattern)}
+		c, err := parseContigAttrs(pairs, lineNo)
+		if err != nil {
+			return err
 		}
 		h.Contigs = append(h.Contigs, c)
 
@@ -991,6 +961,79 @@ func parseInfoColumn(s string, h *Header, lineNo int) (map[string]InfoValue, err
 var contigNamePattern = `[0-9A-Za-z!#$%&+./:;?@^_|~-][0-9A-Za-z!#$%&*+./:;=?@^_|~-]*`
 
 // validContigName reports whether s matches contigNamePattern.
+// validMD5Hex reports whether s is 32 lowercase hex characters,
+// the format VCFv4.5 §1.4.7 prescribes for ##contig MD5. We
+// do not recompute the digest because the sequence is not in
+// the VCF header.
+func validMD5Hex(s string) bool {
+	if len(s) != 32 {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c < '0' || (c > '9' && c < 'a') || c > 'f' {
+			return false
+		}
+	}
+	return true
+}
+
+// parseContigAttrs parses a ##contig structured line's
+// key/value pairs and validates them per VCFv4.5 §1.4.7.
+// Returns the Contig or an error.
+func parseContigAttrs(pairs []fieldPair, lineNo int) (*Contig, error) {
+	c := &Contig{Other: map[string]string{}}
+	for _, p := range pairs {
+		switch p.key {
+		case "ID":
+			c.ID = unquote(p.value)
+		case "length":
+			n, err := strconv.ParseInt(p.value, 10, 64)
+			if err != nil {
+				return nil, &ParseError{Line: lineNo, Field: "contig/length",
+					Msg: "invalid length: " + p.value}
+			}
+			c.Length = n
+		case "md5":
+			if err := setContigMD5(c, p.value, lineNo); err != nil {
+				return nil, err
+			}
+		case "URL":
+			c.URL = unquote(p.value)
+		default:
+			c.Other[p.key] = unquote(p.value)
+		}
+	}
+	if c.ID == "" {
+		return nil, &ParseError{Line: lineNo, Field: "contig",
+			Msg: "missing required ID"}
+	}
+	// Contig name regex (SAM-compatible per VCFv4.5
+	// §1.4.7 "Contig field format"). The first character
+	// excludes '*' and '='; subsequent characters may
+	// include them. Reserved symbolic allele names
+	// (e.g. <*>, <DEL>) are not used as contig names.
+	if !validContigName(c.ID) {
+		return nil, &ParseError{Line: lineNo, Field: "contig/ID",
+			Msg: fmt.Sprintf("contig name %q does not match the required regex %s",
+				c.ID, contigNamePattern)}
+	}
+	return c, nil
+}
+
+// setContigMD5 parses and validates a ##contig MD5 attribute
+// value. The actual digest is not recomputed (the sequence is
+// not in the header) but the 32 lowercase hex format is
+// checked.
+func setContigMD5(c *Contig, raw string, lineNo int) error {
+	c.MD5 = unquote(raw)
+	if !validMD5Hex(c.MD5) {
+		return &ParseError{Line: lineNo, Field: "contig/md5",
+			Msg: fmt.Sprintf("contig MD5 %q must be 32 lowercase hex characters", c.MD5)}
+	}
+	return nil
+}
+
 func validContigName(s string) bool {
 	if s == "" {
 		return false

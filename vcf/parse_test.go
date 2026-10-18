@@ -563,6 +563,24 @@ func TestDecoder_Errors(t *testing.T) {
 				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
 		},
 		{
+			"contig md5 wrong length",
+			"##fileformat=VCFv4.5\n" +
+				"##contig=<ID=chr1,length=1000,md5=\"abc\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"contig md5 uppercase hex",
+			"##fileformat=VCFv4.5\n" +
+				"##contig=<ID=chr1,length=1000,md5=\"F126CDF8A6E0C7F379D618FF66BEB2DA\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
+			"contig md5 non-hex character",
+			"##fileformat=VCFv4.5\n" +
+				"##contig=<ID=chr1,length=1000,md5=\"f126cdf8a6e0c7f379d618ff66beb2zz\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
+		},
+		{
 			"data line too few columns",
 			"##fileformat=VCFv4.5\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n1\t2\t.\tA\n",
 		},
