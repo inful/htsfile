@@ -1,8 +1,7 @@
 // Package fasta is a small read-only FASTA reference
-// reader. It supports plain (uncompressed) FASTA files
-// with an optional samtools-faidx-style .fai index. BGZF
-// (gzip-compressed) FASTA is not supported in this
-// version — callers needing that should gunzip first.
+// reader. It supports plain and BGZF-compressed FASTA
+// files with an optional samtools-faidx-style .fai
+// index.
 //
 // The .fai format (samtools faidx output) is a
 // tab-separated, one-record-per-line index:
@@ -14,32 +13,48 @@
 // of bases per line (typically 60, 70, or 80), and
 // `linewidth` is the number of bytes per line including
 // the line terminator (linebases + 1 for LF, +2 for
-// CRLF).
+// CRLF). For BGZF files, .fai offsets are virtual
+// (compressed-stream positions) and require a seekable
+// BGZF reader; this package ignores .fai for BGZF and
+// falls back to streaming.
 //
 // If no .fai is found at "<path>.fai", Open streams the
 // FASTA once at open time to build an in-memory index.
-// For a 3 GB human genome reference this takes ~3 s and
-// ~3 GB of buffer; callers handling larger references
-// should pre-generate a .fai with samtools faidx.
+// For plain FASTA, file access then uses a seekable
+// file handle. For BGZF, the whole stream is decompressed
+// into memory and accessed via a *bytes.Reader.
 package fasta
 
 import (
 	"bufio"
+	"bytes"
 	"errors"
 	"fmt"
 	"io"
 	"os"
 	"strconv"
 	"strings"
+
+	"github.com/inful/htsfile/internal/bgzf"
 )
 
-// Reference is a read-only handle on a plain FASTA file.
-// It supports random access to a single base by contig
-// and 1-based position. The handle is not safe for
-// concurrent use.
+// Reference is a read-only handle on a FASTA file
+// (plain or BGZF). It supports random access to a
+// single base by contig and 1-based position, plus
+// efficient multi-base range reads. The handle is not
+// safe for concurrent use.
 type Reference struct {
 	path string
-	file *os.File
+
+	// rs is the seekable source for reads. For plain
+	// FASTA it's the underlying *os.File. For BGZF
+	// (decompressed into memory at Open) it's a
+	// *bytes.Reader wrapping the decompressed bytes.
+	rs io.ReadSeeker
+	// bgzfData is non-nil only when rs wraps decompressed
+	// BGZF content; we hold the slice so the GC doesn't
+	// collect it from under the reader.
+	bgzfData []byte
 
 	// fai maps contig name to its index entry. nil until
 	// initIndex runs.
@@ -48,6 +63,17 @@ type Reference struct {
 	// in the file (or in the .fai).
 	names []string
 	// loaded records whether initIndex has run.
+
+	// Cursor state for the scanned path. When callers
+	// issue BaseAt/BaseRange calls in order on the same
+	// contig, we resume scanning from the cursor instead
+	// of restarting at the first base of the contig.
+	// This makes sequential VCF validation O(N) instead
+	// of O(N^2). Reset on chrom change, on backward
+	// seeks, and on .fai-path lookups.
+	cursorCh        string
+	cursorOffset    int64
+	cursorBasesSeen int64
 	loaded bool
 }
 
@@ -61,18 +87,55 @@ type faiEntry struct {
 	lineOffsets   []int64 // byte offset of each sequence line (scanned path only)
 }
 
-// Open opens a plain FASTA file at path. If a sibling
-// .fai index exists at "<path>.fai", it is loaded
-// directly; otherwise the file is scanned once to build
-// an in-memory index. The caller must call Close.
+// Open opens a FASTA file at path. Plain FASTA is
+// accessed via a file handle. BGZF (gzip-compressed)
+// FASTA is detected by magic and decompressed into
+// memory at open time; the caller pays a memory cost
+// equal to the decompressed size. If a sibling .fai
+// index exists at "<path>.fai", it is loaded directly
+// for plain FASTA; for BGZF the .fai is ignored (its
+// virtual offsets require a seekable BGZF reader).
+//
+// The caller must call Close.
 func Open(path string) (*Reference, error) {
 	f, err := os.Open(path) //nolint:gosec // path is caller-supplied
 	if err != nil {
 		return nil, err
 	}
-	r := &Reference{path: path, file: f}
 
-	// Try .fai first.
+	// Peek the first few bytes to detect BGZF. The
+	// BGZF magic is the gzip header with FEXTRA flag
+	// (0x04) set in byte 3.
+	hdr := make([]byte, 4)
+	n, _ := io.ReadFull(f, hdr)
+	if _, err := f.Seek(0, io.SeekStart); err != nil {
+		_ = f.Close()
+		return nil, err
+	}
+	isBGZF := n == 4 && hdr[0] == 0x1f && hdr[1] == 0x8b && hdr[2] == 0x08 && hdr[3]&0x04 != 0
+
+	if isBGZF {
+		// Decompress the entire BGZF stream into memory.
+		// BGZF .fai offsets are virtual; without a
+		// seekable BGZF reader we can't use them, so
+		// the streamed scan index is used.
+		br := bgzf.NewReader(f)
+		data, derr := io.ReadAll(br)
+		if derr != nil {
+			_ = f.Close()
+			return nil, fmt.Errorf("fasta: BGZF decompression of %s: %w", path, derr)
+		}
+		_ = f.Close()
+		r := &Reference{path: path, rs: bytes.NewReader(data), bgzfData: data}
+		if err := r.initIndex(); err != nil {
+			return nil, fmt.Errorf("fasta: build index for %s: %w", path, err)
+		}
+		return r, nil
+	}
+
+	r := &Reference{path: path, rs: f}
+
+	// Try .fai first (plain FASTA only).
 	idx, ierr := readFAI(path + ".fai")
 	if ierr == nil && idx != nil {
 		r.fai = idx
@@ -92,14 +155,17 @@ func Open(path string) (*Reference, error) {
 }
 
 // Close releases the underlying file. The Reference
-// must not be used after Close.
+// must not be used after Close. For BGZF references
+// (which hold the decompressed bytes in memory), Close
+// is a no-op.
 func (r *Reference) Close() error {
-	if r.file == nil {
-		return nil
+	if f, ok := r.rs.(*os.File); ok && f != nil {
+		err := f.Close()
+		r.rs = nil
+		return err
 	}
-	err := r.file.Close()
-	r.file = nil
-	return err
+	r.rs = nil
+	return nil
 }
 
 // Contigs returns the contig names in file order.
@@ -158,15 +224,17 @@ func (r *Reference) BaseAt(chrom string, pos int) (byte, error) {
 	}
 	zero := int64(pos - 1)
 	if len(e.lineOffsets) == 0 {
-		// .fai path: assume contiguous lines.
+		// .fai path: assume contiguous lines. This
+		// seeks arbitrarily so the cursor is invalidated.
+		r.cursorCh = ""
 		skipLines := zero / int64(e.LineBases)
 		col := int(zero % int64(e.LineBases))
 		off := e.Offset + skipLines*int64(e.LineWidth) + int64(col)
-		if _, err := r.file.Seek(off, io.SeekStart); err != nil {
+		if _, err := r.rs.Seek(off, io.SeekStart); err != nil {
 			return 0, err
 		}
 		buf := make([]byte, 1)
-		if _, err := io.ReadFull(r.file, buf); err != nil {
+		if _, err := io.ReadFull(r.rs, buf); err != nil {
 			return 0, err
 		}
 		b := buf[0]
@@ -175,21 +243,34 @@ func (r *Reference) BaseAt(chrom string, pos int) (byte, error) {
 		}
 		return b, nil
 	}
-	// Scanned path: seek to the first-base offset and
-	// scan forward, skipping ignored characters.
-	if _, err := r.file.Seek(e.Offset, io.SeekStart); err != nil {
+	// Scanned path: resume from the cursor when the next
+	// call targets the same contig at a forward position.
+	// Otherwise restart at the first-base offset.
+	startOffset := e.Offset
+	startSeen := int64(0)
+	if r.cursorCh == chrom && zero >= r.cursorBasesSeen {
+		startOffset = r.cursorOffset
+		startSeen = r.cursorBasesSeen
+	} else {
+		r.cursorCh = ""
+	}
+	// Read line by line without bufio so the file offset
+	// is exact and the cursor can be advanced precisely.
+	if _, err := r.rs.Seek(startOffset, io.SeekStart); err != nil {
 		return 0, err
 	}
-	br := bufio.NewReader(r.file)
-	seen := int64(0)
+	seen := startSeen
 	for {
-		line, err := br.ReadString('\n')
-		if err != nil && err != io.EOF {
+		line, rawLen, off, err := readLineTracked(r.rs)
+		if line == "" && errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
 			return 0, err
 		}
 		stripped := strings.TrimRight(line, "\r\n")
 		if stripped == "" || strings.HasPrefix(stripped, ";") || strings.HasPrefix(stripped, ">") {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if strings.HasPrefix(stripped, ">") {
@@ -206,15 +287,85 @@ func (r *Reference) BaseAt(chrom string, pos int) (byte, error) {
 				continue
 			}
 			if seen == zero {
+				// Advance cursor to the byte right
+				// after the one we just returned.
+				r.cursorCh = chrom
+				r.cursorOffset = off - int64(rawLen) + int64(i) + 1
+				r.cursorBasesSeen = seen + 1
 				return c, nil
 			}
 			seen++
 		}
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 	}
+	r.cursorCh = ""
 	return 0, fmt.Errorf("fasta: %s:%d past contig length %d", chrom, pos, e.Length)
+}
+
+// readLineTracked reads one line (up to '\n' or EOF) from
+// rs and returns the line (without trailing newline), the
+// raw line length on disk (line + terminator), and the
+// file offset of the byte right after the line's
+// terminator (or, if EOF was hit, right after the last
+// byte returned).
+//
+// Reads are buffered via a 4 KiB scratch buffer so a
+// line that's longer than the buffer still terminates
+// at '\n' or EOF.
+func readLineTracked(rs io.ReadSeeker) (line string, rawLen int, off int64, err error) {
+	const chunkSize = 4096
+	var buf []byte
+	scratch := make([]byte, chunkSize)
+	eof := false
+	for {
+		n, rerr := rs.Read(scratch)
+		if n > 0 {
+			for i := 0; i < n; i++ {
+				buf = append(buf, scratch[i])
+				if scratch[i] == '\n' {
+					trimmed := buf
+					if len(trimmed) > 0 && trimmed[len(trimmed)-1] == '\n' {
+						trimmed = trimmed[:len(trimmed)-1]
+					}
+					if len(trimmed) > 0 && trimmed[len(trimmed)-1] == '\r' {
+						trimmed = trimmed[:len(trimmed)-1]
+					}
+					cur, _ := rs.Seek(0, io.SeekCurrent)
+					// Read may have returned more bytes than
+					// we needed for this line; seek to the
+					// actual position past the terminator so
+					// the next call to Read picks up at the
+					// right place.
+					curPos := cur - int64(n-i-1)
+					if _, err := rs.Seek(curPos, io.SeekStart); err != nil {
+						return "", 0, 0, err
+					}
+					return string(trimmed), len(buf), curPos, nil
+				}
+			}
+		}
+		if errors.Is(err, io.EOF) {
+			eof = true
+			break
+		}
+		if rerr != nil {
+			return "", 0, 0, rerr
+		}
+		if n == 0 {
+			break
+		}
+	}
+	cur, _ := rs.Seek(0, io.SeekCurrent)
+	trimmed := buf
+	if len(trimmed) > 0 && trimmed[len(trimmed)-1] == '\r' {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	if eof {
+		return string(trimmed), len(buf), cur, io.EOF
+	}
+	return string(trimmed), len(buf), cur, nil
 }
 
 // BaseRange returns the bases at 1-based positions start
@@ -252,11 +403,11 @@ func (r *Reference) BaseRange(chrom string, start, end int) ([]byte, error) {
 	if len(e.lineOffsets) == 0 {
 		// .fai path: each base is one byte on disk.
 		off := e.Offset + int64(start-1)
-		if _, err := r.file.Seek(off, io.SeekStart); err != nil {
+		if _, err := r.rs.Seek(off, io.SeekStart); err != nil {
 			return nil, err
 		}
 		buf := make([]byte, wantLen)
-		n, err := io.ReadFull(r.file, buf)
+		n, err := io.ReadFull(r.rs, buf)
 		if err != nil {
 			return nil, err
 		}
@@ -270,23 +421,34 @@ func (r *Reference) BaseRange(chrom string, start, end int) ([]byte, error) {
 		}
 		return buf, nil
 	}
-	// Scanned path: scan forward from first-base offset.
-	if _, err := r.file.Seek(e.Offset, io.SeekStart); err != nil {
+	// Scanned path: resume from the cursor when the next
+	// call targets the same contig at a forward position.
+	startOffset := e.Offset
+	startSeen := int64(0)
+	if r.cursorCh == chrom && int64(start-1) >= r.cursorBasesSeen {
+		startOffset = r.cursorOffset
+		startSeen = r.cursorBasesSeen
+	} else {
+		r.cursorCh = ""
+	}
+	if _, err := r.rs.Seek(startOffset, io.SeekStart); err != nil {
 		return nil, err
 	}
-	br := bufio.NewReader(r.file)
-	seen := int64(0)
+	seen := startSeen
 	out := make([]byte, 0, wantLen)
 	targetStart := int64(start - 1)
 	targetEnd := int64(end - 1)
 	for {
-		line, err := br.ReadString('\n')
-		if err != nil && err != io.EOF {
+		line, rawLen, off, err := readLineTracked(r.rs)
+		if line == "" && errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil && !errors.Is(err, io.EOF) {
 			return nil, err
 		}
 		stripped := strings.TrimRight(line, "\r\n")
 		if stripped == "" || strings.HasPrefix(stripped, ";") || strings.HasPrefix(stripped, ">") {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			if strings.HasPrefix(stripped, ">") {
@@ -307,13 +469,17 @@ func (r *Reference) BaseRange(chrom string, start, end int) ([]byte, error) {
 			}
 			seen++
 			if seen >= targetEnd {
+				r.cursorCh = chrom
+				r.cursorOffset = off - int64(rawLen) + int64(i) + 1
+				r.cursorBasesSeen = seen
 				return out, nil
 			}
 		}
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 	}
+	r.cursorCh = ""
 	return nil, fmt.Errorf("fasta: %s:%d-%d past contig length %d", chrom, start, end-1, e.Length)
 }
 
@@ -349,11 +515,11 @@ func stripIgnoredChars(line string) string {
 // in a single FASTA may legitimately differ (the last
 // line of a contig is often shorter).
 func (r *Reference) initIndex() error {
-	if _, err := r.file.Seek(0, io.SeekStart); err != nil {
+	if _, err := r.rs.Seek(0, io.SeekStart); err != nil {
 		return err
 	}
 	r.fai = make(map[string]*faiEntry)
-	br := bufio.NewReaderSize(r.file, 64*1024)
+	br := bufio.NewReaderSize(r.rs, 64*1024)
 
 	var cur *faiEntry
 	// off tracks the byte offset just past the '>'
@@ -366,7 +532,7 @@ func (r *Reference) initIndex() error {
 		if line != "" {
 			off += int64(len(line))
 		}
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			return err
 		}
 		// The line as stored on disk (with its line
@@ -377,7 +543,7 @@ func (r *Reference) initIndex() error {
 		// only, so any '\r' is included in `line`.
 		stripped := strings.TrimRight(line, "\r\n")
 		if stripped == "" {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			continue
@@ -393,7 +559,7 @@ func (r *Reference) initIndex() error {
 			cur = &faiEntry{Offset: off}
 			r.fai[name] = cur
 			r.names = append(r.names, name)
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			continue
@@ -409,7 +575,7 @@ func (r *Reference) initIndex() error {
 		// skip them so they don't corrupt the offset
 		// arithmetic.
 		if strings.HasPrefix(stripped, ";") {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			continue
@@ -439,7 +605,7 @@ func (r *Reference) initIndex() error {
 		// between (which would break the simple
 		// offset+skipLines*linewidth formula).
 		cur.lineOffsets = append(cur.lineOffsets, lineStart)
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 	}
@@ -461,12 +627,12 @@ func readFAI(path string) (map[string]*faiEntry, error) {
 	br := bufio.NewReader(f)
 	for {
 		line, err := br.ReadString('\n')
-		if err != nil && err != io.EOF {
+		if err != nil && !errors.Is(err, io.EOF) {
 			return nil, err
 		}
 		trimmed := strings.TrimRight(line, "\r\n")
 		if trimmed == "" {
-			if err == io.EOF {
+			if errors.Is(err, io.EOF) {
 				break
 			}
 			continue
@@ -488,7 +654,7 @@ func readFAI(path string) (map[string]*faiEntry, error) {
 			LineBases: lineBases,
 			LineWidth: lineWidth,
 		}
-		if err == io.EOF {
+		if errors.Is(err, io.EOF) {
 			break
 		}
 	}

@@ -777,6 +777,39 @@ declared ALT type.
 
 **Status:** ✅ (v0.13.0)
 
+### T4.7 — fasta performance + BGZF (v0.14.0, no vcf change)
+
+This is a perf/feature release in the `fasta` package;
+no new vcf checks land here.
+
+**Scope:** the `fasta` package now supports BGZF
+(`.fa.gz`) references and an internal cursor that
+makes sequential per-record lookups O(N) instead of
+O(N²).
+
+**Where:**
+- `fasta/fasta.go`: `Open` detects the BGZF magic
+  (`0x1f 0x8b 0x08` + FEXTRA flag) and decompresses
+  into memory. `Reference` carries `cursorCh`,
+  `cursorOffset`, and `cursorBasesSeen` for the
+  forward-scan fast path.
+
+**Notes:** the `.fai` index is ignored for BGZF
+because its virtual offsets require a seekable BGZF
+reader, which this package does not currently provide.
+For BGZF references, Open pays a memory cost equal to
+the decompressed size.
+
+The IUPAC ALT reduction cross-check originally listed
+here as a candidate v0.14.0 item was dropped: the
+parser does not record which ALTs were originally
+IUPAC codes, so we cannot distinguish a reduced-IUPAC
+base from a concrete call. The full-REF match
+(v0.11.0) already covers the case where the
+reduction is inconsistent with the reference.
+
+**Status:** ✅ (v0.14.0)
+
 ---
 
 ## Quick index — by spec section

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"sort"
 	"testing"
+
+	"github.com/inful/htsfile/internal/bgzf"
 )
 
 func TestReference_BaseAt_PlainScanned(t *testing.T) {
@@ -274,6 +276,124 @@ func TestReference_LowercaseBases(t *testing.T) {
 	}
 	if b != 'c' {
 		t.Errorf("chr1:2 = %q, want c (lowercase, as stored)", b)
+	}
+}
+
+func TestReference_CursorSequentialCalls(t *testing.T) {
+	// The cursor optimisation must produce correct
+	// results when callers hit the same contig in order.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	const content = ">chr1\nACGTACGTACGTACGT\n>chr2\nGATTACAGATTACA\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	// Walk every base of chr1 in order, then every base
+	// of chr2 in order. The cursor must keep the file
+	// position advancing monotonically.
+	for p := 1; p <= 16; p++ {
+		got, err := ref.BaseAt("chr1", p)
+		if err != nil {
+			t.Fatalf("chr1:%d: %v", p, err)
+		}
+		want := "ACGTACGTACGTACGT"[p-1]
+		if got != want {
+			t.Errorf("chr1:%d = %q, want %q", p, got, want)
+		}
+	}
+	for p := 1; p <= 14; p++ {
+		got, err := ref.BaseAt("chr2", p)
+		if err != nil {
+			t.Fatalf("chr2:%d: %v", p, err)
+		}
+		want := "GATTACAGATTACA"[p-1]
+		if got != want {
+			t.Errorf("chr2:%d = %q, want %q", p, got, want)
+		}
+	}
+}
+
+func TestReference_CursorBackwardSeek(t *testing.T) {
+	// A backward seek must reset the cursor and rescan
+	// from the start of the contig.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(path, []byte(">chr1\nACGTACGTACGTACGT\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	if _, err := ref.BaseAt("chr1", 10); err != nil {
+		t.Fatalf("forward: %v", err)
+	}
+	got, err := ref.BaseAt("chr1", 3) // backward
+	if err != nil {
+		t.Fatalf("backward: %v", err)
+	}
+	if got != 'G' {
+		t.Errorf("chr1:3 = %q, want G", got)
+	}
+}
+
+func TestReference_BGZFCompressed(t *testing.T) {
+	// A .fa.gz (BGZF-compressed) FASTA must open and
+	// support BaseAt just like plain FASTA. The .fai
+	// index is ignored for BGZF (its offsets are virtual
+	// compressed-stream positions that require a seekable
+	// BGZF reader).
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa.gz")
+	plain, err := os.Create(path) //nolint:gosec // test file in t.TempDir
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	bw := bgzf.NewWriter(plain)
+	if _, err := bw.Write([]byte(">chr1\nACGTACGTACGTACGT\n>chr2\nGATTACAGATTACA\n")); err != nil {
+		t.Fatalf("bw.Write: %v", err)
+	}
+	if err := bw.Close(); err != nil {
+		t.Fatalf("bw.Close: %v", err)
+	}
+	if err := plain.Close(); err != nil {
+		t.Fatalf("plain.Close: %v", err)
+	}
+	// BGZF magic check: first two bytes should be 0x1f 0x8b.
+	hdr := make([]byte, 2)
+	f, _ := os.Open(path) //nolint:gosec // test file in t.TempDir
+	_, _ = f.Read(hdr)
+	_ = f.Close()
+	if hdr[0] != 0x1f || hdr[1] != 0x8b {
+		t.Fatalf("file is not BGZF-compressed: got %x %x", hdr[0], hdr[1])
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	if got, err := ref.BaseAt("chr1", 4); err != nil || got != 'T' {
+		t.Errorf("chr1:4 = %q, err=%v, want T", got, err)
+	}
+	if got, err := ref.BaseAt("chr2", 7); err != nil || got != 'A' {
+		t.Errorf("chr2:7 = %q, err=%v, want A", got, err)
+	}
+	// Cursor must work across BGZF decompressed content.
+	for p := 1; p <= 16; p++ {
+		got, err := ref.BaseAt("chr1", p)
+		if err != nil {
+			t.Fatalf("BGZF chr1:%d: %v", p, err)
+		}
+		want := "ACGTACGTACGTACGT"[p-1]
+		if got != want {
+			t.Errorf("BGZF chr1:%d = %q, want %q", p, got, want)
+		}
 	}
 }
 

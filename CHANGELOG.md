@@ -11,6 +11,59 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.14.0] — 2026-10-18
+
+This release makes the `fasta` package substantially
+faster and adds BGZF support. The vcf validator has
+no API or behaviour changes.
+
+### Added — fasta
+
+- **BGZF support** (`8c9a44a`). `Open` now detects the
+  BGZF magic (`0x1f 0x8b 0x08` with FEXTRA flag) and
+  decompresses the stream into memory before indexing.
+  The `.fai` index is ignored for BGZF because its
+  virtual offsets require a seekable BGZF reader
+  which this package does not currently provide. The
+  caller pays a memory cost equal to the decompressed
+  size. All other `Reference` APIs work identically.
+- **`Reference` now uses `io.ReadSeeker`** instead of
+  `*os.File` directly. This unifies the plain-FASTA
+  and BGZF code paths.
+
+### Changed — fasta
+
+- **Cursor optimisation** (`8c9a44a`). When `BaseAt`
+  or `BaseRange` is called sequentially on the same
+  contig with increasing positions, the scanned-path
+  scan resumes from a recorded file offset rather than
+  restarting at the first base of the contig. This
+  makes sequential VCF validation O(N) instead of
+  O(N²). Cursor resets on chrom change, on backward
+  seeks, and on `.fai`-path lookups.
+- **Plain-FASTA scan uses `readLineTracked`** instead
+  of `bufio.NewReader` so the file offset of the next
+  byte is exact after each line. (The previous
+  bufio-based approach made the offset depend on
+  `Buffered()`, which is unreliable for cursor
+  bookkeeping.)
+
+### Not implemented
+
+- **IUPAC ALT reduction cross-check**: the parser
+  doesn't track which ALTs were originally IUPAC codes
+  (declared via `##ALT`), so we cannot distinguish a
+  reduced-IUPAC base from a concrete call. The full-REF
+  match added in v0.11.0 already catches the case
+  where the IUPAC reduction is inconsistent with the
+  reference for REF; the same coverage applies to ALT
+  substitutions where the ALT base replaces the REF
+  base.
+
+3 new tests cover the cursor optimisation
+(sequential calls, backward seek, BGZF-decompressed
+content).
+
 ## [0.13.0] — 2026-10-18
 
 This release adds a reference-aware check for
