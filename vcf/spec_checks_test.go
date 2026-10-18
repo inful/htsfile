@@ -805,6 +805,95 @@ func TestValidator_NumberGKeysMustHaveFloatOrInteger(t *testing.T) {
 	}
 }
 
+func TestValidator_PLCardinalityMatchesPloidy(t *testing.T) {
+	// PL is Number=G; for a diploid with biallelic ALT
+	// (REF + 1 ALT = 2 alleles) the expected count is
+	// (2+2-1 choose 2) = 3. For triploid with biallelic
+	// it is (2+3-1 choose 3) = 4.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=PL,Number=G,Type=Integer,Description=\"pl\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, gt, alt, pl string
+		want              bool
+	}{
+		{"diploid biallelic ok", "0/1", "C", "0,10,100", false},
+		{"diploid biallelic wrong", "0/1", "C", "0,10", true},
+		{"haploid biallelic ok", "1", "C", "0,100", false},
+		{"haploid biallelic wrong", "1", "C", "0,10,100", true},
+		{"diploid with 2 alts ok", "1/2", "C,G", "0,10,100,1000,10000,100000", false},
+		{"diploid with 2 alts wrong", "1/2", "C,G", "0,10,100", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t" + c.alt + "\t.\t.\t.\tGT:PL\t" + c.gt + ":" + c.pl + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if iss.Field == "FORMAT/PL/sample[0]" && strings.Contains(iss.Msg, "Number=G") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("gt=%s alt=%s pl=%s: found=%v, want %v; issues=%+v", c.gt, c.alt, c.pl, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_ADCardinalityMatchesAlleleCount(t *testing.T) {
+	// AD is Number=R; the expected count per sample is
+	// len(REF) + len(ALT). Diploid biallelic gives 2,
+	// diploid with 2 ALTs gives 3.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=AD,Number=R,Type=Integer,Description=\"allele depths\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, alt, ad string
+		want          bool
+	}{
+		{"biallelic ok", "C", "10,20", false},
+		{"biallelic wrong", "C", "10", true},
+		{"two alts ok", "C,G", "10,20,30", false},
+		{"two alts wrong", "C,G", "10,20", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t" + c.alt + "\t.\t.\t.\tGT:AD\t0/1:" + c.ad + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if iss.Field == "FORMAT/AD/sample[0]" && strings.Contains(iss.Msg, "Number=R") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("alt=%s ad=%s: found=%v, want %v; issues=%+v", c.alt, c.ad, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_GTMustBeFirstFormatField(t *testing.T) {
 	// Per VCFv4.5 §1.6.2, GT must be the first FORMAT
 	// key when it is declared. The check fires in
