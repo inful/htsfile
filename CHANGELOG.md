@@ -11,6 +11,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.12.0] — 2026-10-18
+
+This release adds two reference-aware bounds checks
+that fire only when a FASTA reference is attached:
+`END` and `SVLEN` must stay within the contig. Both
+checks are skipped for mitochondrial chromosomes
+(matching the existing `checkEND` exception).
+
+### Added — fasta
+
+- **`(*Reference).Length(chrom) (int64, error)`**
+  (`7d4bbaa`). Returns the number of bases in the
+  named contig, or an error if the contig is unknown.
+  Used by the validator for bounds checks.
+
+### Added — vcf validator
+
+- **`checkENDBounds`** (`7d4bbaa`). When a reference
+  is attached and the record declares `INFO END`,
+  verify `END <= ref.Length` and `END >= POS`.
+  Fires in both modes; replaces the need for a
+  declared `##contig=<length>`.
+- **`checkSVLENBounds`** (`7d4bbaa`). When a
+  reference is attached and the record declares
+  `INFO SVLEN`, verify `POS + |SVLEN| - 1 <=
+  ref.Length` for each entry. Negative SVLEN is
+  caught by the existing positive-value check.
+
+13 new sub-tests cover the within-contig, past-
+contig, before-POS, mtDNA, and unknown-contig cases.
+
 ## [0.11.0] — 2026-10-18
 
 This release replaces the single-base REF padding

@@ -601,6 +601,16 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	// declared it must match the computed value.
 	issues = append(issues, v.checkEND(rec, idx)...)
 
+	// Reference-aware bounds: with a FASTA reference
+	// attached, verify END and SVLEN stay inside the
+	// contig. Without a reference, these checks are
+	// skipped (the existing checks rely on declared
+	// ##contig lengths).
+	if v.Reference != nil {
+		issues = append(issues, v.checkENDBounds(rec, idx, line)...)
+		issues = append(issues, v.checkSVLENBounds(rec, idx, line)...)
+	}
+
 	// FILTER values must be declared (or "PASS"/".").
 	issues = append(issues, v.checkFilter(h, rec, idx)...)
 
@@ -1261,6 +1271,86 @@ func (v *Validator) checkEND(rec *Record, idx int) []ValidationError {
 		}}
 	}
 	return nil
+}
+
+// checkENDBounds fires when a FASTA reference is attached
+// and the record declares an INFO END value. END must be
+// within the contig (END <= ref.Length). Without a
+// reference, this check is skipped (the existing
+// checkEND only enforces value consistency, not bounds).
+//
+// For mitochondrial chromosomes END may legitimately
+// wrap past the origin, so the check is skipped there
+// (matching checkEND's existing exception).
+func (v *Validator) checkENDBounds(rec *Record, idx, line int) []ValidationError {
+	if isMitochondrial(rec.Chrom) {
+		return nil
+	}
+	raw, ok := rec.Info["END"]
+	if !ok || raw.Missing || len(raw.Ints) == 0 {
+		return nil
+	}
+	end := raw.Ints[0]
+	contigLen, err := v.Reference.Length(rec.Chrom)
+	if err != nil {
+		return nil
+	}
+	if end > contigLen {
+		return []ValidationError{{
+			Severity: SeverityError, Record: idx + 1, Line: line,
+			Field: "INFO/END",
+			Msg:   fmt.Sprintf("END %d exceeds contig length %d for %s", end, contigLen, rec.Chrom),
+		}}
+	}
+	if end < rec.Pos {
+		return []ValidationError{{
+			Severity: SeverityError, Record: idx + 1, Line: line,
+			Field: "INFO/END",
+			Msg:   fmt.Sprintf("END %d is before POS %d for %s", end, rec.Pos, rec.Chrom),
+		}}
+	}
+	return nil
+}
+
+// checkSVLENBounds fires when a FASTA reference is attached
+// and the record declares INFO SVLEN. For each non-missing
+// entry, the implied end position (POS + |SVLEN| - 1)
+// must be within the contig. The absolute-value rule
+// follows §1.6.1.7 ("the absolute value of SVLEN should
+// be taken and a negative SVLEN should be treated as
+// positive").
+func (v *Validator) checkSVLENBounds(rec *Record, idx, line int) []ValidationError {
+	if isMitochondrial(rec.Chrom) {
+		return nil
+	}
+	iv, ok := rec.Info["SVLEN"]
+	if !ok || iv.Missing || len(iv.Ints) == 0 {
+		return nil
+	}
+	contigLen, err := v.Reference.Length(rec.Chrom)
+	if err != nil {
+		return nil
+	}
+	var issues []ValidationError
+	for i, svlen := range iv.Ints {
+		if isMissing(svlen) {
+			continue
+		}
+		absVal := svlen
+		if absVal < 0 {
+			absVal = -absVal
+		}
+		impliedEnd := rec.Pos + absVal - 1
+		if impliedEnd > contigLen {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "INFO/SVLEN",
+				Msg: fmt.Sprintf("SVLEN[%d]=%d implies end position %d which exceeds contig length %d for %s",
+					i, svlen, impliedEnd, contigLen, rec.Chrom),
+			})
+		}
+	}
+	return issues
 }
 
 // checkSVClaim enforces the per-symbolic-allele SVCLAIM

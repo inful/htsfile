@@ -109,6 +109,21 @@ func (r *Reference) Contigs() []string {
 	return out
 }
 
+// Length returns the number of bases in the named contig.
+// Returns an error if the contig is unknown.
+func (r *Reference) Length(chrom string) (int64, error) {
+	if !r.loaded {
+		if err := r.initIndex(); err != nil {
+			return 0, err
+		}
+	}
+	e, ok := r.fai[chrom]
+	if !ok {
+		return 0, fmt.Errorf("fasta: contig %q not found", chrom)
+	}
+	return e.Length, nil
+}
+
 // BaseAt returns the 1-based base at the given position
 // on chrom. Returns an error if chrom is unknown, pos is
 // out of range, or the file cannot be read.

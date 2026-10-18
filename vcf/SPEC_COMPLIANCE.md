@@ -675,6 +675,62 @@ lines and internal whitespace in the scanned path.
 
 **Status:** ✅ (v0.11.0)
 
+### T4.5 — Reference-aware END / SVLEN bounds (§1.6.1.6, §1.6.1.7)
+
+**Spec (§1.6.1.6):**
+
+> END is a computed field that, when present, must
+> be set to the maximum end reference position
+> (1-based).
+
+**Spec (§1.6.1.7):**
+
+> SVLEN must be specified for symbolic structural
+> variant alleles.
+
+**Scope:** per-record, conditioned on a FASTA
+reference being attached. Without a reference, the
+existing `checkEND` already enforces value
+consistency (END == computed from REF / SVLEN),
+and the existing positive-value check handles
+negative SVLEN. The new bounds checks verify that
+END and SVLEN stay within the contig even when no
+`##contig=<length>` declaration is present.
+
+**Where:**
+- `fasta/fasta.go`: new `(*Reference).Length(chrom)`
+  returning the contig length (or an error).
+- `vcf/validate.go`: `checkENDBounds` and
+  `checkSVLENBounds` wired into `checkRecord`
+  after the existing `checkEND`. Both are no-ops
+  without a reference; both skip mitochondrial
+  chromosomes (matching the existing exception).
+
+**Acceptance:**
+- `POS=3, END=6, SVLEN=4` against `ref.Length=16`
+  passes.
+- `POS=3, END=100, SVLEN=98` against `ref.Length=16`
+  fires `END exceeds contig length`.
+- `POS=3, END=2, SVLEN=-1` (which the existing
+  positive-value check rejects anyway) fires
+  `END before POS`.
+- `POS=3, SVLEN=100` against `ref.Length=16` fires
+  `SVLEN implies end position past contig`.
+- `POS=1, SVLEN=16` against `ref.Length=16` passes
+  (end equals last base).
+- `chrM` (mitochondrial) skips both checks even
+  when bounds would be violated.
+- Unknown contig: lookup error is silent; check is
+  skipped.
+
+**Notes:** bounds checks use absolute SVLEN per the
+spec's "negative SVLEN should be treated as positive"
+rule. The 0 sentinel in the Ints slice (parser
+convention for missing) is filtered out via
+`isMissing`.
+
+**Status:** ✅ (v0.12.0)
+
 ---
 
 ## Quick index — by spec section

@@ -867,6 +867,139 @@ func TestValidator_NoReference_NoCheck(t *testing.T) {
 	}
 }
 
+func TestValidator_ENDBoundsWithReference(t *testing.T) {
+	// With a FASTA reference, END must be within the
+	// contig length even when no ##contig=<length>
+	// declaration is present.
+	refText := ">chr1\nACGTACGTACGTACGT\n" // 16 bases
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(refPath, []byte(refText), 0o600); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	ref, err := fasta.Open(refPath)
+	if err != nil {
+		t.Fatalf("fasta.Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=DEL,Description=\"x\">\n" +
+		"##INFO=<ID=END,Number=1,Type=Integer,Description=\"e\">\n" +
+		"##INFO=<ID=SVLEN,Number=A,Type=Integer,Description=\"s\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		// END = 6 (within contig). No bounds error from
+		// the reference check. (Other checks may fire.)
+		{"END within contig", "chr1\t3\t.\tAC\t<DEL>\t.\t.\tEND=6;SVLEN=4", false},
+		// END = 100 (past contig). Bounds error fires.
+		{"END past contig", "chr1\t3\t.\tAC\t<DEL>\t.\t.\tEND=100;SVLEN=98", true},
+		// END = 2, POS = 3. END < POS. Bounds error fires.
+		{"END before POS", "chr1\t3\t.\tAC\t<DEL>\t.\t.\tEND=2;SVLEN=-1", true},
+		// END = 16 (last base). Within contig. No error.
+		{"END at last base", "chr1\t3\t.\tAC\t<DEL>\t.\t.\tEND=16;SVLEN=14", false},
+		// No END declared: skip.
+		{"no END", "chr1\t3\t.\tAC\t<DEL>\t.\t.\tSVLEN=4", false},
+		// Mitochondrial: skipped even when END is past.
+		{"mtDNA skipped", "chrM\t3\t.\tAC\t<DEL>\t.\t.\tEND=100;SVLEN=98", false},
+		// Unknown contig: skipped (Length lookup fails).
+		{"unknown contig", "chrX\t3\t.\tAC\t<DEL>\t.\t.\tEND=100;SVLEN=98", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			v := NewValidator(ModeStrict).WithReference(ref)
+			issues := v.Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "exceeds contig length") || strings.Contains(iss.Msg, "before POS") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_SVLENBoundsWithReference(t *testing.T) {
+	// With a FASTA reference, POS + |SVLEN| - 1 must be
+	// within the contig.
+	refText := ">chr1\nACGTACGTACGTACGT\n" // 16 bases
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(refPath, []byte(refText), 0o600); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	ref, err := fasta.Open(refPath)
+	if err != nil {
+		t.Fatalf("fasta.Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=DEL,Description=\"x\">\n" +
+		"##INFO=<ID=SVLEN,Number=A,Type=Integer,Description=\"s\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		// POS=3, SVLEN=4 → end=6 (within contig).
+		{"SVLEN within contig", "chr1\t3\t.\tAC\t<DEL>\t.\t.\tSVLEN=4", false},
+		// POS=3, SVLEN=100 → end=102 (past contig).
+		{"SVLEN past contig", "chr1\t3\t.\tAC\t<DEL>\t.\t.\tSVLEN=100", true},
+		// Negative SVLEN is rejected by the existing
+		// positive-value check (T2.6) before the bounds
+		// check fires — both checks agree it's invalid.
+		// (No separate sub-test for negative here.)
+		// POS=3, SVLEN=14 → end=16 (last base). No error.
+		{"SVLEN at last base", "chr1\t3\t.\tAC\t<DEL>\t.\t.\tSVLEN=14", false},
+		// POS=1, SVLEN=16 → end=16 (last base). No error.
+		{"POS=1 SVLEN=length", "chr1\t1\t.\tAC\t<DEL>\t.\t.\tSVLEN=16", false},
+		// No SVLEN: skip.
+		{"no SVLEN", "chr1\t3\t.\tAC\t<DEL>\t.\t.\t.", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			v := NewValidator(ModeStrict).WithReference(ref)
+			issues := v.Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "implies end position") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_CIRUCMissingMatchesRUC(t *testing.T) {
 	// Per VCFv4.5 §1.6.1.7: "CIRUC/CIRB must not be
 	// non-missing for any alleles with no corresponding
