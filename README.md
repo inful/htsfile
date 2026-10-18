@@ -322,9 +322,9 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | Reserved SV INFO keys (SVLEN, CIPOS…)  |   ✅   |
 | Phasing (PS / PQ)                      |   ✅   |
 | PSL / PSO / PSQ lists                  |   ✅   |
-| Base modifications (M\* fields)         |   🔜   |
-| Tandem repeats (RN/RUS/RUC/RB…)        |   🔜   |
-| Local alleles (LAA / LAD / LPL…)       |   🔜   |
+| Base modifications (M\* fields, recognised; metadata checked) | ✅ |
+| Tandem repeats (RN/RUS/RUC/RB…, recognised; metadata checked) | ✅ |
+| Local alleles (LAA / LAD / LPL…, recognised; LAA structurally validated) | ✅ |
 | VCF v4.1–v4.5 acceptance (any v4.x)     |   ✅   |
 | BCF v2.1 interop (via `vcf2bcf` / `bcf2vcf`) | ✅ |
 
@@ -382,7 +382,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | `###` record terminator (ends feature section) | ✅ |
 | Round-trippable `Encoder`              |   ✅   |
 | `ModeDefault` and `ModeStrict` validators (strict = Parent ID cross-references) | ✅ |
-| FASTA emission after `###`             |   ❌   |
+| FASTA emission after `###` (`EncodeFastaSection`) | ✅ |
 
 ### fasta/ package (FASTA)
 
@@ -408,7 +408,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | Phred+33 / Phred+64 auto-detection (first record) | ✅ |
 | Manual offset override via `SetPhredOffset` | ✅ |
 | Per-record `PhredOffset` carried on Record | ✅ |
-| Solexa Solexa+64 encoding support    |   ❌  |
+| Solexa Solexa+64 encoding support (via `SetPhredEncoding`) | ✅ |
 
 ### bcf/ package (BCF v2.1)
 
