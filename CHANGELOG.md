@@ -9,6 +9,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **BCF v2.1 format support.** A new `bcf` package
+  (`github.com/inful/htsfile/bcf`) reads BGZF-compressed
+  Binary Call Format files. Streaming `Decoder` plus a per-
+  record `Validator` with `ModeDefault` and `ModeStrict`.
+  Decodes the BCF magic + length-prefixed VCF-style header
+  text, the binary reference dictionary, and every
+  alignment-record field — refID, pos (0-based → 1-based POS),
+  the typed ID/REF/ALT, FILTER (resolved by header),
+  QUAL (float64), and the typed INFO array (Integer, Float,
+  Flag, Character, String) with header-declared type
+  coercion. INFO keys are resolved positionally from the
+  header's `##INFO` declarations (the parser preserves
+  `InfosOrder` for this). `LookupContig`, `LookupFilter`,
+  `LookupInfoIndex`, and `LookupFormatIndex` provide direct
+  ID → index access for callers that need it without
+  iterating the order slice.
+
+  **v1 is read-only.** The per-sample FORMAT column is not
+  parsed (the binary FORMAT/sample format is complex enough
+  to warrant a dedicated follow-up; v1 surfaces a clear
+  ParseError rather than guess). The companion BCF *writer*
+  is deferred to v2 per the open-decision scope in the
+  ROADMAP — building it now would roughly double the package
+  size, and the round-trip story is incomplete without sample
+  data. The `cmd/htsfile` CLI auto-dispatches by extension
+  (`.bcf`) and surfaces a clear "BCF v1 is read-only" error
+  for `roundtrip` on `.bcf` files. `check` and `summary`
+  work for BCF.
+
+  BCF and BAM share the same outer BGZF wrapper, so the CLI
+  content-sniff heuristic can't disambiguate them on stdin;
+  users should pass `.bcf` files via the file path (which
+  triggers the extension dispatch) or feed BCF on stdin
+  knowing it will be misclassified as BAM and produce a
+  parsing error.
+
 - **Tabix v1 index reader.** A new `tabix` package
   (`github.com/inful/htsfile/tabix`) reads the general-purpose
   position index for sorted bgzipped text files (file
@@ -44,289 +80,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for both formats. (Tabix and CSI are not auto-sniffed from
   stdin — use the file extension to disambiguate.)
 
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.1.0...HEAD
+
 ## [0.1.0] — 2026-10-18
 
 This release builds on the v0.0.1 VCF-only baseline with five
-new format packages, a CLI refactor that eliminates the
-five-way issue-reporting duplication, and a comprehensive
-test pass.
+new format packages (SAM v1, BED v1, BAM v1, GFF3, FASTA),
+VCF v4.x acceptance, the CLI duplication refactor that
+eliminates the five-way issue-reporting duplication, internal
+value-type coercion, bounded per-line reads, and SAM
+header-tag validation.
 
 ### Added
-
-- **FASTA format support.** A new `fasta` package
-  (`github.com/inful/htsfile/fasta`) implements parsing,
-  writing, and validation for the FASTA sequence format.
-  Streaming `Decoder`, round-trippable `Encoder` with
-  configurable sequence-line wrapping (default 80 chars), and
-  a per-record `Validator` with `ModeDefault` (non-empty ID,
-  non-empty sequence) and `ModeStrict` (alphabet check
-  against a configurable character set, default IUPAC
-  nucleotide codes). The parser accepts any sequence-line
-  wrapping (including unwrapped single-line records) and
-  preserves the original character case; the encoder re-wraps
-  at the configured width.
-
-  The companion `fasta/fai` package reads `.fai` index files
-  (read-only, per the open-decision recommendation): 5
-  tab-separated fields per reference (name, length, offset,
-  lineBases, lineWidth). Index generation is out of scope
-  for v1 — it requires a multi-pass atomic-rename pipeline
-  that's a separate effort.
-
-  The `cmd/htsfile` CLI auto-dispatches by extension (`.fa`,
-  `.fasta`, `.fna`, `.ffn`, `.faa`) and sniffs the first
-  non-empty line for stdin / unknown extensions (a `>` header
-  line indicates FASTA). `check`, `roundtrip`, and `summary`
-  all work for FASTA.
-
-- **CLI duplication refactor — shared issue reporter.** The
-  per-format `runCheck{VCF,BED,SAM,BAM,GFF}` functions had
-  grown into five near-duplicates of the same sort/print/count
-  loop, each carrying a `//nolint:dupl` with rationale. FASTA
-  was the ROADMAP-pinned trigger to refactor. The duplication
-  is now replaced by a single `runIssueReport` helper plus
-  per-package adapters (`reportFrom{VCF,BED,SAM,BAM,GFF,
-  FASTA}`) that convert native `Issue` types to a normalised
-  `reportIssue` struct. The five `runCheck*` functions shrink
-  to their essential ~20 lines (parse + validate + delegate).
-  FASTA's `runCheckFASTA` is the first caller that never
-  needed a `//nolint:dupl`. This is the refactor the ROADMAP
-  flagged at the ≥3-packages threshold; it now lands for the
-  sixth format.
-
-- **GFF3 format support.** A new `gff` package
-  (`github.com/inful/htsfile/gff`) implements parsing,
-  writing, and validation for the Generic Feature Format
-  Version 3. Streaming `Decoder`, round-trippable `Encoder`,
-  and a per-record `Validator` with `ModeDefault` and
-  `ModeStrict`. Supports the full 9-column feature record
-  (SeqID, Source, Type, Start, End, Score, Strand, Phase,
-  Attributes) plus the `##` pragma directives
-  (`##gff-version`, `##sequence-region`, `##date`, and
-  arbitrary tool-specific pragmas preserved verbatim for
-  round-trip) and the `###` record terminator. GFF3
-  coordinates are 1-based inclusive (the opposite of BED's
-  0-based half-open); the parser rejects `start < 1` and
-  `end < start`. Strand accepts `+`, `-`, `.`, `?`; phase
-  accepts `0`, `1`, `2`, `.`. Multi-value attributes
-  (`Parent`, `Dbxref`, `Alias`, `Note`, `Target`, `Gap`,
-  `Derives_from`, `Ontology_term`) are exposed as
-  `map[string][]string` via the `AttributeList(key)` accessor;
-  `Attribute(key)` returns the first value as a convenience.
-  The validator's strict mode cross-references `Parent` IDs
-  against the document's `ID` set. FASTA emission after
-  `###` is intentionally out of scope for v1. The
-  `cmd/htsfile` CLI auto-dispatches by extension (`.gff`,
-  `.gff3`) and sniffs `##gff-version` or a 9-column
-  tab-separated feature line with single-character strand for
-  stdin / unknown extensions.
-
-- **BAM v1 format support.** A new `bam` package
-  (`github.com/inful/htsfile/bam`) reads BGZF-compressed BAM
-  files: streaming `Decoder` plus a per-record `Validator`
-  with `ModeDefault` and `ModeStrict`. Supports the full
-  binary framing (4-byte magic `BAM\1`, length-prefixed SAM
-  header text, binary reference-sequence dictionary) and every
-  BAM alignment-record field — refID, pos (0-based → 1-based
-  POS), l_read_name, mapq, bin, n_cigar_op, flag, l_seq,
-  next_refID, next_pos, tlen, read_name, packed CIGAR, 4-bit
-  packed SEQ, qual, and the full aux-tag set (A, c, C, s, S,
-  i, I, f, d, Z, H, B). SEQ is decoded back to ASCII; CIGAR
-  is exposed as a packed `[]uint32` and as a SAM-text
-  `CigarString()`; tags are parsed for all 12 documented BAM
-  type codes with values exposed as SAM-compatible strings.
-  BAM v1 is **read-only** in this build — there is no BAM
-  writer. The companion `bam/bai` package reads BAI index
-  files (read-only; bin index + 16384-bp linear intervals +
-  `n_no_coor`) and exposes the samtools 6-level
-  bin-assignment helper `Reg2Bins` for future region-query
-  code.
-
-  The `internal/bgzf` package is a small zero-dependency
-  implementation of the BGZF block format: every block is a
-  valid gzip stream with the FEXTRA flag set, carrying the
-  `BC` subfield (BSIZE-1, uint16 LE), constrained to 64 KiB;
-  each block is terminated with a 4-byte CRC32 + 4-byte ISIZE
-  trailer. The reader decompresses blocks on the fly, validates
-  CRC32 and ISIZE, and recognises the 28-byte empty EOF marker.
-
-  The `cmd/htsfile` CLI auto-dispatches by extension (`.vcf`,
-  `.bed`, `.sam`, `.bam`) and sniffs the first 4 bytes for
-  stdin / unknown extensions — the gzip+FEXTRA prefix
-  indicates a BGZF-compressed BAM. `check` and `summary` work
-  for BAM; `roundtrip` is not supported (BAM v1 is read-only)
-  and returns a clear "BAM v1 is read-only" error rather than
-  silently emitting broken output.
-
-### Test coverage notes
-
-BAM `checkOne` (validator's per-record check) reached 100%
-coverage with the addition of four tests for the previously-
-untested strict-mode branches (QUAL length mismatch,
-strict-mode POS check, strict-mode duplicate-tag warning,
-strict-mode next_refID out-of-bounds). The `bam/` package
-overall coverage rose from 76.2% to 78.8%.
-
-[0.1.0]: https://github.com/inful/htsfile/compare/v0.0.1...v0.1.0
-
-### Added
-
-- **FASTA format support.** A new `fasta` package
-  (`github.com/inful/htsfile/fasta`) implements parsing,
-  writing, and validation for the FASTA sequence format.
-  Streaming `Decoder`, round-trippable `Encoder` with
-  configurable sequence-line wrapping (default 80 chars), and
-  a per-record `Validator` with `ModeDefault` (non-empty ID,
-  non-empty sequence) and `ModeStrict` (alphabet check
-  against a configurable character set, default IUPAC
-  nucleotide codes). The parser accepts any sequence-line
-  wrapping (including unwrapped single-line records) and
-  preserves the original character case; the encoder re-wraps
-  at the configured width.
-
-  The companion `fasta/fai` package reads `.fai` index files
-  (read-only, per the open-decision recommendation): 5
-  tab-separated fields per reference (name, length, offset,
-  lineBases, lineWidth). Index generation is out of scope
-  for v1 — it requires a multi-pass atomic-rename pipeline
-  that's a separate effort.
-
-  The `cmd/htsfile` CLI auto-dispatches by extension (`.fa`,
-  `.fasta`, `.fna`, `.ffn`, `.faa`) and sniffs the first
-  non-empty line for stdin / unknown extensions (a `>` header
-  line indicates FASTA). `check`, `roundtrip`, and `summary`
-  all work for FASTA.
-
-- **CLI duplication refactor — shared issue reporter.** The
-  per-format `runCheck{VCF,BED,SAM,BAM,GFF}` functions had
-  grown into five near-duplicates of the same sort/print/count
-  loop, each carrying a `//nolint:dupl` with rationale. FASTA
-  was the ROADMAP-pinned trigger to refactor this. The
-  duplication is now replaced by a single `runIssueReport`
-  helper plus per-package adapters (`reportFrom{VCF,BED,SAM,
-  BAM,GFF,FASTA}`) that convert native `Issue` types to a
-  normalised `reportIssue` struct. The five `runCheck*`
-  functions shrink to their essential ~20 lines (parse +
-  validate + delegate). FASTA's `runCheckFASTA` is the first
-  caller that never needed a `//nolint:dupl`. This is the
-  refactor the ROADMAP flagged at the ≥3-packages threshold;
-  it now lands for the sixth format.
-
-- **BCF v2.1 format support.** A new `bcf` package
-  (`github.com/inful/htsfile/bcf`) reads BGZF-compressed
-  Binary Call Format files. Streaming `Decoder` plus a per-
-  record `Validator` with `ModeDefault` and `ModeStrict`.
-  Decodes the BCF magic + length-prefixed VCF-style header
-  text, the binary reference dictionary, and every alignment-
-  record field — refID, pos (0-based → 1-based POS), the typed
-  ID/REF/ALT, FILTER (resolved by header), QUAL (float64),
-  and the typed INFO array (Integer, Float, Flag, Character,
-  String) with header-declared type coercion. INFO keys are
-  resolved positionally from the header's `##INFO`
-  declarations (the parser preserves `InfosOrder` for this).
-
-  **v1 is read-only.** The per-sample FORMAT column is not
-  parsed (the binary FORMAT/sample format is complex enough
-  to warrant a dedicated follow-up; v1 surfaces a clear
-  ParseError rather than guess). The companion BCF *writer*
-  is deferred to v2 per the open-decision scope in the
-  ROADMAP — building it now would roughly double the package
-  size, and the round-trip story is incomplete without sample
-  data. The `cmd/htsfile` CLI auto-dispatches by extension
-  (`.bcf`) and surfaces a clear "BCF v1 is read-only" error
-  for `roundtrip` on `.bcf` files. `check` and `summary`
-  work for BCF.
-
-  BCF and BAM share the same outer BGZF wrapper, so the CLI
-  content-sniff heuristic can't disambiguate them on stdin;
-  users should pass `.bcf` files via the file path (which
-  triggers the extension dispatch) or feed BCF on stdin
-  knowing it will be misclassified as BAM and produce a
-  parsing error.
-
-- **GFF3 format support.** A new `gff` package
-  (`github.com/inful/htsfile/gff`) implements parsing, writing,
-  and validation for the Generic Feature Format Version 3.
-  Streaming `Decoder`, round-trippable `Encoder`, and a
-  per-record `Validator` with `ModeDefault` and `ModeStrict`.
-  Supports the full 9-column feature record (SeqID, Source,
-  Type, Start, End, Score, Strand, Phase, Attributes) plus the
-  `##` pragma directives (`##gff-version`, `##sequence-region`,
-  `##date`, and arbitrary tool-specific pragmas preserved
-  verbatim for round-trip) and the `###` record terminator.
-  GFF3 coordinates are 1-based inclusive (the opposite of
-  BED's 0-based half-open); the parser rejects `start < 1` and
-  `end < start`. Strand accepts `+`, `-`, `.`, `?`; phase
-  accepts `0`, `1`, `2`, `.`. Multi-value attributes
-  (`Parent`, `Dbxref`, `Alias`, `Note`, `Target`, `Gap`,
-  `Derives_from`, `Ontology_term`) are exposed as
-  `map[string][]string` via the `AttributeList(key)` accessor;
-  `Attribute(key)` returns the first value as a convenience.
-  The validator's strict mode cross-references `Parent` IDs
-  against the document's `ID` set. FASTA emission after `###`
-  is intentionally out of scope for v1 (the `###` line just
-  ends the feature section). The `cmd/htsfile` CLI
-  auto-dispatches by extension (`.gff`, `.gff3`) and sniffs
-  `##gff-version` or a 9-column tab-separated feature line
-  with single-character strand for stdin / unknown
-  extensions.
-
-  This is the smallest of the v1 packages — similar size to
-  BED. Round-trip preserves all `##` pragmas in source order
-  plus the bare `#` comments; multi-value attributes are
-  serialised back as `key=v1,v2,v3`.
-
-  CLI duplication for the four per-format `runCheck*` /
-  `runSummary*` entry points has now hit the ≥3-packages
-  threshold (VCF/BED/SAM + BAM + GFF = five per-format
-  duplicates). Each duplicate carries a `//nolint:dupl` with
-  rationale. The refactor to extract a shared
-  "issue-reporting" helper is queued for FASTA, where the
-  refactor's payoff will be largest; the current pattern is
-  tolerable but acknowledged as a known wart.
-
-- **BAM v1 format support.** A new `bam` package
-  (`github.com/inful/htsfile/bam`) reads BGZF-compressed BAM
-  files: streaming `Decoder` plus a per-record `Validator` with
-  `ModeDefault` and `ModeStrict`. Supports the full binary
-  framing (4-byte magic `BAM\1`, length-prefixed SAM header
-  text, binary reference-sequence dictionary) and every BAM
-  alignment-record field — refID, pos (0-based → 1-based POS),
-  l_read_name, mapq, bin, n_cigar_op, flag, l_seq, next_refID,
-  next_pos, tlen, read_name, packed CIGAR, 4-bit packed SEQ,
-  qual, and the full aux-tag set (A, c, C, s, S, i, I, f, d, Z,
-  H, B). SEQ is decoded back to ASCII; CIGAR is exposed as a
-  packed `[]uint32` and as a SAM-text `CigarString()`; tags are
-  parsed for all 12 documented BAM type codes with values
-  exposed as SAM-compatible strings. BAM v1 is **read-only**
-  in this build — there is no BAM writer. The companion
-  `bam/bai` package reads BAI index files (read-only; bin
-  index + 16384-bp linear intervals + `n_no_coor`) and exposes
-  the samtools 6-level bin-assignment helper `Reg2Bins` for
-  future region-query code.
-
-  The `internal/bgzf` package is a small zero-dependency
-  implementation of the BGZF block format: every block is a
-  valid gzip stream with the FEXTRA flag set, carrying the
-  `BC` subfield (BSIZE-1, uint16 LE), constrained to 64 KiB;
-  each block is terminated with a 4-byte CRC32 + 4-byte ISIZE
-  trailer. The reader decompresses blocks on the fly, validates
-  CRC32 and ISIZE, and recognises the 28-byte empty EOF marker.
-
-  The `cmd/htsfile` CLI auto-dispatches by extension (`.vcf`,
-  `.bed`, `.sam`, `.bam`) and sniffs the first 4 bytes for
-  stdin / unknown extensions — the gzip+FEXTRA prefix indicates
-  a BGZF-compressed BAM. `check` and `summary` work for BAM;
-  `roundtrip` is not supported (BAM v1 is read-only) and returns
-  a clear "BAM v1 is read-only" error rather than silently
-  emitting broken output.
-
-  CLI duplication for the four per-format `runCheck*` /
-  `runSummary*` entry points has hit the ≥3-packages threshold
-  the ROADMAP flagged; the four duplicates each carry a
-  `//nolint:dupl` with rationale. The refactor to extract a
-  shared "issue-reporting" helper is queued for the next format
-  landing (GFF3), where the savings will be more substantial.
 
 - **SAM v1 format support.** A new `sam` package
   (`github.com/inful/htsfile/sam`) mirrors the vcf/ and bed/
@@ -381,31 +146,112 @@ overall coverage rose from 76.2% to 78.8%.
   — BEDGraph, narrowPeak, broadPeak, and GFF/GTF are out of
   scope for this release.
 
-- **Test coverage on structured-meta parse paths.** Pinned the
-  duplicate INFO / FILTER / FORMAT ID detection,
-  Flag-with-non-zero-Number rejection, contig length parsing,
-  missing-ID error reporting for every meta-line type, and the
-  positive PEDIGREE `Name_*` and SAMPLE `Genomes`/`MolConvs`
-  nested-body paths. The VCF package coverage rose from 81.7% to
-  85.2%.
+- **BAM v1 format support.** A new `bam` package
+  (`github.com/inful/htsfile/bam`) reads BGZF-compressed BAM
+  files: streaming `Decoder` plus a per-record `Validator`
+  with `ModeDefault` and `ModeStrict`. Supports the full
+  binary framing (4-byte magic `BAM\1`, length-prefixed SAM
+  header text, binary reference-sequence dictionary) and every
+  BAM alignment-record field — refID, pos (0-based → 1-based
+  POS), l_read_name, mapq, bin, n_cigar_op, flag, l_seq,
+  next_refID, next_pos, tlen, read_name, packed CIGAR,
+  4-bit packed SEQ, qual, and the full aux-tag set (A, c, C,
+  s, S, i, I, f, d, Z, H, B). SEQ is decoded back to ASCII;
+  CIGAR is exposed as a packed `[]uint32` and as a SAM-text
+  `CigarString()`; tags are parsed for all 12 documented BAM
+  type codes with values exposed as SAM-compatible strings.
+  BAM v1 is **read-only** in this build — there is no BAM
+  writer. The companion `bam/bai` package reads BAI index
+  files (read-only; bin index + 16384-bp linear intervals +
+  `n_no_coor`) and exposes the samtools 6-level
+  bin-assignment helper `Reg2Bins` for future region-query
+  code.
+
+  The `internal/bgzf` package is a small zero-dependency
+  implementation of the BGZF block format: every block is a
+  valid gzip stream with the FEXTRA flag set, carrying the
+  `BC` subfield (BSIZE-1, uint16 LE), constrained to 64 KiB;
+  each block is terminated with a 4-byte CRC32 + 4-byte ISIZE
+  trailer. The reader decompresses blocks on the fly, validates
+  CRC32 and ISIZE, and recognises the 28-byte empty EOF marker.
+
+  The `cmd/htsfile` CLI auto-dispatches by extension (`.vcf`,
+  `.bed`, `.sam`, `.bam`) and sniffs the first 4 bytes for
+  stdin / unknown extensions — the gzip+FEXTRA prefix
+  indicates a BGZF-compressed BAM. `check` and `summary` work
+  for BAM; `roundtrip` is not supported (BAM v1 is read-only)
+  and returns a clear "BAM v1 is read-only" error rather than
+  silently emitting broken output.
+
+- **GFF3 format support.** A new `gff` package
+  (`github.com/inful/htsfile/gff`) implements parsing,
+  writing, and validation for the Generic Feature Format
+  Version 3. Streaming `Decoder`, round-trippable `Encoder`,
+  and a per-record `Validator` with `ModeDefault` and
+  `ModeStrict`. Supports the full 9-column feature record
+  (SeqID, Source, Type, Start, End, Score, Strand, Phase,
+  Attributes) plus the `##` pragma directives
+  (`##gff-version`, `##sequence-region`, `##date`, and
+  arbitrary tool-specific pragmas preserved verbatim for
+  round-trip) and the `###` record terminator. GFF3
+  coordinates are 1-based inclusive (the opposite of BED's
+  0-based half-open); the parser rejects `start < 1` and
+  `end < start`. Strand accepts `+`, `-`, `.`, `?`; phase
+  accepts `0`, `1`, `2`, `.`. Multi-value attributes
+  (`Parent`, `Dbxref`, `Alias`, `Note`, `Target`, `Gap`,
+  `Derives_from`, `Ontology_term`) are exposed as
+  `map[string][]string` via the `AttributeList(key)` accessor;
+  `Attribute(key)` returns the first value as a convenience.
+  The validator's strict mode cross-references `Parent` IDs
+  against the document's `ID` set. FASTA emission after `###`
+  is intentionally out of scope for v1. The
+  `cmd/htsfile` CLI auto-dispatches by extension (`.gff`,
+  `.gff3`) and sniffs `##gff-version` or a 9-column
+  tab-separated feature line with single-character strand for
+  stdin / unknown extensions.
+
+- **FASTA format support.** A new `fasta` package
+  (`github.com/inful/htsfile/fasta`) implements parsing,
+  writing, and validation for the FASTA sequence format.
+  Streaming `Decoder`, round-trippable `Encoder` with
+  configurable sequence-line wrapping (default 80 chars), and
+  a per-record `Validator` with `ModeDefault` (non-empty ID,
+  non-empty sequence) and `ModeStrict` (alphabet check
+  against a configurable character set, default IUPAC
+  nucleotide codes). The parser accepts any sequence-line
+  wrapping (including unwrapped single-line records) and
+  preserves the original character case; the encoder re-wraps
+  at the configured width.
+
+  The companion `fasta/fai` package reads `.fai` index files
+  (read-only, per the open-decision recommendation): 5
+  tab-separated fields per reference (name, length, offset,
+  lineBases, lineWidth). Index generation is out of scope
+  for v1 — it requires a multi-pass atomic-rename pipeline
+  that's a separate effort.
+
+  The `cmd/htsfile` CLI auto-dispatches by extension (`.fa`,
+  `.fasta`, `.fna`, `.ffn`, `.faa`) and sniffs the first
+  non-empty line for stdin / unknown extensions (a `>` header
+  line indicates FASTA). `check`, `roundtrip`, and `summary`
+  all work for FASTA.
+
+- **CLI duplication refactor — shared issue reporter.** The
+  per-format `runCheck{VCF,BED,SAM,BAM,GFF}` functions had
+  grown into five near-duplicates of the same sort/print/count
+  loop, each carrying a `//nolint:dupl` with rationale. FASTA
+  was the ROADMAP-pinned trigger to refactor. The duplication
+  is now replaced by a single `runIssueReport` helper plus
+  per-package adapters (`reportFrom{VCF,BED,SAM,BAM,GFF,
+  FASTA}`) that convert native `Issue` types to a normalised
+  `reportIssue` struct. The five `runCheck*` functions shrink
+  to their essential ~20 lines (parse + validate + delegate).
+  FASTA's `runCheckFASTA` is the first caller that never
+  needed a `//nolint:dupl`. This is the refactor the ROADMAP
+  flagged at the ≥3-packages threshold; it now lands for the
+  sixth format.
 
 ### Changed
-
-- **Bounded per-line read size in all three Decoders.** Each
-  format package (`vcf/`, `bed/`, `sam/`) now configures its line
-  reader with a `MaxLineLength` cap (default 10 MB). Lines
-  longer than the cap produce a clear `*ParseError` rather than
-  unbounded allocation. This is a real DoS-surface fix for
-  library use cases (e.g. parsing untrusted VCF/BED/SAM input);
-  the previous `bufio.Reader.ReadBytes` would happily allocate
-  a 10 GB byte slice for a malicious 10 GB line. The internal
-  reader is now `bufio.Scanner` with the buffer cap pinned via
-  `make([]byte, 0, maxLineLength)` so the cap is enforced (a
-  subtle Scanner-API gotcha: passing `make([]byte, 64*1024, 100)`
-  to `Buffer` would silently grow to 64 KB regardless of the
-  max). The new constructors are `NewDecoderWithMaxLine(r,
-  maxLineLength)`; the existing `NewDecoder(r)` uses the
-  default. Behaviour is unchanged for any real-world file.
 
 - **Internal refactor — value-type coercion.** `InfoValue` and
   `FieldValue` now embed an unexported `typedCore` so the four
@@ -443,6 +289,42 @@ overall coverage rose from 76.2% to 78.8%.
   errors with a clear message; the first `@HD` is still
   returned alongside the error so callers can inspect what
   parsed.
+
+- **Bounded per-line read size in all three Decoders.** Each
+  format package (`vcf/`, `bed/`, `sam`) now configures its line
+  reader with a `MaxLineLength` cap (default 10 MB). Lines
+  longer than the cap produce a clear `*ParseError` rather than
+  unbounded allocation. This is a real DoS-surface fix for
+  library use cases (e.g. parsing untrusted VCF/BED/SAM input);
+  the previous `bufio.Reader.ReadBytes` would happily allocate
+  a 10 GB byte slice for a malicious 10 GB line. The internal
+  reader is now `bufio.Scanner` with the buffer cap pinned via
+  `make([]byte, 0, maxLineLength)` so the cap is enforced (a
+  subtle Scanner-API gotcha: passing `make([]byte, 64*1024, 100)`
+  to `Buffer` would silently grow to 64 KB regardless of the
+  max). The new constructors are `NewDecoderWithMaxLine(r,
+  maxLineLength)`; the existing `NewDecoder(r)` uses the
+  default. Behaviour is unchanged for any real-world file.
+
+### Test coverage notes
+
+- **BAM `checkOne` strict-mode branches.** Reached 100%
+  coverage on the validator's per-record check with the
+  addition of four tests for the previously-untested
+  strict-mode branches (QUAL length mismatch, strict-mode
+  POS check, strict-mode duplicate-tag warning, strict-mode
+  next_refID out-of-bounds). The `bam/` package overall
+  coverage rose from 76.2% to 78.8%.
+
+- **VCF structured-meta parse paths.** Pinned the
+  duplicate INFO / FILTER / FORMAT ID detection,
+  Flag-with-non-zero-Number rejection, contig length parsing,
+  missing-ID error reporting for every meta-line type, and the
+  positive PEDIGREE `Name_*` and SAMPLE `Genomes`/`MolConvs`
+  nested-body paths. The VCF package coverage rose from 81.7%
+  to 85.2%.
+
+[0.1.0]: https://github.com/inful/htsfile/compare/v0.0.1...v0.1.0
 
 ## [0.0.1] — 2026-10-13
 
@@ -483,5 +365,4 @@ overall coverage rose from 76.2% to 78.8%.
 - Local-allele encoding (`LAA` / `LAD` / `LGL` / `LPL` / `LGP` / `LPP`).
 - BCF (binary counterpart).
 
-[Unreleased]: https://github.com/inful/htsfile/compare/v0.0.1...HEAD
 [0.0.1]: https://github.com/inful/htsfile/releases/tag/v0.0.1
