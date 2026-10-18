@@ -349,7 +349,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | Optional tag fields (TAG:TYPE:VALUE) | ✅ |
 | `ModeDefault` and `ModeStrict` validators | ✅ |
 | Lenient parsing of malformed lines | ✅ |
-| CIGAR string parsing (semantic) | ❌ |
+| CIGAR string parsing (semantic) | ✅ |
 | Read/write of unknown `@XX` header lines | ✅ |
 
 ### bam/ package (BAM v1)

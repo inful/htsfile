@@ -43,7 +43,9 @@ type Record struct {
 	MapQ int
 
 	// Cigar is column 6: the CIGAR string. `*` if unavailable.
-	// The library stores it verbatim; CIGAR parsing is out of scope.
+	// The library stores it verbatim; for semantic interpretation
+	// (per-op reference / query consumption, alignment span) use
+	// [ParseCigar].
 	Cigar string
 
 	// RNext is column 7: reference sequence name of the primary

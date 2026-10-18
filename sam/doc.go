@@ -20,6 +20,19 @@
 // Tag type codes: A (printable char), C (0-255 int), f (float),
 // H (hex), i (int), Z (string), B (array of cCsSiIf).
 //
+// CIGAR semantic parsing:
+//
+//	ops, err := sam.ParseCigar(rec.Cigar)
+//	// ops is a []sam.CigarUnit{ Len, Op } for each (length, op) pair.
+//	// Op is one of CigarM, CigarI, CigarD, CigarN, CigarS, CigarH,
+//	// CigarP, CigarEq, CigarX. Per-op helpers:
+//
+//	sam.ReferenceLength(ops) // total reference span
+//	sam.QueryLength(ops)     // total query (SEQ) span
+//	sam.AlignmentEnd(rec.Pos, ops) // 1-based rightmost ref position
+//
+// FormatCigar renders a parsed CIGAR back to its textual form.
+//
 // Typical usage:
 //
 //	f, err := os.Open("sample.sam")

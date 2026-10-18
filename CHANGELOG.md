@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Semantic CIGAR parsing** (`sam.ParseCigar`,
+  `sam.FormatCigar`, `sam.CigarUnit`, `sam.CigarOp`). The
+  library previously stored CIGAR strings verbatim and left
+  interpretation to callers; the new parser decodes a CIGAR
+  string into `[]CigarUnit{ Len, Op }`, where `Op` is one of
+  nine named constants (`CigarM`, `CigarI`, `CigarD`, `CigarN`,
+  `CigarS`, `CigarH`, `CigarP`, `CigarEq`, `CigarX`). Per-op
+  helpers expose the SAM semantics: `ConsumesReference`,
+  `ConsumesQuery`, `ReferenceLength`, `QueryLength`,
+  `AlignmentEnd`. The numeric op-code matches the BAM packed
+  format (M=0 … X=8) so a BAM CIGAR word can be inspected by
+  isolating `op>>28`. Lower-case op chars are accepted because
+  aligners sometimes emit them in extended-CIGAR contexts.
+
 ## [0.6.0] — 2026-10-18
 
 This release adds the four text↔binary translation subcommands
