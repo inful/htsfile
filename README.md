@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
-file formats. It currently targets six specifications from
+file formats. It currently targets seven specifications from
 [samtools/hts-specs](https://github.com/samtools/hts-specs) and
 the Sequence Ontology:
 
@@ -15,9 +15,10 @@ the Sequence Ontology:
 - **BAM v1** — Binary SAM (BGZF-compressed) with read-only BAI index reader
 - **GFF3** — Generic Feature Format Version 3 (9 columns + free-form attributes)
 - **FASTA** — Sequence records (`>` header + multi-line sequence); read-only `.fai` index reader
+- **BCF v2.1** — Binary VCF (BGZF-compressed). **Read-only** in v1 — see "Tier 3 status" below.
 
-See [ROADMAP.md](ROADMAP.md) for the planned expansion (FASTQ,
-BCF v2.1, Tabix/CSI).
+See [ROADMAP.md](ROADMAP.md) for the planned expansion (full
+FASTQ → SAM/VCF converters, Tabix, CRAM v3, etc.).
 
 The implementation aims to be:
 
@@ -185,16 +186,40 @@ IUPAC nucleotide codes plus `*` and `-`). The sibling `fasta/fai`
 package reads `.fai` index files for random-access into large
 FASTA files; index generation is out of scope for v1.
 
+### BCF Parsing
+
+The `bcf` package reads BCF v2.1 (the binary counterpart of VCF):
+
+```go
+dec := bcf.NewDecoder(f)
+hdr, _ := dec.Header()   // required; returns Version + contigs + filters + infos
+for {
+    rec, err := dec.Record()
+    if errors.Is(err, io.EOF) { break }
+    // rec.CHROM (resolved name), rec.Pos (1-based),
+    // rec.ID, rec.Ref, rec.Alt, rec.Qual + rec.QualKnown,
+    // rec.Filter (resolved IDs), rec.Info
+}
+```
+
+BCF v1 is read-only — the package parses the shared per-record
+fields (CHROM, POS, ID, REF, ALT, FILTER, QUAL, INFO) but skips
+the per-sample FORMAT column. A BCF writer (with full round-trip
+support) is queued for v2. The validator's `ModeStrict` cross-
+references undeclared INFO keys.
+
 ## CLI
 
 A small command-line tool ships in `cmd/htsfile`. Format is
 auto-detected from the file extension (`.vcf`, `.bed`, `.sam`,
 `.bam`, `.gff`, `.gff3`, `.fa`, `.fasta`, `.fna`, `.ffn`,
-`.faa`); for stdin (`-`) or unknown extensions, the first
-non-empty line is sniffed (`##fileformat` → VCF; `track`,
+`.faa`, `.bcf`); for stdin (`-`) or unknown extensions, the
+first non-empty line is sniffed (`##fileformat` → VCF; `track`,
 `browser`, or a tab-separated `chrom\tstart\tend` triple → BED;
 `@HD` or an 11-column tab-separated record with integer
-FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM;
+FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM (this also
+matches BCF's outer wrapper — use the `.bcf` extension to
+disambiguate; BCF is not auto-sniffed from stdin);
 `##gff-version` or a 9-column tab-separated feature line →
 GFF3; a `>` header line → FASTA).
 
@@ -208,6 +233,7 @@ htsfile check reads.sam                   # SAM is auto-detected by extension
 htsfile check aligned.bam                 # BAM is auto-detected by extension
 htsfile check genes.gff3                  # GFF3 is auto-detected by extension
 htsfile check sequences.fa                # FASTA is auto-detected by extension
+htsfile check sample.bcf                  # BCF is auto-detected by extension
 
 # Re-emit a file (verifies round-trip)
 htsfile roundtrip sample.vcf > out.vcf
@@ -216,7 +242,7 @@ htsfile roundtrip peaks.bed > out.bed     # BED round-trip
 htsfile roundtrip reads.sam > out.sam     # SAM round-trip
 htsfile roundtrip genes.gff3 > out.gff3   # GFF3 round-trip
 htsfile roundtrip sequences.fa > out.fa  # FASTA round-trip (80-char wrapping)
-# roundtrip does not support .bam files (BAM v1 is read-only).
+# roundtrip does not support .bam or .bcf files (both are read-only in v1).
 
 # Print a header summary
 htsfile summary sample.vcf
@@ -225,6 +251,7 @@ htsfile summary reads.sam                 # SAM summary: version, @SQ/@RG/@PG co
 htsfile summary aligned.bam               # BAM summary: version, @SQ/@RG/@PG counts, records
 htsfile summary genes.gff3                # GFF3 summary: version, pragmas, seqids, types, records
 htsfile summary sequences.fa              # FASTA summary: records, bases, unique IDs
+htsfile summary sample.bcf                # BCF summary: fileformat, contigs, filters, records
 ```
 
 ## Status
@@ -316,9 +343,24 @@ htsfile summary sequences.fa              # FASTA summary: records, bases, uniqu
 | `.fai` index generation                |   ❌   |
 | Multi-sequence FASTA (multi-FASTA, .mfa) | ❌  |
 
+### bcf/ package (BCF v2.1)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| BGZF block decoder (internal/bgzf)     |   ✅   |
+| `BCF\x02\x01` magic + reference dictionary |   ✅ |
+| Embedded VCF-style header text (fileformat, contig, FILTER, INFO, FORMAT) | ✅ |
+| 9-column feature records equivalent: CHROM/POS/ID/REF/ALT/FILTER/QUAL/INFO | ✅ |
+| 4-bit packed SEQ / packed CIGAR / qual |   ✅   |
+| All 5 BCF INFO type codes (Integer, Float, Flag, Character, String) | ✅ |
+| `ModeDefault` and `ModeStrict` validators | ✅ |
+| **BCF writer (round-trip)**            |   ❌   |
+| Per-sample FORMAT column               |   ❌   |
+| BCF 2.2 (latest version) support       |   ❌   |
+
 ### Planned (see [ROADMAP.md](ROADMAP.md))
 
-- **Tier 3 (next)**: BCF v2.1, Tabix, CSI
+- **Tier 3 (next)**: Tabix, CSI (BCF writer deferred to v2)
 - **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ
 
 ## Releases

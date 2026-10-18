@@ -1,22 +1,25 @@
 // Command htsfile is a small command-line interface over the
-// vcf, bed, sam, bam, gff, and fasta packages.
+// vcf, bed, sam, bam, gff, fasta, and bcf packages.
 //
 // Usage:
 //
-//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta]
+//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.bcf
 //	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam | file.gff[3] | file.fa[sta]
-//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta]
+//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.bcf
 //	htsfile version
 //
 // The format is auto-detected from the file extension (.vcf,
 // .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .fna, .ffn,
-// .faa). For stdin ("-") or unknown extensions, the first
-// non-empty line is sniffed: "##fileformat" → VCF; "track",
-// "browser", or a tab-separated chrom/start/end triple → BED;
-// "@HD" or an 11-column tab-separated record with integer
-// FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM;
-// "##gff-version" or a 9-column tab-separated feature line →
-// GFF3; a ">" header line → FASTA.
+// .faa, .bcf). For stdin ("-") or unknown extensions, the
+// first non-empty line is sniffed: "##fileformat" → VCF;
+// "track", "browser", or a tab-separated chrom/start/end
+// triple → BED; "@HD" or an 11-column tab-separated record
+// with integer FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM
+// (also matches BCF's outer wrapper — use the .bcf extension
+// to disambiguate); "##gff-version" or a 9-column
+// tab-separated feature line → GFF3; a ">" header line → FASTA.
+// BCF is not auto-sniffed from stdin (it shares its outer
+// BGZF container with BAM); use the .bcf extension.
 //
 // Subcommands:
 //
@@ -26,7 +29,9 @@
 //	version   print the htsfile version (set via -ldflags at build time).
 //
 // BAM v1 is read-only: `roundtrip` is not supported for .bam
-// files. `check` and `summary` work normally.
+// files. BCF v1 is read-only for the same reason (no BCF
+// writer; deferred to v2 per the ROADMAP scope decision).
+// `check` and `summary` work normally.
 package main
 
 import (
@@ -42,6 +47,7 @@ import (
 	"strings"
 
 	"github.com/inful/htsfile/bam"
+	"github.com/inful/htsfile/bcf"
 	"github.com/inful/htsfile/bed"
 	"github.com/inful/htsfile/fasta"
 	"github.com/inful/htsfile/gff"
@@ -72,6 +78,7 @@ const (
 	formatBAM
 	formatGFF
 	formatFASTA
+	formatBCF
 )
 
 func (f format) String() string {
@@ -88,6 +95,8 @@ func (f format) String() string {
 		return "GFF3"
 	case formatFASTA:
 		return "FASTA"
+	case formatBCF:
+		return "BCF"
 	default:
 		return "unknown"
 	}
@@ -126,7 +135,7 @@ func main() {
 }
 
 func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|file.fa[sta]|->
+	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|file.fa[sta]|file.bcf|->
 
 Commands:
   check       Validate the file. Exits non-zero if any errors are found.
@@ -136,9 +145,10 @@ Commands:
               --crlf       use CR+LF line endings
   summary     Print a summary of the file (header / column count / records).
 
-Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta). For
+Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .bcf). For
 stdin ("-") or unknown extensions, the first non-empty line is sniffed.
-BAM v1 is read-only: the roundtrip subcommand does not support .bam files.`)
+BAM v1 is read-only: the roundtrip subcommand does not support .bam files.
+BCF v1 is also read-only (deferred to v2; use the .bcf extension).`)
 }
 
 // openFileOrStdin returns the named file, or os.Stdin if path is "-".
@@ -198,6 +208,12 @@ func detectFormat(path string) (format, io.Reader, error) {
 			return formatUnknown, nil, err
 		}
 		return formatFASTA, f, nil
+	case ".bcf":
+		f, err := openFileOrStdin(path)
+		if err != nil {
+			return formatUnknown, nil, err
+		}
+		return formatBCF, f, nil
 	}
 	// Unknown extension (or no extension) — open once, buffer, and sniff.
 	return sniffFormat(path)
@@ -564,6 +580,24 @@ func reportFromFASTA(in []fasta.Issue) []reportIssue {
 	return out
 }
 
+// reportFromBCF converts BCF issues to the shared shape.
+func reportFromBCF(in []bcf.Issue) []reportIssue {
+	out := make([]reportIssue, len(in))
+	for i, iss := range in {
+		s := reportWarning
+		if iss.Severity == bcf.SeverityError {
+			s = reportError
+		}
+		out[i] = reportIssue{
+			Line:     iss.Line,
+			Field:    iss.Field,
+			Severity: s,
+			Msg:      iss.Msg,
+		}
+	}
+	return out
+}
+
 // runCheck parses and validates the file at args[0].
 func runCheck(args []string) error {
 	fs := flag.NewFlagSet("check", flag.ExitOnError)
@@ -594,6 +628,8 @@ func runCheck(args []string) error {
 		return runCheckGFF(r, path, *strict, *warnings)
 	case formatFASTA:
 		return runCheckFASTA(r, path, *strict, *warnings)
+	case formatBCF:
+		return runCheckBCF(r, path, *strict, *warnings)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -717,6 +753,8 @@ func runRoundtrip(args []string) error {
 		return runRoundtripGFF(r, *crlf)
 	case formatFASTA:
 		return runRoundtripFASTA(r, *crlf)
+	case formatBCF:
+		return runRoundtripBCF()
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -857,6 +895,8 @@ func runSummary(args []string) error {
 		return runSummaryGFF(r, path)
 	case formatFASTA:
 		return runSummaryFASTA(r, path)
+	case formatBCF:
+		return runSummaryBCF(r, path)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -1286,6 +1326,85 @@ func runSummaryFASTA(f io.Reader, path string) error {
 	fmt.Fprintf(&b, "  records:    %d\n", nRec)
 	fmt.Fprintf(&b, "  bases:      %d\n", totalBases)
 	fmt.Fprintf(&b, "  unique IDs: %d\n", len(ids))
+	_, _ = fmt.Fprint(os.Stdout, b.String())
+	return nil
+}
+
+// runCheckBCF parses and validates a BCF file. BCF v1 is
+// read-only, so the check is structurally identical to the
+// other runCheck* family but uses the bcf decoder.
+func runCheckBCF(f io.Reader, path string, strict, warnings bool) error {
+	mode := bcf.ModeDefault
+	if strict {
+		mode = bcf.ModeStrict
+	}
+	dec := bcf.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	_ = hdr
+	var recs []*bcf.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			// v1 limitation: FORMAT/sample data is not
+			// supported. Surface this with a clear message.
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	issues := bcf.NewValidator(mode).Validate(hdr, recs)
+	if len(issues) == 0 {
+		fmt.Printf("%s: clean (%d records)\n", path, len(recs))
+		return nil
+	}
+	return runIssueReport(path, reportFromBCF(issues), warnings)
+}
+
+// runRoundtripBCF returns an error explaining that BCF v1 is
+// read-only and the roundtrip subcommand does not support it.
+// The full BCF writer (with sample data round-trip) is a v2
+// follow-up.
+func runRoundtripBCF() error {
+	return errors.New("roundtrip: BCF v1 is read-only in this build (no BCF writer; deferred to v2)")
+}
+
+// runSummaryBCF prints a summary of the BCF file's header
+// and record count. Per-sample data is not displayed in v1
+// (the BCF decoder does not parse the FORMAT column).
+func runSummaryBCF(f io.Reader, path string) error {
+	dec := bcf.NewDecoder(f)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	var nRec int
+	for {
+		_, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		nRec++
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", path)
+	if hdr != nil {
+		if hdr.FileFormat != "" {
+			fmt.Fprintf(&b, "  fileformat: %s\n", hdr.FileFormat)
+		}
+		fmt.Fprintf(&b, "  contigs:    %d\n", len(hdr.Contigs))
+		fmt.Fprintf(&b, "  filters:    %d\n", len(hdr.Filters))
+		fmt.Fprintf(&b, "  infos:      %d\n", len(hdr.Infos))
+		fmt.Fprintf(&b, "  formats:    %d\n", len(hdr.Formats))
+	}
+	fmt.Fprintf(&b, "  records:    %d\n", nRec)
 	_, _ = fmt.Fprint(os.Stdout, b.String())
 	return nil
 }

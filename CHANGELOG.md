@@ -175,6 +175,38 @@ overall coverage rose from 76.2% to 78.8%.
   refactor the ROADMAP flagged at the ≥3-packages threshold;
   it now lands for the sixth format.
 
+- **BCF v2.1 format support.** A new `bcf` package
+  (`github.com/inful/htsfile/bcf`) reads BGZF-compressed
+  Binary Call Format files. Streaming `Decoder` plus a per-
+  record `Validator` with `ModeDefault` and `ModeStrict`.
+  Decodes the BCF magic + length-prefixed VCF-style header
+  text, the binary reference dictionary, and every alignment-
+  record field — refID, pos (0-based → 1-based POS), the typed
+  ID/REF/ALT, FILTER (resolved by header), QUAL (float64),
+  and the typed INFO array (Integer, Float, Flag, Character,
+  String) with header-declared type coercion. INFO keys are
+  resolved positionally from the header's `##INFO`
+  declarations (the parser preserves `InfosOrder` for this).
+
+  **v1 is read-only.** The per-sample FORMAT column is not
+  parsed (the binary FORMAT/sample format is complex enough
+  to warrant a dedicated follow-up; v1 surfaces a clear
+  ParseError rather than guess). The companion BCF *writer*
+  is deferred to v2 per the open-decision scope in the
+  ROADMAP — building it now would roughly double the package
+  size, and the round-trip story is incomplete without sample
+  data. The `cmd/htsfile` CLI auto-dispatches by extension
+  (`.bcf`) and surfaces a clear "BCF v1 is read-only" error
+  for `roundtrip` on `.bcf` files. `check` and `summary`
+  work for BCF.
+
+  BCF and BAM share the same outer BGZF wrapper, so the CLI
+  content-sniff heuristic can't disambiguate them on stdin;
+  users should pass `.bcf` files via the file path (which
+  triggers the extension dispatch) or feed BCF on stdin
+  knowing it will be misclassified as BAM and produce a
+  parsing error.
+
 - **GFF3 format support.** A new `gff` package
   (`github.com/inful/htsfile/gff`) implements parsing, writing,
   and validation for the Generic Feature Format Version 3.

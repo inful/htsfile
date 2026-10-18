@@ -86,6 +86,17 @@ linters:
       - path: fasta/cli_test\.go
         linters:
           - gosec
+      # BCF is also a binary parser; same G115 false-positive
+      # pattern as BAM/internal/bgzf. Exclude gosec for the
+      # production parser and the test builder.
+      - path: bcf/(helpers_test|parse)\.go
+        linters:
+          - gosec
+          - prealloc
+      # And the BCF CLI smoke test (subprocess variable).
+      - path: bcf/cli_test\.go
+        linters:
+          - gosec
 
 run:
   timeout: 5m

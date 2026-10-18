@@ -10,11 +10,12 @@ the [samtools/hts-specs](https://samtools.github.io/hts-specs/) family
 and adjacent bioinformatics formats.
 
 > **Where to continue from this point in a new session:** start with
-> **Tier 3 (BCF v2.1 / Tabix / CSI)**. All of Tier 2 has landed
-> (BAM, GFF3, FASTA — including the CLI refactor that was
-> pinned for FASTA). The roadmap is up to date as of the latest
-> commit on `main`. See the [CHANGELOG](CHANGELOG.md) for what
-> just landed and `git log --oneline` for the commit history.
+> **Tier 3 (Tabix / CSI)**. BAM, GFF3, FASTA, and BCF v1
+> (read-only) have landed. The next item is the Tabix and CSI
+> index readers (which share enough infrastructure to be built
+> together). The roadmap is up to date as of the latest commit
+> on `main`. See the [CHANGELOG](CHANGELOG.md) for what just
+> landed and `git log --oneline` for the commit history.
 
 ## Design principles
 
@@ -177,8 +178,24 @@ in the style established for the BED v1 work.
       yet implemented — the library treats all v4.x identically
       and asks users to report per-version bugs as they surface.
       (commit `2b48959`)
-- [ ] **BCF v2.1** — binary VCF. Companion to VCF; useful for
-      round-tripping large VCFs without the text overhead.
+- [x] **BCF v2.1 (read-only sub-tier)** — binary VCF. Companion
+      to VCF. **Reader-only in v1** per the open-decision scope
+      ("per the ROADMAP's Index generation out-of-scope note").
+      Includes:
+      - `bcf/` — streaming `Decoder`, per-record `Validator`
+        (`ModeDefault` + `ModeStrict`), all 12 BAM-equivalent
+        INFO type codes, and a small but useful per-record
+        API (`LookupContig`, `LookupFilter`, `InfosOrder`).
+      - `ParseHeader` is exposed so test helpers can reuse the
+        VCF-text parser.
+      - **No BCF writer** in v1 — round-trip would require a
+        ~2× larger package (writer alone) and is incomplete
+        without per-sample data. Deferred to v2.
+      - **No per-sample FORMAT column** parsing in v1 — too
+        complex for an initial sub-tier; surfaced as a clear
+        ParseError rather than guessed at.
+      - CLI: `check`, `summary` for `.bcf`; `roundtrip`
+        returns "BCF v1 is read-only" error.
 - [ ] **Tabix** — generic index for sorted, bgzipped position
       files. Most useful once BAM lands.
 - [ ] **CSI v1** — successor to BAI. Same problem class as
@@ -249,7 +266,8 @@ rather than per-tier to avoid duplication.
 | `gff/`         | v3     | 75.7%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, multi-value attrs, CLI smoke |
 | `fasta/`       | n/a    | 75.6%    | Decoder (with `NewDecoderWithMaxLine`), Encoder, Validator, errors, types, round-trip, CLI smoke |
 | `fasta/fai/`   | n/a    | 80.6%    | Index parser (5 fields: name, length, offset, lineBases, lineWidth) |
-| `cmd/htsfile/` | n/a    | n/a      | CLI: `check`, `roundtrip`, `summary`, `version`; auto-dispatch by `.vcf`/`.bed`/`.sam`/`.bam`/`.gff`/`.gff3`/`.fa`/`.fasta`/`.fna`/`.ffn`/`.faa` extension + content sniff for stdin; shared `runIssueReport` helper replaces the 5-way `runCheck*` duplication |
+| `bcf/`         | v2.1   | 56.4%    | Decoder (BGZF-wrapped), Validator (`ModeDefault`/`ModeStrict`), errors, types, typed INFO, CLI smoke; **read-only** — no writer |
+| `cmd/htsfile/` | n/a    | n/a      | CLI: `check`, `roundtrip`, `summary`, `version`; auto-dispatch by `.vcf`/`.bed`/`.sam`/`.bam`/`.gff`/`.gff3`/`.fa`/`.fasta`/`.fna`/`.ffn`/`.faa`/`.bcf` extension + content sniff for stdin; shared `runIssueReport` helper replaces the 5-way `runCheck*` duplication |
 
 All three format packages follow the same shape (one `Decoder`, one
 `Encoder`, one `Validator`, one `Record`/`Header` type, one
@@ -264,25 +282,21 @@ These are the unresolved questions for the next tier of work.
 Each has a recommendation; the recommendation should be confirmed
 before starting implementation.
 
-### For Tier 3 — VCF ecosystem and indexing
+### For Tier 3 — Tabix / CSI
 
-These are the unresolved questions for Tier 3. The BCF / Tabix /
-CSI trio share infrastructure (sorted position indexes over
-BGZF-compressed files) so the question of *when* to extract a
-shared `index/` package is the main open decision.
+BCF v1 is shipped (read-only). The remaining Tier 3 items are
+Tabix and CSI, both generic position indexes over BGZF-
+compressed files. They share infrastructure (sorted input
++ linear index + bin index); the BCF reader already consumes
+the BGZF wrapper but doesn't index.
 
-- [ ] **BCF v2.1 scope.** Read-only or read/write? BCF is the
-      binary counterpart of VCF; per the ROADMAP's
-      "Index generation" out-of-scope note, read-only is
-      recommended for v1.
 - [ ] **Tabix / CSI generation.** Both are *generated* from
       sorted, indexed input. Confirm read-only-for-v1 like BAI.
-- [ ] **Shared `index/` extraction.** With BCF + Tabix + CSI +
-      BAI = 4 consumers, the threshold for extraction has
-      passed; we can extract a `bimodal` helper (BGZF
-      seek + 16-bit-interval bins) once Tier 3 is fully
-      designed. Defer until at least one of the three is
-      implemented.
+- [ ] **Shared `index/` extraction.** With Tabix + CSI + BAI =
+      3 consumers, the ≥3-package threshold has passed; we can
+      extract a `bimodal` helper (BGZF seek + 16-bit-interval
+      bins) once Tier 3 is fully designed. Defer until at least
+      one of the three is implemented.
 
 ## Anti-patterns we have learned to avoid
 
