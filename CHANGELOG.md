@@ -11,6 +11,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.9.1] — 2026-10-18
+
+This patch release closes the last open item from the
+v0.9.0 spec-compliance plan: T1.3 (`##META` Values
+enforcement). It is a strict-mode warning that fires
+when a `##SAMPLE` field whose key matches a `##META` ID
+that declared a `Values=[...]` list uses a value outside
+that list. v0.9.0 marked T1.3 as deferred; this release
+adds the check.
+
+### Added — header
+
+- **`##META` Values enforcement** (`9e7dc91`). The
+  parser now recognises `##META` as a structured line
+  with its own typed schema (`MetaDef{ID, Type,
+  Number, Values}`); the structured-body splitter
+  tracks bracket depth so that commas inside
+  `[Values=[a,b,c]]` don't split fields. The validator
+  fires a `SeverityWarning` in ModeStrict when a
+  `##SAMPLE` field value is outside the declared list.
+  ModeDefault skips the check to avoid surprising
+  callers.
+
 ## [0.9.0] — 2026-10-18
 
 This release finishes the VCF v4.5 spec-compliance work
@@ -468,7 +491,8 @@ follow-up if/when needed.
 [0.7.0]: https://github.com/inful/htsfile/compare/v0.6.0...v0.7.0
 [0.8.0]: https://github.com/inful/htsfile/compare/v0.7.0...v0.8.0
 [0.9.0]: https://github.com/inful/htsfile/compare/v0.8.0...v0.9.0
-[Unreleased]: https://github.com/inful/htsfile/compare/v0.9.0...HEAD
+[0.9.1]: https://github.com/inful/htsfile/compare/v0.9.0...v0.9.1
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.9.1...HEAD
 
 ## [0.4.0] — 2026-10-18
 
