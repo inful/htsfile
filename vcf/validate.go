@@ -1008,6 +1008,17 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 			})
 		}
 
+		// FT per-sample filter must not contain whitespace
+		// or semicolons (VCFv4.5 §1.6.2 FT field: "No
+		// whitespace or semicolons permitted").
+		for _, tok := range ftBadTokens(g) {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/FT/sample[%d]", sIdx),
+				Msg:   fmt.Sprintf("FT token %q must not contain whitespace or ';'", tok),
+			})
+		}
+
 		// GT structural checks (separator consistency, allele
 		// index range) — emit one issue per problem so the
 		// caller can see all errors at once.
@@ -1302,6 +1313,22 @@ func hasPSandPSL(g Genotype) bool {
 	}
 	pslFV, hasPSL := g.Fields["PSL"]
 	return hasPSL && !pslFV.empty()
+}
+
+// ftBadTokens returns the FT tokens on this sample that
+// contain whitespace or semicolons (VCFv4.5 §1.6.2 FT).
+func ftBadTokens(g Genotype) []string {
+	fv, ok := g.Fields["FT"]
+	if !ok || fv.Missing {
+		return nil
+	}
+	var bad []string
+	for _, tok := range fv.Strs {
+		if strings.ContainsAny(tok, " \t\n;") {
+			bad = append(bad, tok)
+		}
+	}
+	return bad
 }
 
 // localAlleleKeys lists the FORMAT keys that depend on

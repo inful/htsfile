@@ -971,6 +971,50 @@ func TestValidator_CNVAllelesShareSVLENWhenFormatCN(t *testing.T) {
 	}
 }
 
+func TestValidator_FTNoWhitespaceOrSemicolons(t *testing.T) {
+	// Per VCFv4.5 §1.6.2 (FT field): "No whitespace or
+	// semicolons permitted." A per-sample check fires
+	// when an FT token contains a space, tab, newline,
+	// or semicolon.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=FT,Number=1,Type=String,Description=\"f\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, sample string
+		want         bool
+	}{
+		{"clean", "0/1:PASS", false},
+		{"space inside token", "0/1:q 10", true},
+		{"semicolon inside token", "0/1:q10;s50", true},
+		{"multiple tokens one bad", "0/1:PASS,q 10", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC\t.\t.\t.\tGT:FT\t" + c.sample + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if iss.Field == "FORMAT/FT/sample[0]" {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("sample=%q: found=%v, want %v; issues=%+v", c.sample, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_CNVTRRequiresRUSorRUL(t *testing.T) {
 	// Per VCFv4.5 §"Representing tandem repeats":
 	// "RUS or RUL must be specified for each <CNV:TR>."
