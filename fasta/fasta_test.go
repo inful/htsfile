@@ -276,3 +276,78 @@ func TestReference_LowercaseBases(t *testing.T) {
 		t.Errorf("chr1:2 = %q, want c (lowercase, as stored)", b)
 	}
 }
+
+func TestReference_BaseRange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	const content = ">chr1\nACGTACGTACGTACGT\n>chr2\nGATTACAGATTACA\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	cases := []struct {
+		chrom    string
+		start    int
+		end      int
+		wantStr  string
+	}{
+		{"chr1", 1, 5, "ACGT"},   // positions 1-4
+		{"chr1", 5, 9, "ACGT"},   // cross-line, positions 5-8
+		{"chr1", 1, 17, "ACGTACGTACGTACGT"}, // whole chr1
+		{"chr2", 1, 8, "GATTACA"}, // first line, 7 bases
+		{"chr2", 7, 15, "AGATTACA"}, // cross-line, positions 7-14
+	}
+	for _, c := range cases {
+		got, err := ref.BaseRange(c.chrom, c.start, c.end)
+		if err != nil {
+			t.Errorf("%s:%d-%d: %v", c.chrom, c.start, c.end, err)
+			continue
+		}
+		if string(got) != c.wantStr {
+			t.Errorf("%s:%d-%d = %q, want %q", c.chrom, c.start, c.end, got, c.wantStr)
+		}
+	}
+}
+
+func TestReference_BaseRange_OutOfRange(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(path, []byte(">chr1\nACGT\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	if _, err := ref.BaseRange("chr1", 1, 100); err == nil {
+		t.Errorf("expected error for out-of-range BaseRange")
+	}
+}
+
+func TestReference_BaseRange_AcrossCommentLine(t *testing.T) {
+	// The scanned path must correctly skip the comment
+	// line when computing a range that straddles it.
+	dir := t.TempDir()
+	path := filepath.Join(dir, "ref.fa")
+	const content = ">chr1\nACGT\n; a comment\nACGT\n"
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	ref, err := Open(path)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+	got, err := ref.BaseRange("chr1", 1, 9)
+	if err != nil {
+		t.Fatalf("BaseRange: %v", err)
+	}
+	if string(got) != "ACGTACGT" {
+		t.Errorf("BaseRange(1, 9) = %q, want ACGTACGT (8 bases, comment skipped)", got)
+	}
+}

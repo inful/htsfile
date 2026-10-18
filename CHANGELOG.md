@@ -11,6 +11,48 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.11.0] — 2026-10-18
+
+This release replaces the single-base REF padding
+check (v0.10.0) with a full-REF match against the
+reference, plus adds an efficient multi-base lookup
+to the `fasta` package. The new check strictly
+subsumes the old one and adds three new error classes:
+wrong contig, wrong POS, and undeclared IUPAC codes.
+
+### Added — fasta
+
+- **`(*Reference).BaseRange(chrom, start, end)`**
+  (`1ba3d28`). Half-open range lookup returning the
+  bases at 1-based positions `start` through `end-1`.
+  Uses a single forward scan instead of N independent
+  BaseAt calls. Three new tests cover normal use,
+  out-of-range, and across-comment-line.
+
+### Changed — vcf validator
+
+- **`Validator.WithReference` now performs full-REF
+  matching** (`1ba3d28`). For every byte of REF,
+  the validator compares it against the corresponding
+  reference base at `POS+i`. One SeverityError per
+  mismatch; lookup failure degrades to SeverityWarning
+  in ModeStrict, skipped in ModeDefault. This catches:
+  - Wrong contig (REF[0] doesn't match ref[POS]).
+  - Wrong POS (off-by-one or larger).
+  - Transcription errors anywhere in REF.
+  - Undeclared IUPAC codes that didn't reduce correctly.
+  - Multi-base substitution REF mismatches.
+
+  The previous single-base padding check
+  (`checkPaddingBase`) is removed; the new check
+  strictly subsumes it.
+
+### Removed
+
+- **`checkPaddingBase` and `needsPadding`** in
+  `vcf/validate.go`. The full-REF check is the single
+  reference-aware REF validator.
+
 ## [0.10.0] — 2026-10-18
 
 This release adds a top-level `fasta` package and uses

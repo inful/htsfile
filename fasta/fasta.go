@@ -168,27 +168,20 @@ func (r *Reference) BaseAt(chrom string, pos int) (byte, error) {
 	br := bufio.NewReader(r.file)
 	seen := int64(0)
 	for {
-		// Find the next '>' or EOF to bound this read;
-		// we scan line by line.
 		line, err := br.ReadString('\n')
 		if err != nil && err != io.EOF {
 			return 0, err
 		}
 		stripped := strings.TrimRight(line, "\r\n")
 		if stripped == "" || strings.HasPrefix(stripped, ";") || strings.HasPrefix(stripped, ">") {
-			// End of this contig or comment line.
 			if err == io.EOF {
 				break
 			}
 			if strings.HasPrefix(stripped, ">") {
-				// Hit the next contig's header
-				// without finding the target — out
-				// of range.
 				return 0, fmt.Errorf("fasta: %s:%d not found (file may be truncated)", chrom, pos)
 			}
 			continue
 		}
-		// Walk through the line, counting bases.
 		for i := 0; i < len(stripped); i++ {
 			c := stripped[i]
 			if c == ' ' || c == '\t' || c == '*' {
@@ -207,6 +200,106 @@ func (r *Reference) BaseAt(chrom string, pos int) (byte, error) {
 		}
 	}
 	return 0, fmt.Errorf("fasta: %s:%d past contig length %d", chrom, pos, e.Length)
+}
+
+// BaseRange returns the bases at 1-based positions start
+// through end-1 (inclusive of start, exclusive of end) as
+// a byte slice of length end-start. Returns an error if
+// chrom is unknown, the range is out of bounds, or the
+// file cannot be read.
+//
+// BaseRange is more efficient than calling [BaseAt] in a
+// loop because it does a single forward scan instead of
+// N independent seeks + scans. The two paths use the same
+// correctness machinery as BaseAt: skip spaces, tabs,
+// asterisks, and digits in the scanned path; trust the
+// .fai layout in the indexed path.
+func (r *Reference) BaseRange(chrom string, start, end int) ([]byte, error) {
+	if start < 1 {
+		return nil, fmt.Errorf("fasta: start %d is 0-based; use 1-based", start)
+	}
+	if end <= start {
+		return nil, fmt.Errorf("fasta: range end %d must be > start %d", end, start)
+	}
+	if !r.loaded {
+		if err := r.initIndex(); err != nil {
+			return nil, err
+		}
+	}
+	e, ok := r.fai[chrom]
+	if !ok {
+		return nil, fmt.Errorf("fasta: contig %q not found", chrom)
+	}
+	if int64(end-1) > e.Length {
+		return nil, fmt.Errorf("fasta: %s:%d past contig length %d", chrom, end-1, e.Length)
+	}
+	wantLen := end - start
+	if len(e.lineOffsets) == 0 {
+		// .fai path: each base is one byte on disk.
+		off := e.Offset + int64(start-1)
+		if _, err := r.file.Seek(off, io.SeekStart); err != nil {
+			return nil, err
+		}
+		buf := make([]byte, wantLen)
+		n, err := io.ReadFull(r.file, buf)
+		if err != nil {
+			return nil, err
+		}
+		if n != wantLen {
+			return nil, fmt.Errorf("fasta: short read for %s:%d-%d", chrom, start, end-1)
+		}
+		for _, b := range buf {
+			if b == '\n' || b == '\r' {
+				return nil, fmt.Errorf("fasta: unexpected newline in %s:%d-%d (file truncated?)", chrom, start, end-1)
+			}
+		}
+		return buf, nil
+	}
+	// Scanned path: scan forward from first-base offset.
+	if _, err := r.file.Seek(e.Offset, io.SeekStart); err != nil {
+		return nil, err
+	}
+	br := bufio.NewReader(r.file)
+	seen := int64(0)
+	out := make([]byte, 0, wantLen)
+	targetStart := int64(start - 1)
+	targetEnd := int64(end - 1)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil && err != io.EOF {
+			return nil, err
+		}
+		stripped := strings.TrimRight(line, "\r\n")
+		if stripped == "" || strings.HasPrefix(stripped, ";") || strings.HasPrefix(stripped, ">") {
+			if err == io.EOF {
+				break
+			}
+			if strings.HasPrefix(stripped, ">") {
+				return nil, fmt.Errorf("fasta: %s:%d-%d not found (file may be truncated)", chrom, start, end-1)
+			}
+			continue
+		}
+		for i := 0; i < len(stripped); i++ {
+			c := stripped[i]
+			if c == ' ' || c == '\t' || c == '*' {
+				continue
+			}
+			if c >= '0' && c <= '9' {
+				continue
+			}
+			if seen >= targetStart && seen < targetEnd {
+				out = append(out, c)
+			}
+			seen++
+			if seen >= targetEnd {
+				return out, nil
+			}
+		}
+		if err == io.EOF {
+			break
+		}
+	}
+	return nil, fmt.Errorf("fasta: %s:%d-%d past contig length %d", chrom, start, end-1, e.Length)
 }
 
 // stripIgnoredChars returns the sequence line with the

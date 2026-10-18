@@ -774,10 +774,11 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 	}
 }
 
-func TestValidator_PaddingBaseWithReference(t *testing.T) {
-	// Per VCFv4.5 §1.6.1.1: for indels (and symbolic
-	// ALTs), REF[0] must match the reference base at
-	// POS-1 (or POS when POS=1).
+func TestValidator_FullRefMatchesReference(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.1: REF must match the reference
+	// base by base. The full-REF check (v0.11.0) replaces
+	// the older single-base padding check and strictly
+	// subsumes it.
 	refText := ">chr1\nACGTACGTACGTACGT\n"
 	dir := t.TempDir()
 	refPath := filepath.Join(dir, "ref.fa")
@@ -797,25 +798,33 @@ func TestValidator_PaddingBaseWithReference(t *testing.T) {
 		name, line string
 		want       bool
 	}{
-		// Insertion at pos 3 (G + insert X). REF="G"
-		// is the padding base at pos 3 (=ref[3]='G').
-		{"Insertion right padding", "chr1\t3\t.\tG\tGX\t.\t.\t.", false},
-		// Insertion at pos 3 with WRONG padding base
-		// (REF[0]='A' should be 'G'). Error.
-		{"Insertion wrong padding", "chr1\t3\t.\tA\tAX\t.\t.\t.", true},
-		// Deletion of pos 4..5: REF="TA", ALT="T".
-		// REF[0]='T' matches ref[4]='T'.
-		{"Deletion right padding", "chr1\t4\t.\tTA\tT\t.\t.\t.", false},
-		// SNV: REF and ALT both 1 base. Padding NOT
-		// required by §1.6.1.1 — even a wrong base
-		// here is allowed.
-		{"SNV no padding required", "chr1\t3\t.\tA\tT\t.\t.\t.", false},
-		// Symbolic <DEL> at pos 2: REF="C", REF[0]='C'
-		// matches ref[2]='C'. (Symbolic requires
-		// padding.)
-		{"Symbolic right padding", "chr1\t2\t.\tCG\t<DEL>\t.\t.\t.", false},
-		// Unknown contig: warning, not error.
-		{"Unknown contig", "chrX\t3\t.\tG\tGX\t.\t.\t.", false},
+		// SNV at pos 3: REF="G" matches ref[3]='G'.
+		{"SNV ok", "chr1\t3\t.\tG\tA\t.\t.\t.", false},
+		// SNV with wrong REF: ref[3]='G' but REF="T".
+		// Fires — the full check catches this where the
+		// old padding check would not.
+		{"SNV REF mismatch", "chr1\t3\t.\tT\tA\t.\t.\t.", true},
+		// Insertion at pos 3: REF="G" matches ref[3]='G'.
+		{"Insertion right", "chr1\t3\t.\tG\tGX\t.\t.\t.", false},
+		// Insertion with wrong padding: REF="A" but
+		// ref[3]='G'.
+		{"Insertion wrong", "chr1\t3\t.\tA\tAX\t.\t.\t.", true},
+		// Deletion of pos 4..5: REF="TA", REF[0]='T'
+		// matches ref[4]='T' and REF[1]='A' matches
+		// ref[5]='A'.
+		{"Deletion ok", "chr1\t4\t.\tTA\tT\t.\t.\t.", false},
+		// Deletion with one base wrong: REF="TA" but
+		// REF[1] should be 'A'. ref[5]='A' so this
+		// passes. Use REF="TG" to make REF[1]='G'
+		// mismatch ref[5]='A'.
+		{"Deletion REF mismatch", "chr1\t4\t.\tTG\tT\t.\t.\t.", true},
+		// Multi-base substitution at pos 3..4: REF="GT"
+		// matches ref[3..5]='GT'.
+		{"Substitution ok", "chr1\t3\t.\tGT\tAC\t.\t.\t.", false},
+		// Wrong contig: warning, not error.
+		{"Unknown contig", "chrX\t3\t.\tG\tA\t.\t.\t.", false},
+		// Symbolic <DEL> at pos 2 with wrong padding.
+		{"Symbolic REF mismatch", "chr1\t2\t.\tAG\t<DEL>\t.\t.\t.", true},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -832,7 +841,7 @@ func TestValidator_PaddingBaseWithReference(t *testing.T) {
 			issues := v.Validate(h, []*Record{rec})
 			found := false
 			for _, iss := range issues {
-				if strings.Contains(iss.Msg, "padding base") {
+				if strings.Contains(iss.Msg, "does not match reference base") {
 					found = true
 					break
 				}
@@ -845,15 +854,15 @@ func TestValidator_PaddingBaseWithReference(t *testing.T) {
 }
 
 func TestValidator_NoReference_NoCheck(t *testing.T) {
-	// Without a reference attached, no padding check fires.
+	// Without a reference attached, no full-REF check fires.
 	hdr := "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
 	dec := NewDecoder(strings.NewReader(hdr + "chr1\t2\t.\tC\tT\t.\t.\t.\n"))
 	h, _ := dec.Header()
 	rec, _ := dec.Record()
 	issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
 	for _, iss := range issues {
-		if strings.Contains(iss.Msg, "padding base") {
-			t.Errorf("unexpected padding check without reference: %+v", iss)
+		if strings.Contains(iss.Msg, "does not match reference base") {
+			t.Errorf("unexpected full-REF check without reference: %+v", iss)
 		}
 	}
 }

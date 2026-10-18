@@ -631,6 +631,50 @@ The offset is the byte position of the first base
 
 **Status:** ✅ (v0.10.0)
 
+### T4.4 — Full REF match against reference (§1.6.1.1, supersedes v0.10.0)
+
+**Spec (§1.6.1.1):**
+
+> the REF and ALT Strings must include the base
+> before the variant (which must be reflected in
+> the POS field)
+
+**Scope:** per-record, conditioned on a FASTA
+reference being attached. For every byte `i` of
+REF, the validator compares `REF[i]` against
+`ref[POS+i]`. One SeverityError per mismatch.
+
+**Where:**
+- `fasta/fasta.go`: new `(*Reference).BaseRange` for
+  efficient multi-base lookup.
+- `vcf/validate.go`: `checkRefMatchesReference`
+  replaces the v0.10.0 single-base
+  `checkPaddingBase`. The call site in `checkRecord`
+  is a one-liner; no `needsPadding` gate (the full
+  check fires for any non-empty REF).
+
+**Acceptance:**
+- SNV `REF="G" ALT="A"` at `POS=3` against
+  `ref[3]="G"` passes.
+- SNV `REF="T" ALT="A"` at `POS=3` against
+  `ref[3]="G"` fires (REF mismatch). The v0.10.0
+  padding check would NOT have caught this; the new
+  full check does.
+- Insertion at `POS=3` `REF="G" ALT="GX"` against
+  `ref[3]="G"` passes.
+- Multi-base substitution at `POS=3` `REF="GT"
+  ALT="AC"` against `ref[3..5]="GT"` passes.
+- Symbolic `<DEL>` at `POS=2` with `REF="AG"` against
+  `ref[2]="A"`, `ref[3]="G"` passes.
+- Unknown contig or out-of-range position degrades
+  to SeverityWarning (skipped in ModeDefault).
+
+**Notes:** `BaseRange` is one forward scan instead of
+N independent seeks; it correctly skips comment
+lines and internal whitespace in the scanned path.
+
+**Status:** ✅ (v0.11.0)
+
 ---
 
 ## Quick index — by spec section
