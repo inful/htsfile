@@ -7,7 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Added
+## [0.3.0] — 2026-10-18
+
+This release builds on the v0.2.0 baseline by adding the
+FASTQ format (the first Tier 4 item) and bringing the
+codebase into gofmt compliance.
 
 - **FASTQ format support.** A new `fastq` package
   (`github.com/inful/htsfile/fastq`) implements parsing,
@@ -43,6 +47,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   column-alignment drift in struct literals). Both the
   CI `gofmt -l` check and `golangci-lint run ./...` now
   pass on a clean checkout.
+
+[0.3.0]: https://github.com/inful/htsfile/compare/v0.2.0...v0.3.0
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.3.0...HEAD
 
 ## [0.2.0] — 2026-10-18
 
