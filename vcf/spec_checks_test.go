@@ -922,6 +922,53 @@ func TestValidator_ENDMatchesComputed(t *testing.T) {
 	}
 }
 
+func TestValidator_MEINFOMETRANSCardinality(t *testing.T) {
+	// VCFv4.5 §1.6.1.7: MEINFO and METRANS each contain
+	// 4 entries per ALT allele (NAME, START, END,
+	// POLARITY).
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=MEINFO,Number=.,Type=String,Description=\"x\">\n" +
+		"##INFO=<ID=METRANS,Number=.,Type=String,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, info string
+		want       bool
+	}{
+		{"biallelic MEINFO 8 ok", "MEINFO=AluY,100,200,+,SVA,300,400,-", false},
+		{"biallelic MEINFO wrong", "MEINFO=AluY,100,200,+", true},
+		{"biallelic METRANS 8 ok", "METRANS=chr1,100,200,+,chr2,300,400,-", false},
+		{"single alt MEINFO 4 ok", "MEINFO=AluY,100,200,+", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			alt := "C,G"
+			if c.name == "single alt MEINFO 4 ok" {
+				alt = "C"
+			}
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t" + alt + "\t.\t.\t" + c.info + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "must contain exactly") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("info=%q alt=%s: found=%v, want %v; issues=%+v", c.info, alt, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_NumberGKeysMustHaveFloatOrInteger(t *testing.T) {
 	// PL, GL, GP all use Number=G. The Type must be
 	// Integer for PL and Float for GL/GP. Declaring

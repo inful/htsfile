@@ -539,6 +539,19 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 				}
 			}
 		}
+
+		// MEINFO / METRANS: 4 entries per ALT allele
+		// (VCFv4.5 §1.6.1.7).
+		if key == "MEINFO" || key == "METRANS" {
+			if len(val.Strs) > 0 && len(val.Strs) != 4*altCount {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "INFO/" + key,
+					Msg: fmt.Sprintf("%s must contain exactly %d entries (4 * %d ALT alleles); got %d",
+						key, 4*altCount, altCount, len(val.Strs)),
+				})
+			}
+		}
 	}
 	return issues
 }
