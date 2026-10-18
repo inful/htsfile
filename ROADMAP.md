@@ -9,16 +9,18 @@ document tracks the planned expansion to additional formats from
 the [samtools/hts-specs](https://samtools.github.io/hts-specs/) family
 and adjacent bioinformatics formats.
 
-> **Where to continue from this point in a new session:** Tier 3
-> is now complete (BCF v1 read-only + Tabix + CSI, both
-> read-only). The next move is to land Tier 3 sub-tier 3B
-> (Tabix + CSI) if not already done, then move to Tier 4
-> (CRAM v3, htsget/refget, crypt4gh, FASTQ). The index
-> generation question (writers for BCF / Tabix / CSI) is
-> flagged under open decisions and should be resolved before
-> any "v1.3" release that ships those writers. The roadmap is
-> up to date as of the latest commit on `main`. See the
-> [CHANGELOG](CHANGELOG.md) for what just landed and
+> **Where to continue from this point in a new session:**
+> Tiers 1–3 are complete (SAM v1, BAM v1, GFF3, FASTA, BCF
+> v2.1 read-only, Tabix v1 read-only, CSI v1 read-only).
+> Tier 4 work has begun: FASTQ v1 has shipped (parser,
+> writer, validator, CLI integration). The remaining Tier 4
+> items are CRAM v3 (now unblocked since BAM is stable),
+> htsget/refget (separate module if at all), and crypt4gh.
+> The index-generation question (writers for BCF / Tabix /
+> CSI) is still flagged under open decisions and should be
+> resolved before any release that ships those writers. The
+> roadmap is up to date as of the latest commit on `main`.
+> See the [CHANGELOG](CHANGELOG.md) for what just landed and
 > `git log --oneline` for the commit history.
 
 ## Design principles

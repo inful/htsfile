@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **FASTQ format support.** A new `fastq` package
+  (`github.com/inful/htsfile/fastq`) implements parsing,
+  writing, and validation for the FASTQ short-read
+  sequencing format. Streaming `Decoder` plus a per-record
+  `Validator` with `ModeDefault` (non-empty header,
+  non-empty sequence, sequence and quality same length,
+  every quality byte ≥ PhredOffset) and `ModeStrict` (the
+  default checks plus IUPAC nucleotide alphabet validation
+  for the sequence). Round-trippable `Encoder` with LF or
+  CR+LF output.
+
+  Records carry `Header`, `Seq`, `PlusLine`, `Qual`, and a
+  per-record `PhredOffset` (33 for Sanger / Illumina 1.8+,
+  64 for older Illumina 1.3–1.7). The Decoder auto-detects
+  the offset from the first record's quality bytes
+  (`SetPhredOffset` disables detection for callers with
+  non-standard data). Solexa Solexa+64 is not supported in
+  v1.
+
+  The `cmd/htsfile` CLI auto-dispatches by extension
+  (`.fq`, `.fastq`) and sniffs the first three lines for
+  stdin / unknown extensions (a `@`-prefixed header line
+  followed by a sequence line and a `+` line). All three
+  subcommands — `check`, `roundtrip`, `summary` — work
+  for FASTQ.
+
+### Style
+
+- **gofmt across the codebase.** Applied `gofmt -w` to the
+  existing source tree. Pre-commit, 44 files were
+  gofmt-dirty (mostly missing trailing newlines; some
+  column-alignment drift in struct literals). Both the
+  CI `gofmt -l` check and `golangci-lint run ./...` now
+  pass on a clean checkout.
+
 ## [0.2.0] — 2026-10-18
 
 This release builds on the v0.1.0 baseline by adding three

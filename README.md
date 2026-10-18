@@ -15,12 +15,13 @@ the Sequence Ontology:
 - **BAM v1** — Binary SAM (BGZF-compressed) with read-only BAI index reader
 - **GFF3** — Generic Feature Format Version 3 (9 columns + free-form attributes)
 - **FASTA** — Sequence records (`>` header + multi-line sequence); read-only `.fai` index reader
+- **FASTQ** — Short-read sequencing records (`@` header + sequence + `+` + qualities), with Phred+33 / Phred+64 auto-detection
 - **BCF v2.1** — Binary VCF (BGZF-compressed). **Read-only** in v1.
 - **Tabix v1** — Generic position index for sorted bgzipped files. **Read-only** in v1.
 - **CSI v1** — Coordinate-sorted index (successor to Tabix). **Read-only** in v1.
 
-See [ROADMAP.md](ROADMAP.md) for the planned expansion (full
-FASTQ → SAM/VCF converters, CRAM v3, etc.).
+See [ROADMAP.md](ROADMAP.md) for the planned expansion (CRAM v3,
+htsget/refget, crypt4gh, etc.).
 
 The implementation aims to be:
 
@@ -243,8 +244,8 @@ CSI is the safer choice.
 A small command-line tool ships in `cmd/htsfile`. Format is
 auto-detected from the file extension (`.vcf`, `.bed`, `.sam`,
 `.bam`, `.gff`, `.gff3`, `.fa`, `.fasta`, `.fna`, `.ffn`,
-`.faa`, `.bcf`, `.tbi`, `.csi`); for stdin (`-`) or unknown
-extensions, the first non-empty line is sniffed
+`.faa`, `.fq`, `.fastq`, `.bcf`, `.tbi`, `.csi`); for stdin
+(`-`) or unknown extensions, the first non-empty line is sniffed
 (`##fileformat` → VCF; `track`, `browser`, or a tab-separated
 `chrom\tstart\tend` triple → BED; `@HD` or an 11-column
 tab-separated record with integer FLAG/MAPQ → SAM; the
@@ -252,8 +253,9 @@ gzip+FEXTRA prefix → BAM (this also matches BCF's outer
 wrapper — use the `.bcf` extension to disambiguate; BCF is
 not auto-sniffed from stdin); `##gff-version` or a 9-column
 tab-separated feature line → GFF3; a `>` header line →
-FASTA. Tabix (`.tbi`) and CSI (`.csi`) are not sniffed — use
-the extension.
+FASTA; a `@` header line followed by a sequence line and a
+`+` line → FASTQ. Tabix (`.tbi`) and CSI (`.csi`) are not
+sniffed — use the extension.
 
 ```sh
 # Validate a file
@@ -265,6 +267,7 @@ htsfile check reads.sam                   # SAM is auto-detected by extension
 htsfile check aligned.bam                 # BAM is auto-detected by extension
 htsfile check genes.gff3                  # GFF3 is auto-detected by extension
 htsfile check sequences.fa                # FASTA is auto-detected by extension
+htsfile check reads.fq                    # FASTQ is auto-detected by extension
 htsfile check sample.bcf                  # BCF is auto-detected by extension
 htsfile check sample.bcf.tbi              # Tabix index (.tbi) by extension
 htsfile check sample.bcf.csi              # CSI index (.csi) by extension
@@ -378,6 +381,19 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | `.fai` index reader (`fasta/fai`, read-only) | ✅ |
 | `.fai` index generation                |   ❌   |
 | Multi-sequence FASTA (multi-FASTA, .mfa) | ❌  |
+
+### fastq/ package (FASTQ v1)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| `@` header + sequence + `+` + qualities records | ✅ |
+| Quality bytes preserved verbatim        | ✅ |
+| Round-trippable encoder (LF / CR+LF)    | ✅ |
+| `ModeDefault` and `ModeStrict` validators (strict = IUPAC alphabet) | ✅ |
+| Phred+33 / Phred+64 auto-detection (first record) | ✅ |
+| Manual offset override via `SetPhredOffset` | ✅ |
+| Per-record `PhredOffset` carried on Record | ✅ |
+| Solexa Solexa+64 encoding support    |   ❌  |
 
 ### bcf/ package (BCF v2.1)
 
