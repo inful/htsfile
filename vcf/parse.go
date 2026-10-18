@@ -793,6 +793,15 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 	altStr := string(fields[4])
 	if altStr != "." {
 		rec.Alt = splitAlleles(altStr)
+		// <NON_REF> is an alias for <*> (per VCFv4.5
+		// §1.7, "Representing unspecified alleles") for
+		// gVCF backwards compatibility. Normalise so
+		// downstream code only sees the canonical form.
+		for i, a := range rec.Alt {
+			if a == "<NON_REF>" {
+				rec.Alt[i] = "<*>"
+			}
+		}
 	}
 
 	// QUAL (col 6)

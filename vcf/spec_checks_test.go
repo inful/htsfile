@@ -720,6 +720,27 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 	}
 }
 
+func TestParser_NonRefAlias(t *testing.T) {
+	// VCFv4.5 §1.7: <NON_REF> is an alias for <*> for
+	// gVCF backwards compatibility. The parser must
+	// normalise the alias to <*> so downstream code
+	// only sees the canonical form.
+	src := "##fileformat=VCFv4.2\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+		"chr1\t100\t.\tG\t<NON_REF>\t.\t.\t.\n"
+	dec := NewDecoder(strings.NewReader(src))
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if len(rec.Alt) != 1 || rec.Alt[0] != "<*>" {
+		t.Errorf("rec.Alt = %q, want [\"<*>\"]", rec.Alt)
+	}
+}
+
 func TestValidator_ENDMatchesComputed(t *testing.T) {
 	// END is a computed field per VCFv4.5 §1.6.1.6. When
 	// declared, the value must match the computed END
