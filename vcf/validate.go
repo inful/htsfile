@@ -714,23 +714,11 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 				})
 			}
 		}
-		// LAA value range: 1-based indices into ALT. The
-		// spec says LAA must be distinct integers in
-		// [1, len(ALT)]. We do not check distinctness here
-		// because the spec also says "n distinct integers"
-		// and most callers benefit from a separate report.
+		// LAA value range and distinctness (per VCFv4.5
+		// §1.6.1.4). LAA must be distinct 1-based indices
+		// into ALT.
 		if v, ok := g.Fields["LAA"]; ok && !v.Missing {
-			nAlts := int64(len(rec.Alt))
-			for i, n := range v.Ints {
-				if n < 1 || n > nAlts {
-					issues = append(issues, ValidationError{
-						Severity: SeverityError, Record: idx + 1, Line: line,
-						Field: fmt.Sprintf("FORMAT/LAA/sample[%d]", sIdx),
-						Msg: fmt.Sprintf("LAA[%d]=%d is out of range (must be a 1-based ALT index in [1, %d])",
-							i, n, nAlts),
-					})
-				}
-			}
+			issues = append(issues, checkLAA(&v, rec, idx, sIdx, line)...)
 		}
 
 		// Determine the last present FORMAT index for this sample — keys
@@ -963,6 +951,39 @@ func validTypedValue(t FieldType, s string) bool {
 		return true
 	}
 	return true
+}
+
+// checkLAA validates a sample's LAA field. Per VCFv4.5
+// §1.6.1.4, LAA is a list of 1-based indices into ALT and
+// the values must be distinct.
+func checkLAA(vv *FieldValue, rec *Record, idx, sIdx, line int) []ValidationError {
+	if len(vv.Ints) == 0 {
+		return nil
+	}
+	nAlts := int64(len(rec.Alt))
+	var issues []ValidationError
+	seen := make(map[int64]int, len(vv.Ints))
+	for i, n := range vv.Ints {
+		if n < 1 || n > nAlts {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/LAA/sample[%d]", sIdx),
+				Msg: fmt.Sprintf("LAA[%d]=%d is out of range (must be a 1-based ALT index in [1, %d])",
+					i, n, nAlts),
+			})
+		}
+		if prev, dup := seen[n]; dup {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/LAA/sample[%d]", sIdx),
+				Msg: fmt.Sprintf("LAA[%d]=%d duplicates LAA[%d] (values must be distinct)",
+					i, n, prev),
+			})
+		} else {
+			seen[n] = i
+		}
+	}
+	return issues
 }
 
 // ploidyFromGT derives the per-sample ploidy from a GT string by counting

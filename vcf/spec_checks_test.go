@@ -580,3 +580,33 @@ func TestValidator_LAAValueRange(t *testing.T) {
 		}
 	}
 }
+
+func TestValidator_LAADistinctness(t *testing.T) {
+	// LAA values must be distinct. A duplicate fires a
+	// SeverityError.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=LAA,Number=.,Type=Integer,Description=\"local alleles\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC,G\t.\t.\t.\tGT:LAA\t0/1:1,1\n"))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+	found := false
+	for _, iss := range issues {
+		if iss.Field == "FORMAT/LAA/sample[0]" && strings.Contains(iss.Msg, "duplicates") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected LAA duplicate issue, got: %+v", issues)
+	}
+}
