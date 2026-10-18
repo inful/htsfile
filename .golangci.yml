@@ -104,6 +104,10 @@ linters:
       - path: bcf/cli_test\.go
         linters:
           - gosec
+      # And the FASTQ package's CLI smoke test (subprocess variable).
+      - path: fastq/cli_test\.go
+        linters:
+          - gosec
 
 run:
   timeout: 5m

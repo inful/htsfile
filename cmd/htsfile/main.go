@@ -1,26 +1,29 @@
 // Command htsfile is a small command-line interface over the
-// vcf, bed, sam, bam, gff, fasta, bcf, tabix, and csi packages.
+// vcf, bed, sam, bam, gff, fasta, fastq, bcf, tabix, and csi packages.
 //
 // Usage:
 //
-//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
-//	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam | file.gff[3] | file.fa[sta]
-//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
+//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.fq | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
+//	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam | file.gff[3] | file.fa[sta] | file.fq
+//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.fq | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
 //	htsfile version
 //
 // The format is auto-detected from the file extension (.vcf,
 // .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .fna, .ffn,
-// .faa, .bcf, .tbi, .csi). For stdin ("-") or unknown
-// extensions, the first non-empty line is sniffed: "##fileformat" → VCF;
+// .faa, .fq, .fastq, .bcf, .tbi, .csi). For stdin ("-") or
+// unknown extensions, the first non-empty line is sniffed:
+// "##fileformat" → VCF;
 // "track", "browser", or a tab-separated chrom/start/end
 // triple → BED; "@HD" or an 11-column tab-separated record
 // with integer FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM
 // (also matches BCF's outer wrapper — use the .bcf extension
 // to disambiguate); "##gff-version" or a 9-column
-// tab-separated feature line → GFF3; a ">" header line → FASTA.
-// BCF is not auto-sniffed from stdin (it shares its outer
-// BGZF container with BAM); use the .bcf extension. Tabix
-// (.tbi) and CSI (.csi) are not sniffed — use the extension.
+// tab-separated feature line → GFF3; a ">" header line → FASTA;
+// a "@" header line followed by a sequence line and a "+" line
+// → FASTQ. BCF is not auto-sniffed from stdin (it shares its
+// outer BGZF container with BAM); use the .bcf extension.
+// Tabix (.tbi) and CSI (.csi) are not sniffed — use the
+// extension.
 //
 // Subcommands:
 //
@@ -51,6 +54,7 @@ import (
 	"github.com/inful/htsfile/bed"
 	"github.com/inful/htsfile/csi"
 	"github.com/inful/htsfile/fasta"
+	"github.com/inful/htsfile/fastq"
 	"github.com/inful/htsfile/gff"
 	"github.com/inful/htsfile/sam"
 	"github.com/inful/htsfile/tabix"
@@ -80,6 +84,7 @@ const (
 	formatBAM
 	formatGFF
 	formatFASTA
+	formatFASTQ
 	formatBCF
 	formatTabix
 	formatCSI
@@ -99,6 +104,8 @@ func (f format) String() string {
 		return "GFF3"
 	case formatFASTA:
 		return "FASTA"
+	case formatFASTQ:
+		return "FASTQ"
 	case formatBCF:
 		return "BCF"
 	case formatTabix:
@@ -143,7 +150,7 @@ func main() {
 }
 
 func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|file.fa[sta]|file.bcf|file.tbi|file.csi|->
+	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|file.fa[sta]|file.fq|file.bcf|file.tbi|file.csi|->
 
 Commands:
   check       Validate the file. Exits non-zero if any errors are found.
@@ -153,7 +160,7 @@ Commands:
               --crlf       use CR+LF line endings
   summary     Print a summary of the file (header / column count / records).
 
-Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .bcf, .tbi, .csi). For
+Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .fq, .bcf, .tbi, .csi). For
 stdin ("-") or unknown extensions, the first non-empty line is sniffed.
 BAM v1, BCF v1, Tabix, and CSI are all read-only: the roundtrip subcommand
 does not support these formats. check and summary work for everything.`)
@@ -216,6 +223,12 @@ func detectFormat(path string) (format, io.Reader, error) {
 			return formatUnknown, nil, err
 		}
 		return formatFASTA, f, nil
+	case ".fq", ".fastq":
+		f, err := openFileOrStdin(path)
+		if err != nil {
+			return formatUnknown, nil, err
+		}
+		return formatFASTQ, f, nil
 	case ".bcf":
 		f, err := openFileOrStdin(path)
 		if err != nil {
@@ -294,6 +307,17 @@ func sniffFormat(path string) (format, io.Reader, error) {
 		if strings.HasPrefix(line, ">") {
 			return formatFASTA, br, nil
 		}
+		// FASTQ sniff is two-stage: the header line starts with
+		// '@' but must not be a SAM header tag (@HD/@SQ/@RG/
+		// @PG/@CO), and the third non-empty line must start
+		// with '+'. We look ahead from the current scanner
+		// position; the peek buffer (4 KiB) is enough for the
+		// first ~3 lines of any real-world record.
+		if strings.HasPrefix(line, "@") && !isSAMHeaderTag(line) {
+			if looksLikeFASTQ(scanNonBlankLines(scanner, 4)) {
+				return formatFASTQ, br, nil
+			}
+		}
 		// Tab-separated triple: BED.
 		fields := strings.Split(line, "\t")
 		if len(fields) >= 3 {
@@ -317,6 +341,44 @@ func sniffFormat(path string) (format, io.Reader, error) {
 	}
 	// Empty file: defer to VCF (will fail with a clear error).
 	return formatVCF, br, nil
+}
+
+// isSAMHeaderTag reports whether line begins with a known
+// SAM header tag (@HD, @SQ, @RG, @PG, @CO). The line is
+// assumed to be the first non-empty line of a sniffed file.
+func isSAMHeaderTag(line string) bool {
+	for _, tag := range []string{"@HD", "@SQ", "@RG", "@PG", "@CO"} {
+		if strings.HasPrefix(line, tag) {
+			return true
+		}
+	}
+	return false
+}
+
+// scanNonBlankLines reads up to max lines (skipping blanks)
+// from the scanner and returns them as a slice. Returns the
+// lines actually read (≤ max). Used by the FASTQ sniff.
+func scanNonBlankLines(scanner *bufio.Scanner, maxLines int) []string {
+	var out []string
+	for scanner.Scan() && len(out) < maxLines {
+		s := strings.TrimSpace(scanner.Text())
+		if s == "" {
+			continue
+		}
+		out = append(out, s)
+	}
+	return out
+}
+
+// looksLikeFASTQ reports whether lines (the next non-blank
+// lines after a '@' header) match the FASTQ shape: a sequence
+// line followed by a '+' separator.
+func looksLikeFASTQ(lines []string) bool {
+	// Need at least 3 lines: @header, sequence, +.
+	if len(lines) < 3 {
+		return false
+	}
+	return strings.HasPrefix(lines[2], "+")
 }
 
 // looksLikeGFF3Record reports whether fields look like a GFF3
@@ -600,6 +662,24 @@ func reportFromFASTA(in []fasta.Issue) []reportIssue {
 	return out
 }
 
+// reportFromFASTQ converts FASTQ issues to the shared shape.
+func reportFromFASTQ(in []fastq.Issue) []reportIssue {
+	out := make([]reportIssue, len(in))
+	for i, iss := range in {
+		s := reportWarning
+		if iss.Severity == fastq.SeverityError {
+			s = reportError
+		}
+		out[i] = reportIssue{
+			Line:     iss.Line,
+			Field:    iss.Field,
+			Severity: s,
+			Msg:      iss.Msg,
+		}
+	}
+	return out
+}
+
 // reportFromBCF converts BCF issues to the shared shape.
 func reportFromBCF(in []bcf.Issue) []reportIssue {
 	out := make([]reportIssue, len(in))
@@ -648,6 +728,8 @@ func runCheck(args []string) error {
 		return runCheckGFF(r, path, *strict, *warnings)
 	case formatFASTA:
 		return runCheckFASTA(r, path, *strict, *warnings)
+	case formatFASTQ:
+		return runCheckFASTQ(r, path, *strict, *warnings)
 	case formatBCF:
 		return runCheckBCF(r, path, *strict, *warnings)
 	case formatTabix:
@@ -777,6 +859,8 @@ func runRoundtrip(args []string) error {
 		return runRoundtripGFF(r, *crlf)
 	case formatFASTA:
 		return runRoundtripFASTA(r, *crlf)
+	case formatFASTQ:
+		return runRoundtripFASTQ(r, *crlf)
 	case formatBCF:
 		return runRoundtripBCF()
 	case formatTabix:
@@ -923,6 +1007,8 @@ func runSummary(args []string) error {
 		return runSummaryGFF(r, path)
 	case formatFASTA:
 		return runSummaryFASTA(r, path)
+	case formatFASTQ:
+		return runSummaryFASTQ(r, path)
 	case formatBCF:
 		return runSummaryBCF(r, path)
 	case formatTabix:
@@ -1358,6 +1444,98 @@ func runSummaryFASTA(f io.Reader, path string) error {
 	fmt.Fprintf(&b, "  records:    %d\n", nRec)
 	fmt.Fprintf(&b, "  bases:      %d\n", totalBases)
 	fmt.Fprintf(&b, "  unique IDs: %d\n", len(ids))
+	_, _ = fmt.Fprint(os.Stdout, b.String())
+	return nil
+}
+
+// runCheckFASTQ parses and validates a FASTQ file. The
+// FASTQ format has no header section, so the check is just
+// per-record validation against the typed rules.
+func runCheckFASTQ(f io.Reader, path string, strict, warnings bool) error {
+	mode := fastq.ModeDefault
+	if strict {
+		mode = fastq.ModeStrict
+	}
+	dec := fastq.NewDecoder(f)
+	var recs []*fastq.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	issues := fastq.NewValidator(mode).Validate(recs)
+	if len(issues) == 0 {
+		var totalBases int64
+		for _, r := range recs {
+			totalBases += int64(r.Length())
+		}
+		fmt.Printf("%s: clean (%d records, %d bases)\n", path, len(recs), totalBases)
+		return nil
+	}
+	return runIssueReport(path, reportFromFASTQ(issues), warnings)
+}
+
+// runRoundtripFASTQ parses a FASTQ file and re-emits it to
+// stdout. Sequence and quality are written verbatim; Phred
+// offset is preserved per-record by re-detecting on the first
+// record of the output stream.
+func runRoundtripFASTQ(f io.Reader, crlf bool) error {
+	dec := fastq.NewDecoder(f)
+	var recs []*fastq.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		recs = append(recs, rec)
+	}
+	var enc *fastq.Encoder
+	if crlf {
+		enc = fastq.NewEncoderCRLF(os.Stdout)
+	} else {
+		enc = fastq.NewEncoder(os.Stdout)
+	}
+	for _, rec := range recs {
+		if err := enc.EncodeRecord(rec); err != nil {
+			return fmt.Errorf("encode record: %w", err)
+		}
+	}
+	return enc.Flush()
+}
+
+// runSummaryFASTQ prints a summary of the FASTQ file.
+func runSummaryFASTQ(f io.Reader, path string) error {
+	dec := fastq.NewDecoder(f)
+	var nRec int
+	var totalBases int64
+	phredOffset := uint8(0)
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		nRec++
+		totalBases += int64(rec.Length())
+		if phredOffset == 0 {
+			phredOffset = rec.PhredOffset
+		}
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s\n", path)
+	fmt.Fprintf(&b, "  records:    %d\n", nRec)
+	fmt.Fprintf(&b, "  bases:      %d\n", totalBases)
+	fmt.Fprintf(&b, "  phred+%-3d\tdetected from first record\n", phredOffset)
 	_, _ = fmt.Fprint(os.Stdout, b.String())
 	return nil
 }
