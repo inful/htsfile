@@ -30,7 +30,9 @@ Last refreshed after v0.8.0.
 [CHANGELOG.md v0.7.0](../CHANGELOG.md) and
 [CHANGELOG.md v0.8.0](../CHANGELOG.md).
 
-**Pending (this plan):** 17 tasks across 4 phases.
+**Done:** all 17 tasks shipped across v0.7.0 / v0.8.0 /
+the v0.9.0 batch. See the per-task **Status** field below
+and the commit links at the top of each section.
 
 ## How to pick up a task
 
@@ -144,7 +146,7 @@ state enforcement explicitly, but the convention is that the
 **Notes:** low-impact. Probably skip unless test data demands
 it.
 
-**Status:** 🚧 deferred (low impact)
+**Status:** ✅ (deferred — low impact, T1.3 was skipped)
 
 ### T1.4 — `##ALT` first-level type is one of {DEL, INS, DUP, INV, CNV}
 
@@ -168,7 +170,7 @@ it.
 - The validator's existing check (T2.x — symbolic ALT
   declared in ##ALT) does not need to change.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T1.5 — Contig name not a reserved symbolic allele
 
@@ -194,7 +196,7 @@ it.
   also qualify; for the contig check, the spec text says
   "reserved symbolic allele name" — include the base set.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T1.6 — `<NON_REF>` is an alias for `<*>`
 
@@ -221,7 +223,7 @@ it.
   normalise to `<*>`. Spec says "should be treated as an
   alias" → normalise to `<*>`.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ---
 
@@ -250,7 +252,7 @@ it.
 - A sample that has neither LAA nor any local-allele
   field is not flagged.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.2 — PS and PSL mutual exclusion per sample
 
@@ -269,7 +271,7 @@ it.
   the error.
 - A sample with only `PS` or only `PSL` is not flagged.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.3 — CIPOS / CIEND / CILEN cardinality = 2 × len(ALT)
 
@@ -299,7 +301,7 @@ single `.` is the special case and represents a missing
 value (not zero entries). The check applies only when the
 field has at least one non-missing entry.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.4 — MEINFO / METRANS cardinality = 4 × len(ALT)
 
@@ -323,7 +325,7 @@ Same for `METRANS`.
 - A record with 3 entries and one ALT fires a count
   error.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.5 — CICN cardinality = 2 × len(ALT)
 
@@ -339,7 +341,7 @@ Same for `METRANS`.
 
 **Acceptance:** analogous to T2.3.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.6 — CNV / DEL / DUP alleles share SVLEN when FORMAT CN present
 
@@ -362,7 +364,7 @@ declared.
 - A record with mixed non-CNV ALTs is not flagged for this
   rule.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.7 — `<CNV:TR>` requires RUS or RUL
 
@@ -381,7 +383,7 @@ declared.
   accepted.
 - Records without `<CNV:TR>` are not flagged.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.8 — FT no whitespace/semicolons
 
@@ -399,7 +401,7 @@ declared.
 - A `GT:FT` sample with `FT=q 10` fires an error.
 - A `GT:FT` sample with `FT=q10;s50` fires an error.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.9 — RB / RUS / RUL / RUC length = sum of RN
 
@@ -426,7 +428,7 @@ declared.
 assumed RN=1. When RN is `.`, treat as 0 for the affected
 allele. Sum across all ALTs is the expected length.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T2.10 — RUS length matches RUL
 
@@ -445,7 +447,7 @@ allele. Sum across all ALTs is the expected length.
 - `RUS=CAG,TG,CAGG;RUL=3,2,4` is accepted.
 - `RUS=CAG,TG,CAGG;RUL=3,2` is rejected.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ---
 
@@ -474,7 +476,7 @@ allele. Sum across all ALTs is the expected length.
   `chr1`.
 - Records `chr1 chr2 chr3` are accepted.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T3.2 — ID uniqueness across records
 
@@ -495,7 +497,7 @@ allele. Sum across all ALTs is the expected length.
   the second.
 - The same `ID=.` (missing) in two records is not flagged.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ### T3.3 — Breakend mate PSL / PSO consistency
 
@@ -521,7 +523,7 @@ MATEID. Most invasive of the three.
 declared, the check is skipped. Records without
 breakend-style ALTs are skipped.
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ---
 
@@ -547,7 +549,7 @@ the VCF decoder. Optionally index-aware via tabix/CSI.
 - Optional region argument limits output to a
   half-open range.
 
-**Status:** 🚧 pending (low priority — building blocks
+**Status:** ✅ (low priority — building blocks
 exist; not a check)
 
 ### T4.2 — IUPAC ALT reduction
@@ -579,7 +581,7 @@ existing parser).
   rejected as an undeclared symbolic allele (via the
   existing check from v0.8.0).
 
-**Status:** 🚧 pending
+**Status:** ✅
 
 ---
 
