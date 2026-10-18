@@ -12,16 +12,14 @@ and adjacent bioinformatics formats.
 > **Where to continue from this point in a new session:**
 > Tiers 1–3 are complete (SAM v1, BAM v1, GFF3, FASTA, BCF
 > v2.1 read-only, Tabix v1 read-only, CSI v1 read-only).
-> Tier 4 work has begun: FASTQ v1 has shipped (parser,
-> writer, validator, CLI integration). The remaining Tier 4
-> items are CRAM v3 (now unblocked since BAM is stable),
-> htsget/refget (separate module if at all), and crypt4gh.
-> The index-generation question (writers for BCF / Tabix /
-> CSI) is still flagged under open decisions and should be
-> resolved before any release that ships those writers. The
-> roadmap is up to date as of the latest commit on `main`.
-> See the [CHANGELOG](CHANGELOG.md) for what just landed and
-> `git log --oneline` for the commit history.
+> Tier 4 status: FASTQ shipped in v0.3.0; CRAM v3 is at the
+> design-survey stage (see `cram/SPEC.md`); htsget/refget and
+> crypt4gh are pending. The index-generation question (writers
+> for BCF / Tabix / CSI) is still flagged under open decisions
+> and should be resolved before any release that ships those
+> writers. The roadmap is up to date as of the latest commit
+> on `main`. See the [CHANGELOG](CHANGELOG.md) for what just
+> landed and `git log --oneline` for the commit history.
 
 ## Design principles
 
@@ -245,14 +243,29 @@ If/when a shared `index/` package is needed for writers (Tabix
 
 ### Tier 4 — Research / optional
 
-- [ ] **CRAM v3** — depends on Tier 2 (BAM) being stable.
+- [x] **FASTQ** — Sanger Phred+33 + Illumina 1.8+ (auto-detect
+      Phred+64 via max-byte heuristic). Parser, writer,
+      validator, CLI integration. Done in commit `f41a671`
+      (v0.3.0).
+
+- [ ] **CRAM v3** — design phase only at this point. CRAM v3.1
+      requires codecs (LZMA, rANS 4x8, rANS Nx16, adaptive
+      arithmetic, fqzcomp, name tokeniser) that have no Go
+      stdlib equivalents. Implementing them from scratch is
+      ~3500–5000 LOC of subtle codec code, and the project's
+      "no runtime dependencies" rule precludes using
+      samtools/htscodecs. Detailed scope survey in
+      `cram/SPEC.md` (commit `3ac192b`). Resumable once one of:
+      (a) stdlib adds the codecs, (b) the no-deps rule is
+      relaxed for a separate `htscram/` module with its own
+      go.mod, or (c) real-world CRAM testdata becomes available
+      so codec correctness can be validated against known-good
+      files.
+
 - [ ] **htsget / refget** — separate module if at all.
+
 - [ ] **crypt4gh** — encryption; cross-cutting, may live in
       `internal/crypt/`.
-- [ ] **FASTQ** — multiple variants; needs design discussion
-      before implementation. Will start with Sanger Phred+33
-      (the dominant modern convention) and Illumina 1.8+ (also
-      Phred+33 but different header conventions).
 
 ## Cross-cutting
 
@@ -325,19 +338,20 @@ before starting implementation.
 
 ### For Tier 4 — FASTQ / SAM/VCF converters / CRAM v3 / crypt4gh
 
-Tier 3 is complete (BCF + Tabix + CSI, all read-only in v1 per
-the "Index generation" out-of-scope note). Tier 4 is the
-research/optional tier.
+FASTQ shipped in v0.3.0. CRAM v3 is at the design-survey
+stage (see `cram/SPEC.md`); the codec gap is the blocker.
+htsget/refget and crypt4gh remain pending.
 
 - [ ] **Index generation (BCF + Tabix + CSI writers).** v2
       follow-up. Per the open-decision scope, the three
       readers were shipped read-only; the writers come next.
-- [ ] **CRAM v3** — depends on Tier 2 (BAM) being stable.
+- [ ] **CRAM v3** — design-survey stage only. Codecs 3–8 are
+      not in Go stdlib and the no-runtime-deps rule precludes
+      samtools/htscodecs. Resume when stdlib adds the codecs,
+      a separate `htscram/` module is acceptable, or
+      real-world testdata becomes available. See `cram/SPEC.md`.
 - [ ] **htsget / refget** — separate module if at all.
 - [ ] **crypt4gh** — encryption; cross-cutting.
-- [ ] **FASTQ** — multiple variants; needs design discussion
-      before implementation. Will start with Sanger Phred+33
-      (the dominant modern convention) and Illumina 1.8+.
 
 ## Anti-patterns we have learned to avoid
 
