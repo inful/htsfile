@@ -951,6 +951,31 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 			issues = append(issues, checkLAA(&v, rec, idx, sIdx, line)...)
 		}
 
+		// If any local-allele field is present, LAA must
+		// also be present (VCFv4.5 §1.6.2: "If any
+		// local-allele field is present, LAA must also be
+		// present"). The local-allele FORMAT keys are the
+		// L-prefixed ones listed in the spec: LAD, LADF,
+		// LADR, LEC, LGL, LGP, LPL, LPP. Per the spec, an
+		// empty LAA is equivalent to missing for the
+		// purpose of this rule, so the check fires only
+		// when LAA is genuinely non-empty.
+		laaFV, hasLAA := g.Fields["LAA"]
+		laaPresent := hasLAA && !laaFV.Missing && !laaFV.empty()
+		if !laaPresent {
+			for _, key := range localAlleleKeys {
+				fv, ok := g.Fields[key]
+				if !ok || fv.Missing {
+					continue
+				}
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
+					Msg:   fmt.Sprintf("local-allele field %q requires LAA to be present on the same sample", key),
+				})
+			}
+		}
+
 		// Determine the last present FORMAT index for this sample — keys
 		// past that index are considered dropped (per spec).
 		lastPresent := -1
@@ -1181,6 +1206,31 @@ func validTypedValue(t FieldType, s string) bool {
 		return true
 	}
 	return true
+}
+
+// empty reports whether the field carries no values
+// (missing value, zero entries, or a single empty
+// string entry — all of which the spec treats as "no
+// local alleles").
+func (fv *FieldValue) empty() bool {
+	if fv.Missing {
+		return true
+	}
+	if len(fv.Raw) == 0 {
+		return true
+	}
+	if len(fv.Raw) == 1 && fv.Raw[0] == "" {
+		return true
+	}
+	return false
+}
+
+// localAlleleKeys lists the FORMAT keys that depend on
+// LAA being present (VCFv4.5 §1.6.2). If any of these is
+// declared on a sample without LAA, the sample is invalid.
+var localAlleleKeys = [...]string{
+	"LAD", "LADF", "LADR", "LEC",
+	"LGL", "LGP", "LPL", "LPP",
 }
 
 // checkLAA validates a sample's LAA field. Per VCFv4.5

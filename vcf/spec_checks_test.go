@@ -720,6 +720,53 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 	}
 }
 
+func TestValidator_LocalAlleleRequiresLAA(t *testing.T) {
+	// Per VCFv4.5 §1.6.2: "If any local-allele field is
+	// present, LAA must also be present". A sample that
+	// declares LAD / LGL / LPL / etc. without LAA fires
+	// a SeverityError in ModeStrict.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=LAA,Number=.,Type=Integer,Description=\"l\">\n" +
+		"##FORMAT=<ID=LAD,Number=.,Type=Integer,Description=\"l\">\n" +
+		"##FORMAT=<ID=LGL,Number=LG,Type=Float,Description=\"l\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, sample string
+		want         bool
+	}{
+		{"LAA and LAD ok", "0/1:2:5,10", false},
+		{"LAD without LAA", "0/1::5,10", true},
+		{"LGL without LAA", "0/1::0.0,1.0,2.0", true},
+		{"LAA alone ok", "0/1:2", false},
+		{"no local allele ok", "0/1", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC,G\t.\t.\t.\tGT:LAA:LAD:LGL\t" + c.sample + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "requires LAA") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("sample=%q: found=%v, want %v; issues=%+v", c.sample, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestParser_NonRefAlias(t *testing.T) {
 	// VCFv4.5 §1.7: <NON_REF> is an alias for <*> for
 	// gVCF backwards compatibility. The parser must
