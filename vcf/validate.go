@@ -1376,6 +1376,13 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 			}
 		}
 
+		// PSL per-allele check (§1.6.2: "Unphased alleles
+		// (without a | separator before them) must have
+		// the value '$.$' in their corresponding position
+		// in the list"). For each unphased allele in GT,
+		// the PSL entry must be exactly ".".
+		issues = append(issues, checkPSLUnphased(g, sIdx, idx, line)...)
+
 		// LAA must precede all FORMAT keys other than GT
 		// (per §1.6.2: "If any local-allele field is present,
 		// LAA must also be present and precede all fields
@@ -1756,6 +1763,68 @@ func samePSO(a, b []int64) bool {
 		}
 	}
 	return true
+}
+
+// checkPSLUnphased enforces VCFv4.5 §1.6.2: "Unphased
+// alleles (without a | separator before them) must have
+// the value '$.$' in their corresponding position in the
+// list". For each allele in GT separated by '/' (or
+// appearing as the first allele), the corresponding PSL
+// entry must be ".".
+//
+// Extracted from checkSamples to keep the per-sample
+// loop under the cognitive-complexity lint cap.
+func checkPSLUnphased(g Genotype, sIdx, idx, line int) []ValidationError {
+	gtFV, hasGT := g.Fields["GT"]
+	pslFV, hasPSL := g.Fields["PSL"]
+	if !hasGT || !hasPSL {
+		return nil
+	}
+	if gtFV.Missing || pslFV.Missing || len(gtFV.Strs) == 0 || len(pslFV.Strs) == 0 {
+		return nil
+	}
+	if gtFV.Strs[0] == "" {
+		return nil
+	}
+	gt := gtFV.Strs[0]
+	var issues []ValidationError
+	for i, c := range gt {
+		if c == '/' || c == '|' || c == ' ' || c == '\t' {
+			continue
+		}
+		// `c` is an allele digit. The separator that
+		// preceded it determines phasing: '|' = phased
+		// (no constraint on PSL); anything else (or
+		// start of string) = unphased (PSL must be ".").
+		phased := i > 0 && gt[i-1] == '|'
+		if phased {
+			continue
+		}
+		alleleIdx := alleleIndex(gt, i)
+		if alleleIdx < len(pslFV.Strs) && pslFV.Strs[alleleIdx] != "." {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/PSL/sample[%d]", sIdx),
+				Msg: fmt.Sprintf("PSL[%d]=%q must be %q because the corresponding GT allele is unphased (§1.6.2)", alleleIdx, pslFV.Strs[alleleIdx], "."),
+			})
+		}
+	}
+	return issues
+}
+
+// alleleIndex returns the index of the allele at
+// position `pos` in the GT string, ignoring
+// separators. Position 0 (start of string) corresponds
+// to allele index 0.
+func alleleIndex(gt string, pos int) int {
+	n := 0
+	for i := 0; i < pos; i++ {
+		c := gt[i]
+		if c != '/' && c != '|' && c != ' ' && c != '\t' {
+			n++
+		}
+	}
+	return n
 }
 
 // checkMateMatch compares two breakend mate snapshots

@@ -1005,6 +1005,51 @@ func TestValidator_LAAPrecedesLocalAlleleKeys(t *testing.T) {
 	}
 }
 
+func TestValidator_PSLUnphasedMustBeDot(t *testing.T) {
+	// Per VCFv4.5 §1.6.2: "Unphased alleles (without a |
+	// separator before them) must have the value '$.$' in
+	// their corresponding position in the list."
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=PSL,Number=P,Type=String,Description=\"l\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, gt, psl string
+		want          bool
+	}{
+		{"all unphased ok", "0/1", ".,.", false},
+		{"unphased wrong", "0/1", "chr1*100*1,chr1*200*1", true},
+		{"all phased ok", "|0|1", "chr1*100*1,chr1*200*1", false},
+		{"first allele (no separator) ok", "0|1", ".,chr1*200*1", false},
+		{"first allele (no separator) wrong", "0|1", "chr1*100*1,chr1*200*1", true},
+		{"one of two unphased wrong", "0|1", "chr1*100*1,chr1*200*1", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC,G\t.\t.\t.\tGT:PSL\t" + c.gt + ":" + c.psl + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "unphased") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s (%s/%s): found=%v, want %v; issues=%+v", c.name, c.gt, c.psl, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_LocalAlleleRequiresLAA(t *testing.T) {
 	// Per VCFv4.5 §1.6.2: "If any local-allele field is
 	// present, LAA must also be present". A sample that
