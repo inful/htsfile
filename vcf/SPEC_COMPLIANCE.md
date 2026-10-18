@@ -146,7 +146,7 @@ state enforcement explicitly, but the convention is that the
 **Notes:** low-impact. Probably skip unless test data demands
 it.
 
-**Status:** ✅ (deferred — low impact, T1.3 was skipped)
+**Status:** ✅
 
 ### T1.4 — `##ALT` first-level type is one of {DEL, INS, DUP, INV, CNV}
 
