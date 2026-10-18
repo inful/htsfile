@@ -153,12 +153,12 @@ func (b *builder) writeRecord(t *testing.T, r *testRecord) {
 	var nFmt [2]byte
 	binary.LittleEndian.PutUint16(nFmt[:], 0)
 	payload.Write(nFmt[:])
-	writeTypedString(&payload, r.ID)
-	writeTypedString(&payload, r.Ref)
+	testWriteTypedString(&payload, r.ID)
+	testWriteTypedString(&payload, r.Ref)
 	for _, alt := range r.Alt {
-		writeTypedString(&payload, alt)
+		testWriteTypedString(&payload, alt)
 	}
-	writeTypedFilter(&payload, r.filterIdxs)
+	testWriteTypedFilter(&payload, r.filterIdxs)
 	if r.QualKnown {
 		payload.WriteByte(typeFloat)
 		var bits [8]byte
@@ -183,12 +183,12 @@ func (b *builder) writeRecord(t *testing.T, r *testRecord) {
 		var keyBytes [2]byte
 		binary.LittleEndian.PutUint16(keyBytes[:], uint16(hdrIdx))
 		payload.Write(keyBytes[:])
-		writeTypedInfoValue(&payload, def, val)
+		testWriteTypedInfoValue(&payload, def, val)
 	}
 	b.writeBGZFBlock(payload.Bytes())
 }
 
-func writeTypedString(b *bytes.Buffer, s string) {
+func testWriteTypedString(b *bytes.Buffer, s string) {
 	if s == "" {
 		b.WriteByte(typeMissing)
 		return
@@ -200,7 +200,7 @@ func writeTypedString(b *bytes.Buffer, s string) {
 	b.WriteString(s)
 }
 
-func writeTypedFilter(b *bytes.Buffer, idxs []int) {
+func testWriteTypedFilter(b *bytes.Buffer, idxs []int) {
 	if len(idxs) == 0 {
 		b.WriteByte(typeMissing)
 		return
@@ -223,7 +223,7 @@ func writeTypedFilter(b *bytes.Buffer, idxs []int) {
 	}
 }
 
-func writeTypedInfoValue(b *bytes.Buffer, def *InfoDef, v InfoValue) {
+func testWriteTypedInfoValue(b *bytes.Buffer, def *InfoDef, v InfoValue) {
 	if def.Type == "Flag" {
 		if v.Flag {
 			b.WriteByte(typeInt8)

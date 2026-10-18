@@ -104,6 +104,13 @@ linters:
       - path: bcf/cli_test\.go
         linters:
           - gosec
+      # The BCF record writer uses the same integer-overflow
+      # conversion patterns as BAM's reader (counts and
+      # positions in well-defined ranges). Same rationale
+      # as the BAM/BGZF exclusions above.
+      - path: bcf/write\.go
+        linters:
+          - gosec
       # And the FASTQ package's CLI smoke test (subprocess variable).
       - path: fastq/cli_test\.go
         linters:
