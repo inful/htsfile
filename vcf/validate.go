@@ -60,6 +60,12 @@ type Validator struct {
 	// chromosomes because phase sets are chromosome-bound per
 	// the spec.
 	phaseStyle map[phaseKey]string
+
+	// seenChroms tracks chromosomes observed so far so the
+	// validator can enforce the §1.6.1 "contiguous
+	// block" rule. The map's keys are CHROM strings; the
+	// values are unused.
+	seenChroms map[string]struct{}
 }
 
 // phaseKey identifies a (sample, PS) pair. PS of "" means
@@ -104,6 +110,7 @@ func (v *Validator) Reset() {
 	v.headerDone = false
 	v.finished = false
 	v.phaseStyle = nil
+	v.seenChroms = nil
 }
 
 // HeaderChecks runs the header-only checks and the
@@ -136,6 +143,25 @@ func (v *Validator) Next(h *Header, rec *Record) []ValidationError {
 	idx := v.recordIdx
 	v.recordIdx++
 	issues := v.checkRecord(h, rec, idx)
+
+	// CHROM contiguous block (VCFv4.5 §1.6.1: "All
+	// entries for a specific CHROM must form a contiguous
+	// block within the VCF file"). Checked before
+	// prevChrom is updated so we know the actual previous
+	// CHROM. A CHROM seen earlier and not the immediate
+	// previous chromosome is a reorder.
+	if v.seenChroms == nil {
+		v.seenChroms = make(map[string]struct{})
+	}
+	if _, seen := v.seenChroms[rec.Chrom]; seen && rec.Chrom != v.prevChrom {
+		issues = append(issues, ValidationError{
+			Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+			Field: "CHROM",
+			Msg:   fmt.Sprintf("chromosome %q was already seen earlier in the file; CHROM blocks must be contiguous", rec.Chrom),
+		})
+	}
+	v.seenChroms[rec.Chrom] = struct{}{}
+
 	// Update cross-record state. We do this even in
 	// non-strict mode so a future mode switch is consistent.
 	if rec.Chrom != v.prevChrom {

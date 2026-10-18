@@ -273,6 +273,70 @@ func TestValidator_Streaming_PhaseStyleMismatch(t *testing.T) {
 	}
 }
 
+func TestValidator_Streaming_CHROMContiguousBlock(t *testing.T) {
+	// VCFv4.5 §1.6.1: "All entries for a specific CHROM
+	// must form a contiguous block within the VCF file."
+	// chr1 chr2 chr1 is invalid; chr1 chr2 chr3 is fine.
+	hdrText := streamingTestHeader
+	cases := []struct {
+		name  string
+		lines []string
+		want  bool
+	}{
+		{
+			"three different chroms ok",
+			[]string{
+				"chr1\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr2\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr3\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1",
+			},
+			false,
+		},
+		{
+			"chrom reordered",
+			[]string{
+				"chr1\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr2\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr1\t200\t.\tA\tC\t.\t.\t.\tGT\t0/1",
+			},
+			true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + strings.Join(c.lines, "\n") + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			var recs []*Record
+			for {
+				r, err := dec.Record()
+				if err != nil {
+					break
+				}
+				recs = append(recs, r)
+			}
+			v := NewValidator(ModeStrict)
+			_ = v.HeaderChecks(hdr)
+			issues := make([]ValidationError, 0, len(recs)*2)
+			for _, r := range recs {
+				issues = append(issues, v.Next(hdr, r)...)
+			}
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "CHROM blocks must be contiguous") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_Streaming_PhaseStyleConsistent(t *testing.T) {
 	// Two records with the same PS and consistent phasing
 	// style must not produce any phase-style issue.
