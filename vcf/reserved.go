@@ -56,6 +56,12 @@ var reservedFormatKeys = map[string]reservedKey{
 	"PSL": {Number: "P", Type: TypeString},
 	"PSO": {Number: "P", Type: TypeInteger},
 	"PSQ": {Number: "P", Type: TypeInteger},
+	// Genotype likelihood / posterior trio (per VCFv4.5
+	// §1.6.2). All three use Number=G; PL is Integer,
+	// GL and GP are Float.
+	"PL": {Number: "G", Type: TypeInteger},
+	"GL": {Number: "G", Type: TypeFloat},
+	"GP": {Number: "G", Type: TypeFloat},
 }
 
 // reservedKey is the expected (Number, Type) pair for a

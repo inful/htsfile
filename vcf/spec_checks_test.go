@@ -760,3 +760,47 @@ func TestValidator_ENDMatchesComputed(t *testing.T) {
 		})
 	}
 }
+
+func TestValidator_NumberGKeysMustHaveFloatOrInteger(t *testing.T) {
+	// PL, GL, GP all use Number=G. The Type must be
+	// Integer for PL and Float for GL/GP. Declaring
+	// them with the wrong Type fires a header-reserved-
+	// key warning in ModeDefault, an error in
+	// ModeStrict.
+	cases := []struct {
+		name, hdrKey, hdrType string
+		wantIssue             bool
+	}{
+		{"PL integer", "PL", "Integer", false},
+		{"PL float wrong", "PL", "Float", true},
+		{"GL float", "GL", "Float", false},
+		{"GL integer wrong", "GL", "Integer", true},
+		{"GP float", "GP", "Float", false},
+		{"GP integer wrong", "GP", "Integer", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			hdrText := "##fileformat=VCFv4.2\n" +
+				"##FORMAT=<ID=" + c.hdrKey + ",Number=G,Type=" + c.hdrType + ",Description=\"x\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+				"chr1\t100\t.\tA\tC\t.\t.\t.\n"
+			dec := NewDecoder(strings.NewReader(hdrText))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			issues := NewValidator(ModeStrict).HeaderChecks(hdr)
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "should be Number=G,Type=") {
+					found = true
+					break
+				}
+			}
+			if found != c.wantIssue {
+				t.Errorf("hdrKey=%s,Type=%s: issue found=%v, want %v; issues=%+v",
+					c.hdrKey, c.hdrType, found, c.wantIssue, issues)
+			}
+		})
+	}
+}

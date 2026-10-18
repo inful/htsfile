@@ -22,12 +22,13 @@ func TestIsReservedFormatKey(t *testing.T) {
 	for _, key := range []string{
 		"LAA", "LAD", "LADF", "LADR", "LEC", "LGL", "LGP", "LPL", "LPP",
 		"PSL", "PSO", "PSQ",
+		"PL", "GL", "GP",
 	} {
 		if !IsReservedFormatKey(key) {
 			t.Errorf("IsReservedFormatKey(%q): should be true", key)
 		}
 	}
-	for _, key := range []string{"GT", "DP", "PL", "GL", "FOO"} {
+	for _, key := range []string{"GT", "DP", "FOO"} {
 		if IsReservedFormatKey(key) {
 			t.Errorf("IsReservedFormatKey(%q): should be false", key)
 		}
