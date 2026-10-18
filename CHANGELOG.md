@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-18
+
+This release builds on the v0.1.0 baseline by adding three
+read-only companion packages: BCF v2.1 (binary VCF), Tabix v1
+(generic position index for sorted bgzipped text files), and
+CSI v1 (coordinate-sorted index). All three are read-only in
+this build per the open-decision scope — index generation is
+a v2 follow-up.
+
 ### Added
 
 - **BCF v2.1 format support.** A new `bcf` package
@@ -80,7 +89,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   for both formats. (Tabix and CSI are not auto-sniffed from
   stdin — use the file extension to disambiguate.)
 
-[Unreleased]: https://github.com/inful/htsfile/compare/v0.1.0...HEAD
+### Test coverage notes
+
+`bcf/` rose from 65.6% to 79.0% with the addition of tests
+for the previously-untested `InfoValue.String()` (each type
+branch), `Severity.String()` (each branch), `sortedKeys`
+(the reserved-for-future-tests helper), `skipFmtBlock` (the
+always-error placeholder for FORMAT/sample data), and
+`skipTypedInfoValue` (each type-byte branch plus two
+truncated-stream error paths). Plus four small wins on
+previously-partial paths: `Validator.checkOne` strict-mode
+INFO-not-declared, `Header.LookupFormatIndex` nil receiver,
+`Decoder.Header` cached-return on second call, and
+`Decoder.Record` implicit-Header invocation.
+
+[0.2.0]: https://github.com/inful/htsfile/compare/v0.1.0...v0.2.0
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.2.0...HEAD
 
 ## [0.1.0] — 2026-10-18
 
