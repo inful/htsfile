@@ -218,6 +218,12 @@ func (e *Encoder) emitContig(c *Contig) error {
 	if c.URL != "" {
 		pairs = append(pairs, [2]string{"URL", strconv.Quote(c.URL)})
 	}
+	if c.Species != "" {
+		pairs = append(pairs, [2]string{"species", strconv.Quote(c.Species)})
+	}
+	if c.Taxonomy != "" {
+		pairs = append(pairs, [2]string{"taxonomy", strconv.Quote(c.Taxonomy)})
+	}
 	for k, v := range c.Other {
 		pairs = append(pairs, [2]string{k, strconv.Quote(v)})
 	}

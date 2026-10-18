@@ -1059,6 +1059,10 @@ func parseContigAttrs(pairs []fieldPair, lineNo int) (*Contig, error) {
 			}
 		case "URL":
 			c.URL = unquote(p.value)
+		case "species":
+			c.Species = unquote(p.value)
+		case "taxonomy":
+			c.Taxonomy = unquote(p.value)
 		default:
 			c.Other[p.key] = unquote(p.value)
 		}

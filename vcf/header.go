@@ -121,10 +121,12 @@ type MetaLine struct {
 
 // Contig describes one ##contig=<...> entry.
 type Contig struct {
-	ID     string
-	Length int64  // 0 if absent
-	MD5    string // "" if absent
-	URL    string // "" if absent
+	ID       string
+	Length   int64  // 0 if absent
+	MD5      string // "" if absent
+	URL      string // "" if absent
+	Species  string // "" if absent (e.g. "Homo sapiens")
+	Taxonomy string // "" if absent (e.g. "NCBI:9606")
 	// Other holds any unknown key=value pairs from this contig line.
 	Other map[string]string
 }
