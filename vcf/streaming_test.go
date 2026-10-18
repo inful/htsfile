@@ -337,6 +337,80 @@ func TestValidator_Streaming_CHROMContiguousBlock(t *testing.T) {
 	}
 }
 
+func TestValidator_Streaming_IDUniqueness(t *testing.T) {
+	// Per VCFv4.5 §1.6.1: "No identifier should be
+	// present in more than one data record." The
+	// streaming Validator tracks every non-missing ID and
+	// fires a SeverityError on the second occurrence.
+	hdrText := streamingTestHeader
+	cases := []struct {
+		name  string
+		lines []string
+		want  bool
+	}{
+		{
+			"unique ids",
+			[]string{
+				"chr1\t100\trs1\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr1\t200\trs2\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr1\t300\trs3\tA\tC\t.\t.\t.\tGT\t0/1",
+			},
+			false,
+		},
+		{
+			"duplicate id",
+			[]string{
+				"chr1\t100\trs1\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr1\t200\trs2\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr1\t300\trs1\tA\tC\t.\t.\t.\tGT\t0/1",
+			},
+			true,
+		},
+		{
+			"missing id ignored",
+			[]string{
+				"chr1\t100\trs1\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr1\t200\t.\tA\tC\t.\t.\t.\tGT\t0/1",
+				"chr1\t300\t.\tA\tC\t.\t.\t.\tGT\t0/1",
+			},
+			false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + strings.Join(c.lines, "\n") + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			var recs []*Record
+			for {
+				r, err := dec.Record()
+				if err != nil {
+					break
+				}
+				recs = append(recs, r)
+			}
+			v := NewValidator(ModeStrict)
+			_ = v.HeaderChecks(hdr)
+			issues := make([]ValidationError, 0, len(recs)*2)
+			for _, r := range recs {
+				issues = append(issues, v.Next(hdr, r)...)
+			}
+			found := false
+			for _, iss := range issues {
+				if iss.Field == "ID" && strings.Contains(iss.Msg, "was already used") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_Streaming_PhaseStyleConsistent(t *testing.T) {
 	// Two records with the same PS and consistent phasing
 	// style must not produce any phase-style issue.

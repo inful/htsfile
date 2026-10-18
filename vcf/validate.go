@@ -66,6 +66,13 @@ type Validator struct {
 	// block" rule. The map's keys are CHROM strings; the
 	// values are unused.
 	seenChroms map[string]struct{}
+
+	// seenIDs tracks the data-record IDs observed so far
+	// so the validator can enforce the §1.6.1 "No
+	// identifier should be present in more than one data
+	// record" rule. The map keys are ID strings; the
+	// values are unused.
+	seenIDs map[string]struct{}
 }
 
 // phaseKey identifies a (sample, PS) pair. PS of "" means
@@ -111,6 +118,7 @@ func (v *Validator) Reset() {
 	v.finished = false
 	v.phaseStyle = nil
 	v.seenChroms = nil
+	v.seenIDs = nil
 }
 
 // HeaderChecks runs the header-only checks and the
@@ -161,6 +169,29 @@ func (v *Validator) Next(h *Header, rec *Record) []ValidationError {
 		})
 	}
 	v.seenChroms[rec.Chrom] = struct{}{}
+
+	// ID uniqueness across records (§1.6.1: "No
+	// identifier should be present in more than one data
+	// record"). The ID column is a list of IDs separated
+	// by ';' within a single record; '.' in any position
+	// is the missing value. We track every non-missing ID
+	// seen so far; the second is an error.
+	if v.seenIDs == nil {
+		v.seenIDs = make(map[string]struct{})
+	}
+	for _, id := range rec.ID {
+		if id == "." {
+			continue
+		}
+		if _, seen := v.seenIDs[id]; seen {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+				Field: "ID",
+				Msg:   fmt.Sprintf("ID %q was already used in an earlier data record", id),
+			})
+		}
+		v.seenIDs[id] = struct{}{}
+	}
 
 	// Update cross-record state. We do this even in
 	// non-strict mode so a future mode switch is consistent.
