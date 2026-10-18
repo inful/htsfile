@@ -1,6 +1,7 @@
 package bcf
 
 import (
+	"bufio"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -323,6 +324,309 @@ func TestValidator_QUAL_Lenient_Happy(t *testing.T) {
 	if len(issues) != 0 {
 		t.Errorf("unexpected issues: %v", issues)
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — Validator strict mode (undeclared INFO key)
+// ---------------------------------------------------------------------------
+
+func TestValidator_Strict_UndeclaredInfo(t *testing.T) {
+	// Construct an in-memory Header + Record pair where the
+	// record carries an INFO key that is not in the header's
+	// declared ##INFO list. (This branch is defensive — the
+	// binary parser doesn't produce such records today, but
+	// the validator still flags it for callers that build
+	// Record values directly.)
+	hdr := ParseHeader("##fileformat=VCFv4.2\n##INFO=<ID=DP,Number=1,Type=Integer>\n")
+	rec := &Record{
+		Ref: "A",
+		Info: map[string]InfoValue{
+			"DP": {Type: "Integer", Ints: []int64{42}},
+		},
+	}
+	// Default mode: clean (no declared-key check).
+	if issues := NewValidator(ModeDefault).Validate(hdr, []*Record{rec}); len(issues) != 0 {
+		t.Errorf("ModeDefault issues: %v", issues)
+	}
+	// Inject an undeclared INFO key.
+	rec.Info["UNKNOWN"] = InfoValue{Type: "Integer", Ints: []int64{7}}
+	issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+	if len(issues) != 1 {
+		t.Fatalf("ModeStrict issues: got %d want 1 (%v)", len(issues), issues)
+	}
+	if issues[0].Field != "INFO" || issues[0].Severity != SeverityError {
+		t.Errorf("issue: %+v", issues[0])
+	}
+	if !strings.Contains(issues[0].Msg, "UNKNOWN") {
+		t.Errorf("issue Msg: got %q (want to mention UNKNOWN)", issues[0].Msg)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — LookupFormatIndex nil receiver
+// ---------------------------------------------------------------------------
+
+func TestHeader_LookupFormatIndex_Nil(t *testing.T) {
+	var nilHdr *Header
+	if got, ok := nilHdr.LookupFormatIndex("GT"); ok || got != -1 {
+		t.Errorf("nil LookupFormatIndex: got (%d, %v) want (-1, false)", got, ok)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — Decoder.Header cached return on second call
+// ---------------------------------------------------------------------------
+
+func TestDecoder_HeaderTwice(t *testing.T) {
+	b := newBuilder(t)
+	b.writeBCFHeader(sampleHeader)
+	b.writeRecord(t, &testRecord{contigIdx: 0, Pos: 100, Ref: "A"})
+	data := b.finish(t)
+	dec := NewDecoder(bytes.NewReader(data))
+	hdr1, err := dec.Header()
+	if err != nil {
+		t.Fatalf("first Header: %v", err)
+	}
+	hdr2, err := dec.Header()
+	if err != nil {
+		t.Fatalf("second Header: %v", err)
+	}
+	// Same pointer — second call returns the cached value.
+	if hdr1 != hdr2 {
+		t.Errorf("Header not cached: hdr1=%p hdr2=%p", hdr1, hdr2)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — Decoder.Record implicit-Header call
+// ---------------------------------------------------------------------------
+
+func TestDecoder_RecordBeforeHeader(t *testing.T) {
+	b := newBuilder(t)
+	b.writeBCFHeader(sampleHeader)
+	b.writeRecord(t, &testRecord{contigIdx: 0, Pos: 100, Ref: "A"})
+	data := b.finish(t)
+	dec := NewDecoder(bytes.NewReader(data))
+	// Call Record() without first calling Header() — exercises
+	// the implicit-header branch.
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if rec.Ref != "A" {
+		t.Errorf("Ref: got %q want %q", rec.Ref, "A")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — Decoder.Record with nFmt > 0 (FORMAT block)
+// (the BCF v1 limitation error surfaces here)
+// ---------------------------------------------------------------------------
+
+func TestDecoder_RecordWithNfmt(t *testing.T) {
+	// Build a stream by hand: BGZF + magic + header + a record
+	// whose n_fmt field is non-zero. The decoder should hit
+	// the skipFmtBlock branch and surface the documented error.
+	hdrText := "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=1000>\n"
+	b := newBuilderWithHeader(t, hdrText)
+	b.writeBCFHeader(hdrText)
+	// Manually write a record with nFmt=1 to trigger skipFmtBlock.
+	var payload bytes.Buffer
+	var prefix [16]byte
+	binary.LittleEndian.PutUint32(prefix[0:4], 0)   // chromIdx
+	binary.LittleEndian.PutUint32(prefix[4:8], 99)  // pos0
+	binary.LittleEndian.PutUint32(prefix[8:12], 0)  // rlen
+	binary.LittleEndian.PutUint32(prefix[12:16], 0) // n_info
+	payload.Write(prefix[:])
+	var nFmt [2]byte
+	binary.LittleEndian.PutUint16(nFmt[:], 1) // n_fmt > 0 → skipFmtBlock
+	payload.Write(nFmt[:])
+	b.writeBGZFBlock(payload.Bytes())
+	data := b.finish(t)
+
+	dec := NewDecoder(bytes.NewReader(data))
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	_, err := dec.Record()
+	if err == nil {
+		t.Fatal("expected FORMAT-block error, got nil")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Errorf("error: %v, want ParseError", err)
+	}
+	if pe != nil && pe.Field != "FORMAT" {
+		t.Errorf("Field: got %q want %q", pe.Field, "FORMAT")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — InfoValue.String()
+// ---------------------------------------------------------------------------
+
+func TestInfoValue_String(t *testing.T) {
+	cases := []struct {
+		name string
+		val  InfoValue
+		want string
+	}{
+		{"Flag_true", InfoValue{Type: "Flag", Flag: true}, "."},
+		{"Flag_false", InfoValue{Type: "Flag", Flag: false}, ""},
+		{"Integer_single", InfoValue{Type: "Integer", Ints: []int64{42}}, "42"},
+		{"Integer_multi", InfoValue{Type: "Integer", Ints: []int64{1, 2, 3}}, "1,2,3"},
+		{"Float_single", InfoValue{Type: "Float", Floats: []float64{1.5}}, "1.5"},
+		{"Float_multi", InfoValue{Type: "Float", Floats: []float64{1.5, 2.5}}, "1.5,2.5"},
+		{"Character", InfoValue{Type: "Character", Str: "X"}, "X"},
+		{"String", InfoValue{Type: "String", Str: "hello"}, "hello"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.val.String(); got != tc.want {
+				t.Errorf("String(): got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — Severity.String()
+// ---------------------------------------------------------------------------
+
+func TestSeverity_String(t *testing.T) {
+	cases := []struct {
+		name string
+		sev  Severity
+		want string
+	}{
+		{"Warning", SeverityWarning, "warning"},
+		{"Error", SeverityError, "error"},
+		{"Unknown", Severity(99), "unknown"},
+		{"ZeroValue", Severity(0), "warning"}, // zero value is SeverityWarning
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.sev.String(); got != tc.want {
+				t.Errorf("String(): got %q want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — sortedKeys (reserved-for-future-tests helper)
+// ---------------------------------------------------------------------------
+
+func TestSortedKeys(t *testing.T) {
+	m := map[string]int{"b": 2, "a": 1, "c": 3}
+	got := sortedKeys(m)
+	want := []string{"a", "b", "c"}
+	if len(got) != len(want) {
+		t.Fatalf("len: got %d want %d (%v)", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("[%d]: got %q want %q", i, got[i], want[i])
+		}
+	}
+	// Empty map → empty slice.
+	if got := sortedKeys(map[string]int{}); len(got) != 0 {
+		t.Errorf("empty: got %v want []", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — Decoder.skipFmtBlock
+// (always returns the documented FORMAT-not-supported error)
+// ---------------------------------------------------------------------------
+
+func TestDecoder_SkipFmtBlock(t *testing.T) {
+	// Construct a minimal Decoder — skipFmtBlock doesn't touch any
+	// of the receiver's fields, so a zero-valued one suffices.
+	d := &Decoder{}
+	err := d.skipFmtBlock()
+	if err == nil {
+		t.Fatal("skipFmtBlock: expected error, got nil")
+	}
+	var pe *ParseError
+	if !errors.As(err, &pe) {
+		t.Fatalf("skipFmtBlock: not a *ParseError: %T", err)
+	}
+	if pe.Field != "FORMAT" {
+		t.Errorf("Field: got %q want %q", pe.Field, "FORMAT")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Coverage pin — Decoder.skipTypedInfoValue
+// (used when INFO key index exceeds the header's declaration
+// count; reads the type byte, then skips the typed body)
+// ---------------------------------------------------------------------------
+
+func TestDecoder_SkipTypedInfoValue(t *testing.T) {
+	cases := []struct {
+		name     string
+		typeByte byte
+		count    uint32
+		// Optional payload bytes that follow the length prefix.
+		// Size is count * elemSize for the type, or count * 1 for default.
+		payloadSize int
+		wantErr     bool
+	}{
+		// typeMissing short-circuits without reading length/payload.
+		{"Missing", typeMissing, 0, 0, false},
+		{"Int8_3", typeInt8, 3, 3, false},
+		{"Int16_2", typeInt16, 2, 4, false}, // 2 elems × 2 bytes
+		{"Int32_1", typeInt32, 1, 4, false},
+		{"Float_4", typeFloat, 4, 16, false}, // 4 elems × 4 bytes
+		// Default branch (any other type byte) — best-effort, 1 byte per elem.
+		{"Unknown_2", 7, 2, 2, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var buf bytes.Buffer
+			buf.WriteByte(tc.typeByte)
+			if tc.typeByte != typeMissing {
+				var lenBytes [4]byte
+				binary.LittleEndian.PutUint32(lenBytes[:], tc.count)
+				buf.Write(lenBytes[:])
+				buf.Write(make([]byte, tc.payloadSize))
+			}
+			d := &Decoder{br: bufio.NewReader(&buf)}
+			err := d.skipTypedInfoValue()
+			if tc.wantErr {
+				if err == nil {
+					t.Errorf("expected error, got nil")
+				}
+				return
+			}
+			if err != nil {
+				t.Errorf("unexpected error: %v", err)
+			}
+		})
+	}
+	// Truncated stream — type byte present but length prefix missing.
+	t.Run("Truncated_Length", func(t *testing.T) {
+		var buf bytes.Buffer
+		buf.WriteByte(typeInt8) // no length follows
+		d := &Decoder{br: bufio.NewReader(&buf)}
+		if err := d.skipTypedInfoValue(); err == nil {
+			t.Error("expected error on truncated length, got nil")
+		}
+	})
+	// Truncated payload — length says 10 bytes but only 3 follow.
+	t.Run("Truncated_Payload", func(t *testing.T) {
+		var buf bytes.Buffer
+		buf.WriteByte(typeInt8)
+		var lenBytes [4]byte
+		binary.LittleEndian.PutUint32(lenBytes[:], 10) // expect 10 bytes
+		buf.Write(lenBytes[:])
+		buf.Write([]byte{1, 2, 3}) // only 3 follow
+		d := &Decoder{br: bufio.NewReader(&buf)}
+		if err := d.skipTypedInfoValue(); err == nil {
+			t.Error("expected error on truncated payload, got nil")
+		}
+	})
 }
 
 // _ keeps the io import visible.
