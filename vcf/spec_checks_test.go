@@ -719,3 +719,44 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 		})
 	}
 }
+
+func TestValidator_ENDMatchesComputed(t *testing.T) {
+	// END is a computed field per VCFv4.5 §1.6.1.6. When
+	// declared, the value must match the computed END
+	// (POS + len(REF) - 1 for a non-symbolic ALT).
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=END,Number=1,Type=Integer,Description=\"end position\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, info string
+		want       bool
+	}{
+		{"matches computed", "END=103", false},        // POS=100, REF=ACGT => END=103
+		{"does not match", "END=200", true},
+		{"missing END", ".", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tACGT\tC\t.\t.\t" + c.info + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if iss.Field == "INFO/END" {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("info=%q: found=%v, want %v; issues=%+v", c.info, found, c.want, issues)
+			}
+		})
+	}
+}

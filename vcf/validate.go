@@ -371,6 +371,10 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	// warns by default and errors in ModeStrict.
 	issues = append(issues, v.checkEventType(rec, idx)...)
 
+	// END is a computed field per VCFv4.5 §1.6.1.6. When
+	// declared it must match the computed value.
+	issues = append(issues, v.checkEND(rec, idx)...)
+
 	// FILTER values must be declared (or "PASS"/".").
 	issues = append(issues, v.checkFilter(h, rec, idx)...)
 
@@ -612,6 +616,34 @@ func (v *Validator) checkPhaseStyle(rec *Record, idx int) []ValidationError {
 		v.phaseStyle[key] = style
 	}
 	return issues
+}
+
+// checkEND enforces VCFv4.5 §1.6.1.6: END is a computed
+// field. When the header declares ##INFO=<ID=END,...> and
+// the record carries an END value, the value must match
+// the computed END (POS+len(REF)-1, plus SVLEN / LEN
+// adjustments for symbolic ALT alleles).
+func (v *Validator) checkEND(rec *Record, idx int) []ValidationError {
+	if v.Mode != ModeStrict {
+		return nil
+	}
+	raw, ok := rec.Info["END"]
+	if !ok || raw.Missing || len(raw.Ints) == 0 {
+		return nil
+	}
+	want := computeEND(rec)
+	if want <= 0 {
+		return nil
+	}
+	got := raw.Ints[0]
+	if got != want {
+		return []ValidationError{{
+			Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+			Field:    "INFO/END",
+			Msg:      fmt.Sprintf("declared END %d does not match the computed END %d (POS+len(REF)-1, plus SVLEN/LEN adjustments)", got, want),
+		}}
+	}
+	return nil
 }
 
 // checkSVClaim enforces the per-symbolic-allele SVCLAIM
