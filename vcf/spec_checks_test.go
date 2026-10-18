@@ -894,6 +894,82 @@ func TestValidator_ADCardinalityMatchesAlleleCount(t *testing.T) {
 	}
 }
 
+func TestValidator_PloidyConsistencyAcrossRecord(t *testing.T) {
+	// Per VCFv4.5 §1.6.2 all samples in a record must
+	// share the same ploidy. Mixed ploidies in a single
+	// record fire a SeverityError in ModeStrict.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\tS3\n"
+	cases := []struct {
+		name, samples string
+		want          bool
+	}{
+		{"all diploid", "0/1\t0/0\t1/1", false},
+		{"all haploid", "1\t0\t1", false},
+		{"haploid + diploid mixed", "1\t0/1\t0", true},
+		{"diploid + triploid", "0/1\t0/0/1\t0", true},
+	}
+	// Single-sample case: skip the header check (the
+	// shared header declares 3 sample columns).
+	hdrOne := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+	cases = append(cases, struct {
+		name, samples string
+		want          bool
+	}{"single sample", "0/1", false})
+	one := cases[len(cases)-1]
+	cases = cases[:len(cases)-1]
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC\t.\t.\t.\tGT\t" + c.samples + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if iss.Field == "FORMAT/GT" && strings.Contains(iss.Msg, "different ploidies") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("samples=%q: found=%v, want %v; issues=%+v", c.samples, found, c.want, issues)
+			}
+		})
+	}
+
+	t.Run(one.name, func(t *testing.T) {
+		dec := NewDecoder(strings.NewReader(hdrOne + "chr1\t100\t.\tA\tC\t.\t.\t.\tGT\t" + one.samples + "\n"))
+		hdr, err := dec.Header()
+		if err != nil {
+			t.Fatalf("Header: %v", err)
+		}
+		rec, err := dec.Record()
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+		found := false
+		for _, iss := range issues {
+			if iss.Field == "FORMAT/GT" && strings.Contains(iss.Msg, "different ploidies") {
+				found = true
+				break
+			}
+		}
+		if found != one.want {
+			t.Errorf("samples=%q: found=%v, want %v; issues=%+v", one.samples, found, one.want, issues)
+		}
+	})
+}
+
 func TestValidator_GTMustBeFirstFormatField(t *testing.T) {
 	// Per VCFv4.5 §1.6.2, GT must be the first FORMAT
 	// key when it is declared. The check fires in

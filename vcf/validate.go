@@ -379,6 +379,7 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	issues = append(issues, v.checkFilter(h, rec, idx)...)
 
 	// FORMAT / sample checks.
+	issues = append(issues, v.checkPloidy(rec, idx)...)
 	issues = append(issues, v.checkSamples(h, rec, idx)...)
 
 	// GT must be the first FORMAT field if it is declared
@@ -641,6 +642,43 @@ func hasGT(s []string) bool {
 		}
 	}
 	return false
+}
+
+// checkPloidy enforces VCFv4.5 §1.6.2: all samples in a
+// record must have the same ploidy. Mixed ploidies in a
+// single record make Number=G and Number=P cardinality
+// ambiguous, so the spec forbids the combination. The
+// check is a no-op when fewer than two samples have a
+// present GT, or when every present GT has the same
+// ploidy.
+func (v *Validator) checkPloidy(rec *Record, idx int) []ValidationError {
+	if v.Mode != ModeStrict {
+		return nil
+	}
+	if len(rec.Samples) < 2 {
+		return nil
+	}
+	var firstPloidy int
+	firstSeen := false
+	for sIdx, g := range rec.Samples {
+		p := ploidyFromGT(g)
+		if p <= 0 {
+			continue
+		}
+		if !firstSeen {
+			firstPloidy = p
+			firstSeen = true
+			continue
+		}
+		if p != firstPloidy {
+			return []ValidationError{{
+				Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+				Field:    "FORMAT/GT",
+				Msg:      fmt.Sprintf("samples have different ploidies in a single record (sample 0 ploidy %d, sample %d ploidy %d)", firstPloidy, sIdx, p),
+			}}
+		}
+	}
+	return nil
 }
 
 // checkEND enforces VCFv4.5 §1.6.1.6: END is a computed
