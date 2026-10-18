@@ -384,13 +384,13 @@ htsget/refget and crypt4gh remain pending.
         (`e65561c`).
       - Ploidy consistency across samples in a record
         (`cf102ca`).
+      - Mitochondrial chromosome exemptions: POS and
+        END checks skip mtDNA per §1.6.1.6 (`7e072fb`).
 
   Remaining:
 
   - **`##contig` species / taxonomy / assembly** field
     validation.
-  - **Mitochondrial DNA (`chrM`) special-case rules** from
-    §1.6.1.6 (mtDNA uses a circular-aware coordinate system).
   - **Compressed `.vcf.gz` reader pipeline** (BGZF wrapper
     + tabix/CSI region access). All the building blocks
     exist (`internal/bgzf`, `tabix`, `csi`); no wired-up
