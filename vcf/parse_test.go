@@ -581,6 +581,18 @@ func TestDecoder_Errors(t *testing.T) {
 				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
 		},
 		{
+			"id contains comma",
+			"##fileformat=VCFv4.5\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+				"1\t100\trs1,a\tA\tC\t.\t.\t.\n",
+		},
+		{
+			"id contains equals",
+			"##fileformat=VCFv4.5\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+				"1\t100\trs1=a\tA\tC\t.\t.\t.\n",
+		},
+		{
 			"data line too few columns",
 			"##fileformat=VCFv4.5\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n1\t2\t.\tA\n",
 		},

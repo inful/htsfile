@@ -740,13 +740,16 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 	}
 	rec.Pos = pos
 
-	// ID (col 3) — semicolon-separated
+	// ID (col 3) — semicolon-separated. Per VCFv4.5 / BCF
+// v2.2 the ID field must not contain whitespace, comma,
+	// semicolon, or equals signs (any of these would break
+	// downstream parsing).
 	idStr := string(fields[2])
 	if idStr != "." {
 		for _, id := range strings.Split(idStr, ";") {
-			if strings.ContainsAny(id, " \t;") {
+			if strings.ContainsAny(id, " \t,;=") {
 				return nil, &ParseError{Line: lineNo, Field: "ID",
-					Msg: "identifier contains whitespace or ';': " + id}
+					Msg: "identifier contains whitespace, ',', ';', or '=': " + id}
 			}
 			rec.ID = append(rec.ID, id)
 		}
