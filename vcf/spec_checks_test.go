@@ -152,6 +152,56 @@ func TestValidator_SVLENMustBePositive(t *testing.T) {
 	}
 }
 
+func TestValidator_CIPOSCIENDCILENCardinality(t *testing.T) {
+	// VCFv4.5 §1.6.1.7: "If present, the number of
+	// entries must be twice the number of ALT alleles."
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=CIPOS,Number=.,Type=Integer,Description=\"x\">\n" +
+		"##INFO=<ID=CIEND,Number=.,Type=Integer,Description=\"x\">\n" +
+		"##INFO=<ID=CILEN,Number=.,Type=Integer,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, info string
+		want       bool
+	}{
+		{"biallelic 4 entries ok", "CIPOS=-5,5,0,0", false},
+		{"biallelic 2 entries wrong", "CIPOS=-5,5", true},
+		{"biallelic CIEND ok", "CIEND=-5,5,0,0", false},
+		{"biallelic CILEN ok", "CILEN=-5,5,0,0", false},
+		{"biallelic CILEN wrong", "CILEN=-5,5,3", true},
+		{"single alt 2 entries ok", "CIPOS=-5,5", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			alt := "C,G"
+			if c.name == "single alt 2 entries ok" {
+				alt = "C"
+			}
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t" + alt + "\t.\t.\t" + c.info + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "must contain exactly") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("info=%q alt=%s: found=%v, want %v; issues=%+v", c.info, alt, found, c.want, issues)
+			}
+		})
+	}
+}
+
+
 func TestValidator_CIPOSMustSpanZero(t *testing.T) {
 	hdrText := "##fileformat=VCFv4.2\n" +
 		"##contig=<ID=chr1,length=1000>\n" +

@@ -507,8 +507,26 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 		// interval must span 0. The field is a list of pairs
 		// (low, high) per ALT allele. The lower bound cannot
 		// be greater than 0, and the upper bound cannot be
-		// less than 0.
+		// less than 0. The field must also contain exactly
+		// 2 * len(ALT) entries (VCFv4.5 §1.6.1.7) — each
+		// ALT allele gets one pair.
 		if key == "CIPOS" || key == "CIEND" || key == "CILEN" {
+			// Cardinality: 2 * len(ALT). A trailing odd
+			// entry or any count other than 2*N is
+			// rejected. A field of length 0 means the
+			// field is absent (the spec says "If
+			// present, the number of entries must be
+			// twice the number of ALT alleles"); we skip
+			// the cardinality check when the field is
+			// effectively empty.
+			if len(val.Ints) > 0 && len(val.Ints) != 2*altCount {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "INFO/" + key,
+					Msg: fmt.Sprintf("%s must contain exactly %d entries (2 * %d ALT alleles); got %d",
+						key, 2*altCount, altCount, len(val.Ints)),
+				})
+			}
 			for i := 0; i+1 < len(val.Ints); i += 2 {
 				lo, hi := val.Ints[i], val.Ints[i+1]
 				if lo > 0 || hi < 0 {
