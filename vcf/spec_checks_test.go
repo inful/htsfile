@@ -971,6 +971,54 @@ func TestValidator_CNVAllelesShareSVLENWhenFormatCN(t *testing.T) {
 	}
 }
 
+func TestValidator_CNVTRRequiresRUSorRUL(t *testing.T) {
+	// Per VCFv4.5 §"Representing tandem repeats":
+	// "RUS or RUL must be specified for each <CNV:TR>."
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=CNV:TR,Description=\"x\">\n" +
+		"##INFO=<ID=RUS,Number=.,Type=String,Description=\"x\">\n" +
+		"##INFO=<ID=RUL,Number=.,Type=Integer,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, info string
+		want       bool
+	}{
+		{"RUS declared", "RUS=CAG", false},
+		{"RUL declared", "RUL=3", false},
+		{"neither", ".", true},
+		{"empty RUS only", "RUS=.", true},
+		{"no CNV:TR in record", "RUS=CAG", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			alt := "<CNV:TR>"
+			if c.name == "no CNV:TR in record" {
+				alt = "C"
+			}
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t" + alt + "\t.\t.\t" + c.info + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "RUS nor RUL") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("info=%q alt=%s: found=%v, want %v; issues=%+v", c.info, alt, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_CICNCardinality(t *testing.T) {
 	// VCFv4.5 §1.6.1.7: "CICN ... If present, the
 	// number of entries must be twice the number of

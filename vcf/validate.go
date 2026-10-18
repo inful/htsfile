@@ -573,6 +573,20 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 			}
 		}
 	}
+
+	// <CNV:TR> alleles must declare either RUS or RUL
+	// (VCFv4.5 §"Representing tandem repeats": "RUS or
+	// RUL must be specified for each <CNV:TR>"). The
+	// check fires per-record after the per-key loop so
+	// INFO="." records (which never enter the loop)
+	// still trigger the rule.
+	if isCNVTRAllelesPresent(rec) && !hasAnyInfoField(rec.Info, "RUS", "RUL") {
+		issues = append(issues, ValidationError{
+			Severity: SeverityError, Record: idx + 1, Line: line,
+			Field: "INFO",
+			Msg:   "<CNV:TR> allele is present but neither RUS nor RUL is declared",
+		})
+	}
 	return issues
 }
 
@@ -1363,6 +1377,29 @@ func isCNVAllele(a string) bool {
 	inner := a[1 : len(a)-1]
 	for _, prefix := range []string{"CNV", "DEL", "DUP"} {
 		if inner == prefix || strings.HasPrefix(inner, prefix+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// isCNVTRAllelesPresent reports whether the record
+// carries any <CNV:TR> allele.
+func isCNVTRAllelesPresent(rec *Record) bool {
+	for _, a := range rec.Alt {
+		if strings.HasPrefix(a, "<CNV:TR") && strings.HasSuffix(a, ">") {
+			return true
+		}
+	}
+	return false
+}
+
+// hasAnyInfoField reports whether the INFO map carries
+// any of the named keys with a present value (Flag or
+// non-missing).
+func hasAnyInfoField(info map[string]InfoValue, keys ...string) bool {
+	for _, k := range keys {
+		if fv, ok := info[k]; ok && fv.HasValue() {
 			return true
 		}
 	}
