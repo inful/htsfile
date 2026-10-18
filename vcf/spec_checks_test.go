@@ -770,6 +770,136 @@ func TestValidator_SymbolicALTDeclaredInHeader(t *testing.T) {
 	}
 }
 
+func TestValidator_MKeyValueRange(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.5: "Values must be between 0 and 1".
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=M5mC,Number=.,Type=Float,Description=\"x\">\n" +
+		"##INFO=<ID=M5hmC,Number=.,Type=Float,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, info string
+		want       bool
+	}{
+		{"in range", "M5mC=0.5", false},
+		{"at boundary 0", "M5mC=0", false},
+		{"at boundary 1", "M5mC=1", false},
+		{"above 1", "M5mC=1.5", true},
+		{"below 0", "M5mC=-0.1", true},
+		{"missing ok", "M5mC=.", false},
+		{"mixed (one bad)", "M5mC=0.5,2", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + "chr1\t100\t.\tA\tC\t.\t.\t" + c.info + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "M-key values must be between 0 and 1") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_GPRange(t *testing.T) {
+	// Per VCFv4.5 §1.6.2 GP field: "Genotype posterior
+	// probabilities in the range 0 to 1".
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=GP,Number=G,Type=Float,Description=\"g\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, gt, gp string
+		want         bool
+	}{
+		{"in range", "0/1", "0.9,0.05,0.05", false},
+		{"above 1", "0/1", "1.5,0.05,0.05", true},
+		{"below 0", "0/1", "-0.1,0.5,0.5", true},
+		{"missing ok", "0/1", ".,.,.", false},
+		{"no GP ok", "0/1", ".,.,.", false}, // no GP, no error
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + "chr1\t100\t.\tA\tC\t.\t.\t.\tGT:GP\t" + c.gt + ":" + c.gp + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "GP values must be between 0 and 1") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_MRequiresGT(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.5: "If any base modification key
+	// is present for a sample, GT must be defined for that
+	// sample."
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=M5mC,Number=1,Type=Float,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, sample string
+		want        bool
+	}{
+		{"GT present, M present", "0/1:0.5", false},
+		{"GT present, M missing", "0/1:.", false},
+		{"GT missing, M present", ".:0.5", true},
+		{"GT missing, M missing", ".:.", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + "chr1\t100\t.\tA\tC\t.\t.\t.\tGT:M5mC\t" + c.sample + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "requires GT") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_INFOGeneralCardinality(t *testing.T) {
 	// Per VCFv4.5 §1.6.1: each INFO key with Number=A or
 	// Number=R must carry one value per declared allele

@@ -712,6 +712,9 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 			}
 		}
 
+		// M-key value range (§1.6.1.5).
+		issues = append(issues, checkMKeyRange(key, &val, idx, line)...)
+
 		// SVLEN sign rule: for symbolic SV alleles the length
 		// must be positive. (The spec says SVLEN is always
 		// positive, even for INV.)
@@ -1383,6 +1386,14 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 		// the PSL entry must be exactly ".".
 		issues = append(issues, checkPSLUnphased(g, sIdx, idx, line)...)
 
+		// GP values must be in [0, 1] (§1.6.2 GP field).
+		issues = append(issues, checkGPRange(g, sIdx, idx, line)...)
+
+		// M-key present requires GT defined for the sample
+		// (§1.6.1.5: "If any base modification key is present
+		// for a sample, GT must be defined for that sample").
+		issues = append(issues, checkMRequiresGT(g, sIdx, idx, line)...)
+
 		// LAA must precede all FORMAT keys other than GT
 		// (per §1.6.2: "If any local-allele field is present,
 		// LAA must also be present and precede all fields
@@ -1825,6 +1836,86 @@ func alleleIndex(gt string, pos int) int {
 		}
 	}
 	return n
+}
+
+// checkGPRange enforces VCFv4.5 §1.6.2 GP field:
+// "Genotype posterior probabilities in the range 0 to 1".
+// Emits one issue per out-of-range value.
+func checkGPRange(g Genotype, sIdx, idx, line int) []ValidationError {
+	gp, ok := g.Fields["GP"]
+	if !ok || gp.Missing {
+		return nil
+	}
+	var issues []ValidationError
+	for j, f := range gp.Floats {
+		if j < len(gp.Raw) && gp.Raw[j] == "." {
+			continue
+		}
+		if f < 0 || f > 1 {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/GP/sample[%d]", sIdx),
+				Msg: fmt.Sprintf("GP[%d]=%g is out of range; GP values must be between 0 and 1 (§1.6.2)", j, f),
+			})
+		}
+	}
+	return issues
+}
+
+// checkMRequiresGT enforces VCFv4.5 §1.6.1.5: "If any
+// base modification key is present for a sample, GT must
+// be defined for that sample." A present (non-missing)
+// M-key for a sample whose GT is missing fires one
+// SeverityError.
+func checkMRequiresGT(g Genotype, sIdx, idx, line int) []ValidationError {
+	gt, hasGT := g.Fields["GT"]
+	if !hasGT || !gt.Missing {
+		return nil
+	}
+	for k := range g.Fields {
+		fv := g.Fields[k]
+		if !IsBaseModKey(k) {
+			continue
+		}
+		if fv.Missing {
+			continue
+		}
+		return []ValidationError{{
+			Severity: SeverityError, Record: idx + 1, Line: line,
+			Field: fmt.Sprintf("FORMAT/%s/sample[%d]", k, sIdx),
+			Msg: fmt.Sprintf("base-modification field %q is present but GT is missing; §1.6.1.5 requires GT when any M-key is present", k),
+		}}
+	}
+	return nil
+}
+
+// checkMKeyRange enforces VCFv4.5 §1.6.1.5: "Values
+// must be between 0 and 1". Only applies to keys that
+// match the M-key shape AND are declared as TypeFloat.
+// Extracted from checkInfo to keep the per-key loop under
+// the cognitive-complexity lint cap.
+func checkMKeyRange(key string, val *InfoValue, idx, line int) []ValidationError {
+	if !IsBaseModKey(key) {
+		return nil
+	}
+	defType := val.Type
+	if defType != TypeFloat {
+		return nil
+	}
+	var issues []ValidationError
+	for j, f := range val.Floats {
+		if j < len(val.Raw) && val.Raw[j] == "." {
+			continue
+		}
+		if f < 0 || f > 1 {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "INFO/" + key,
+				Msg: fmt.Sprintf("%s[%d]=%g is out of range; M-key values must be between 0 and 1 (§1.6.1.5)", key, j, f),
+			})
+		}
+	}
+	return issues
 }
 
 // checkMateMatch compares two breakend mate snapshots
