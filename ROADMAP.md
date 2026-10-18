@@ -366,22 +366,25 @@ htsget/refget and crypt4gh remain pending.
 - [ ] **htsget / refget** — separate package from the per-format
       work, scope TBD (see §Open decisions for the two
       architectural readings).
-- [ ] **VCF v4.5 spec compliance — remaining checks.** The
-      high-value batch landed in this release (POS ≤ contig
-      length, symbolic ALT declared in `##ALT`, END matches
-      computed value, ID column character set). Remaining:
+- [x] **VCF v4.5 spec compliance — high-value batch.**
+      Shipped:
+      - POS / REF must fit within `##contig` length
+        (`e0709ea`).
+      - Symbolic ALT `<ID>` must be declared in `##ALT`
+        (`eee560f`).
+      - Declared END must match the computed value
+        (`2bdfd3c`).
+      - ID column rejects `,` and `=` (`ba45d9e`).
+      - Reserved FORMAT keys PL/GL/GP added with
+        Number=G and the right Type (`9933e54`).
+      - GT must be the first FORMAT field (`1913e5a`).
+      - Regression tests for PL (Number=G) and AD
+        (Number=R) cardinality, both already covered by
+        the existing `Number.Cardinality` path
+        (`e65561c`).
 
-  - **PL / GL / GP cardinality = `ploidy*(ploidy-1)/2 + ploidy`**
-    (the "Number=G" formula). Needs per-sample ploidy from
-    GT. Medium scope.
-  - **AD cardinality = len(REF) + len(ALT)** for
-    `Number=A`. Same plumbing as above.
-  - **`Number=G` reserved keys must have `Type=Float` or
-    `Type=Integer`** (PL, GL, GP). The reserved-key table
-    knows `Number=G` but does not yet validate the Type
-    against it.
-  - **GT must be the first FORMAT field** if present
-    (recommended, not required).
+  Remaining:
+
   - **Ploidy consistency across a record** — when GTs
     have different ploidies, `Number=G` and `Number=P`
     cardinality must use the maximum ploidy per record.
