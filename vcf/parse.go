@@ -165,8 +165,35 @@ func (d *Decoder) readLine() (raw []byte, lineNo int, err error) {
 		return nil, lineNo, &ParseError{Line: lineNo, Field: "<BOM>",
 			Msg: "VCF files must not contain a UTF-8 byte order mark"}
 	}
+	// Non-printable character rejection. The spec forbids
+	// the ASCII control ranges U+0000..U+0008, U+000B..U+000C,
+	// and U+000E..U+001F. For UTF-8 input the single-byte
+	// (ASCII) form is the only relevant one; multi-byte
+	// sequences start at 0x80+ and are out of these ranges.
+	for i, b := range raw {
+		if isDisallowedControl(b) {
+			return nil, lineNo, &ParseError{Line: lineNo,
+				Field: "<non-printable>",
+				Msg: fmt.Sprintf("non-printable byte 0x%02X at column %d is not allowed in VCF", b, i+1)}
+		}
+	}
 	d.line = lineNo
 	return raw, lineNo, nil
+}
+
+// isDisallowedControl reports whether b is in one of the
+// non-printable byte ranges the VCF v4.5 spec forbids:
+// U+0000..U+0008, U+000B..U+000C, U+000E..U+001F.
+func isDisallowedControl(b byte) bool {
+	switch {
+	case b <= 0x08:
+		return true
+	case b == 0x0B, b == 0x0C:
+		return true
+	case b >= 0x0E && b <= 0x1F:
+		return true
+	}
+	return false
 }
 
 // parseHeader reads ## meta lines and the #CHROM header line.

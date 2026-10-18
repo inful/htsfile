@@ -369,6 +369,59 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 				})
 			}
 		}
+
+		// Integer range: the BCF binary format cannot store
+		// the 8 values in the range [-2^31, -2^31+7]. The
+		// spec forbids these in both VCF and BCF.
+		if def.Type == TypeInteger {
+			for _, n := range val.Ints {
+				if n >= -2147483648 && n <= -2147483641 {
+					issues = append(issues, ValidationError{
+						Severity: SeverityError, Record: idx + 1, Line: line,
+						Field: "INFO/" + key,
+						Msg: fmt.Sprintf("Integer value %d is in the BCF-unsafe range [-2^31, -2^31+7]", n),
+					})
+				}
+			}
+		}
+
+		// SVLEN sign rule: for symbolic SV alleles the length
+		// must be positive. (The spec says SVLEN is always
+		// positive, even for INV.)
+		if key == "SVLEN" {
+			for i, n := range val.Ints {
+				if n <= 0 {
+					alt := "."
+					if i < len(rec.Alt) {
+						alt = rec.Alt[i]
+					}
+					issues = append(issues, ValidationError{
+						Severity: SeverityError, Record: idx + 1, Line: line,
+						Field: "INFO/SVLEN",
+						Msg: fmt.Sprintf("SVLEN[%d] for ALT %q must be positive (got %d)", i, alt, n),
+					})
+				}
+			}
+		}
+
+		// CIPOS / CIEND / CILEN confidence intervals: the
+		// interval must span 0. The field is a list of pairs
+		// (low, high) per ALT allele. The lower bound cannot
+		// be greater than 0, and the upper bound cannot be
+		// less than 0.
+		if key == "CIPOS" || key == "CIEND" || key == "CILEN" {
+			for i := 0; i+1 < len(val.Ints); i += 2 {
+				lo, hi := val.Ints[i], val.Ints[i+1]
+				if lo > 0 || hi < 0 {
+					issues = append(issues, ValidationError{
+						Severity: SeverityError, Record: idx + 1, Line: line,
+						Field: "INFO/" + key,
+						Msg: fmt.Sprintf("%s pair [%d, %d] must span 0 (lower ≤ 0, upper ≥ 0)",
+							key, lo, hi),
+					})
+				}
+			}
+		}
 	}
 	return issues
 }
