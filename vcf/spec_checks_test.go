@@ -804,3 +804,50 @@ func TestValidator_NumberGKeysMustHaveFloatOrInteger(t *testing.T) {
 		})
 	}
 }
+
+func TestValidator_GTMustBeFirstFormatField(t *testing.T) {
+	// Per VCFv4.5 §1.6.2, GT must be the first FORMAT
+	// key when it is declared. The check fires in
+	// ModeStrict.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"d\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, format string
+		wantIssue    bool
+	}{
+		{"GT first", "GT:DP", false},
+		{"GT second", "DP:GT", true},
+		{"GT alone", "GT", false},
+		{"DP without GT", "DP", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			sample := "0/1:30"
+			if c.name == "DP without GT" {
+				sample = "30"
+			}
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC\t.\t.\t.\t" + c.format + "\t" + sample + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if iss.Field == "FORMAT" && strings.Contains(iss.Msg, "GT must be the first") {
+					found = true
+					break
+				}
+			}
+			if found != c.wantIssue {
+				t.Errorf("format=%q: found=%v, want %v; issues=%+v", c.format, found, c.wantIssue, issues)
+			}
+		})
+	}
+}

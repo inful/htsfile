@@ -381,6 +381,21 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	// FORMAT / sample checks.
 	issues = append(issues, v.checkSamples(h, rec, idx)...)
 
+	// GT must be the first FORMAT field if it is declared
+	// at all (VCFv4.5 §1.6.2). This is a hard requirement;
+	// the parser intentionally does not enforce it so
+	// malformed files can still be inspected.
+	if v.Mode == ModeStrict && len(rec.Format) > 0 && hasGT(rec.Format) {
+		if rec.Format[0] != "GT" {
+			iss := ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "FORMAT",
+				Msg:   fmt.Sprintf("GT must be the first FORMAT field when present (got %q)", rec.Format[0]),
+			}
+			issues = append(issues, iss)
+		}
+	}
+
 	return issues
 }
 
@@ -616,6 +631,16 @@ func (v *Validator) checkPhaseStyle(rec *Record, idx int) []ValidationError {
 		v.phaseStyle[key] = style
 	}
 	return issues
+}
+
+// hasGT reports whether s contains a "GT" entry.
+func hasGT(s []string) bool {
+	for _, k := range s {
+		if k == "GT" {
+			return true
+		}
+	}
+	return false
 }
 
 // checkEND enforces VCFv4.5 §1.6.1.6: END is a computed
