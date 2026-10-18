@@ -49,6 +49,9 @@ const (
 	SymbolLR
 	// SymbolLG — identical to G for local alleles.
 	SymbolLG
+	// SymbolP (FORMAT only): one value for each allele in GT.
+	// The cardinality equals the sample's ploidy.
+	SymbolP
 )
 
 // String returns the spec text representation of n.
@@ -71,6 +74,8 @@ func (n Number) String() string {
 		return "LR"
 	case SymbolLG:
 		return "LG"
+	case SymbolP:
+		return "P"
 	}
 	return ""
 }
@@ -92,11 +97,14 @@ func ParseNumber(s string) (Number, error) {
 		return Number{Fixed: SymbolLR}, nil
 	case "LG":
 		return Number{Fixed: SymbolLG}, nil
-	case "P", "M":
-		// P (FORMAT only): one value per allele in GT.
-		// M (FORMAT only): variable, depends on genotype + allele bases.
-		// Defer detailed interpretation; treat as variable for cardinality
-		// checks.
+	case "P":
+		// P (FORMAT only): one value for each allele in GT.
+		// Cardinality equals the sample's ploidy.
+		return Number{Fixed: SymbolP}, nil
+	case "M":
+		// M (FORMAT only): variable, depends on genotype +
+		// allele bases (per VCFv4.5 §1.6.1.6 base-modification
+		// rule). Treat as variable for cardinality checks.
 		return Number{Fixed: SymbolDot}, nil
 	case "0":
 		return Number{Number: 0}, nil
@@ -112,7 +120,7 @@ func ParseNumber(s string) (Number, error) {
 }
 
 // IsFixed reports whether n is a symbolic cardinality
-// (A, R, G, ., LA, LR, LG).
+// (A, R, G, ., LA, LR, LG, P).
 func (n Number) IsFixed() bool { return n.Fixed != SymbolNone }
 
 // IsLocal reports whether n is a local-allele cardinality.
@@ -145,6 +153,12 @@ func (n Number) Cardinality(altCount, ploidy int) int {
 			return -1
 		}
 		return genotypeCount(altCount+1, ploidy)
+	case SymbolP:
+		// P (FORMAT only): one value per allele in GT.
+		if ploidy <= 0 {
+			return -1
+		}
+		return ploidy
 	case SymbolDot, SymbolLA, SymbolLR, SymbolLG:
 		return -1
 	}

@@ -34,11 +34,14 @@ var reservedInfoKeys = map[string]reservedKey{
 }
 
 // reservedFormatKeys enumerates the VCF v4.5 reserved FORMAT
-// keys (local-allele encoding). LAA is the only one
-// validated structurally today (it must come right after
-// GT; see Validator.checkSamples). The others are
-// documented here so callers can detect them.
+// keys. LAA is the only one validated structurally today
+// (it must come right after GT; see Validator.checkSamples).
+// The others are documented here so callers can detect them
+// and the validator can check declared Number/Type against
+// the spec.
 var reservedFormatKeys = map[string]reservedKey{
+	// Local-allele family (LAA must follow GT; rest may
+	// follow any of the local-allele keys).
 	"LAA":  {Number: ".", Type: TypeString},
 	"LAD":  {Number: ".", Type: TypeString},
 	"LADF": {Number: ".", Type: TypeString},
@@ -48,6 +51,11 @@ var reservedFormatKeys = map[string]reservedKey{
 	"LGP":  {Number: "G", Type: TypeString},
 	"LPL":  {Number: "P", Type: TypeString},
 	"LPP":  {Number: "G", Type: TypeInteger},
+	// Phase-set list trio (v4.5). All three use Number=P
+	// (one value per allele value in GT).
+	"PSL": {Number: "P", Type: TypeString},
+	"PSO": {Number: "P", Type: TypeInteger},
+	"PSQ": {Number: "P", Type: TypeInteger},
 }
 
 // reservedKey is the expected (Number, Type) pair for a

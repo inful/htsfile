@@ -24,8 +24,10 @@ func TestParseNumber(t *testing.T) {
 		{"LR", Number{Fixed: SymbolLR}, false},
 		{"LA", Number{Fixed: SymbolLA}, false},
 		{"LG", Number{Fixed: SymbolLG}, false},
-		// P and M map to SymbolDot (variable cardinality).
-		{"P", Number{Fixed: SymbolDot}, false},
+		// P is its own symbolic cardinality (one value per
+		// allele in GT). M maps to SymbolDot because its
+		// cardinality depends on per-base modification rules.
+		{"P", Number{Fixed: SymbolP}, false},
 		{"M", Number{Fixed: SymbolDot}, false},
 		// Errors
 		{"-1", Number{}, true},
@@ -69,8 +71,9 @@ func TestNumberString(t *testing.T) {
 		{Fixed: SymbolLA},
 		{Fixed: SymbolLR},
 		{Fixed: SymbolLG},
+		{Fixed: SymbolP},
 	}
-	wants := []string{"1", "0", "A", "R", "G", ".", "LA", "LR", "LG"}
+	wants := []string{"1", "0", "A", "R", "G", ".", "LA", "LR", "LG", "P"}
 	for i, n := range cases {
 		if got := n.String(); got != wants[i] {
 			t.Errorf("Number%+v.String() = %q; want %q", n, got, wants[i])
@@ -102,6 +105,10 @@ func TestNumberCardinality(t *testing.T) {
 		{"G missing ploidy", Number{Fixed: SymbolG}, 1, 0, -1},
 		{"Dot variable", Number{Fixed: SymbolDot}, 1, 1, -1},
 		{"LA unknown LAA", Number{Fixed: SymbolLA}, 3, 0, -1},
+		// Number=P: cardinality equals the sample ploidy.
+		{"P diploid", Number{Fixed: SymbolP}, 2, 2, 2},
+		{"P triploid", Number{Fixed: SymbolP}, 1, 3, 3},
+		{"P missing ploidy", Number{Fixed: SymbolP}, 0, 0, -1},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

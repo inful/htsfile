@@ -19,7 +19,10 @@ func TestIsReservedInfoKey(t *testing.T) {
 }
 
 func TestIsReservedFormatKey(t *testing.T) {
-	for _, key := range []string{"LAA", "LAD", "LADF", "LADR", "LEC", "LGL", "LGP", "LPL", "LPP"} {
+	for _, key := range []string{
+		"LAA", "LAD", "LADF", "LADR", "LEC", "LGL", "LGP", "LPL", "LPP",
+		"PSL", "PSO", "PSQ",
+	} {
 		if !IsReservedFormatKey(key) {
 			t.Errorf("IsReservedFormatKey(%q): should be true", key)
 		}
@@ -101,5 +104,30 @@ func TestValidator_ReservedKeyMetadataOK(t *testing.T) {
 		if iss.Field == "header/INFO/RN" {
 			t.Errorf("unexpected reserved-key warning for correctly-declared RN: %+v", iss)
 		}
+	}
+}
+
+func TestValidator_PSLMetadataMismatch(t *testing.T) {
+	// PSL is reserved Number=P, Type=String. A header that
+	// declares PSL as Type=Integer triggers a warning.
+	src := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=PSL,Number=P,Type=Integer,Description=\"phase set list\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	dec := NewDecoder(strings.NewReader(src))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	v := NewValidator(ModeStrict)
+	issues := v.Validate(hdr, nil)
+	found := false
+	for _, iss := range issues {
+		if iss.Field == "header/FORMAT/PSL" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected reserved-key warning for PSL, got issues: %+v", issues)
 	}
 }
