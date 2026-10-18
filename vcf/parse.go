@@ -348,6 +348,15 @@ func (h *Header) parseMetaLine(raw []byte, lineNo int) error {
 
 // parseHeaderLine parses "#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO[\tFORMAT[\t...samples]]".
 func (h *Header) parseHeaderLine(raw []byte, lineNo int) error {
+	// Trailing-tab rejection: the spec says "there must be
+	// no tab characters at the end of the line". The
+	// readLine helper strips a trailing CR but not a
+	// trailing tab, so we check here. The split below
+	// would silently drop an empty trailing field.
+	if n := len(raw); n > 0 && raw[n-1] == '\t' {
+		return &ParseError{Line: lineNo, Field: "header",
+			Msg: "header line ends with a tab character"}
+	}
 	fields := bytes.Split(raw, []byte{'\t'})
 	if len(fields) < 8 {
 		return &ParseError{Line: lineNo, Field: "header",
@@ -414,6 +423,16 @@ func (h *Header) applyStructured(key string, pairs []fieldPair, lineNo int) erro
 		if c.ID == "" {
 			return &ParseError{Line: lineNo, Field: "contig",
 				Msg: "missing required ID"}
+		}
+		// Contig name regex (SAM-compatible per VCFv4.5
+		// §1.4.7 "Contig field format"). The first character
+		// excludes '*' and '='; subsequent characters may
+		// include them. Reserved symbolic allele names
+		// (e.g. <*>, <DEL>) are not used as contig names.
+		if !validContigName(c.ID) {
+			return &ParseError{Line: lineNo, Field: "contig/ID",
+				Msg: fmt.Sprintf("contig name %q does not match the required regex %s",
+					c.ID, contigNamePattern)}
 		}
 		h.Contigs = append(h.Contigs, c)
 
@@ -953,6 +972,45 @@ func parseInfoColumn(s string, h *Header, lineNo int) (map[string]InfoValue, err
 		out[key] = v
 	}
 	return out, nil
+}
+
+// contigNamePattern is the SAM-compatible contig-name
+// regex from VCFv4.5 §1.4.7:
+//
+//	[0-9A-Za-z!#$%&+./:;?@^_|~-][0-9A-Za-z!#$%&*+./:;=?@^_|~-]*
+//
+// The first character excludes '*' and '='. Subsequent
+// characters may include them. ',' is excluded entirely.
+var contigNamePattern = `[0-9A-Za-z!#$%&+./:;?@^_|~-][0-9A-Za-z!#$%&*+./:;=?@^_|~-]*`
+
+// validContigName reports whether s matches contigNamePattern.
+func validContigName(s string) bool {
+	if s == "" {
+		return false
+	}
+	if !isContigNameStart(s[0]) {
+		return false
+	}
+	for i := 1; i < len(s); i++ {
+		if !isContigNameCont(s[i]) {
+			return false
+		}
+	}
+	return true
+}
+
+func isContigNameStart(c byte) bool {
+	return (c >= '0' && c <= '9') ||
+		(c >= 'A' && c <= 'Z') ||
+		(c >= 'a' && c <= 'z') ||
+		c == '!' || c == '#' || c == '$' || c == '%' || c == '&' ||
+		c == '+' || c == '.' || c == '/' || c == ':' || c == ';' ||
+		c == '?' || c == '@' || c == '^' || c == '_' || c == '|' ||
+		c == '~' || c == '-'
+}
+
+func isContigNameCont(c byte) bool {
+	return isContigNameStart(c) || c == '*' || c == '='
 }
 
 // validInfoKey matches the regex ^([A-Za-z_][0-9A-Za-z_.]*|1000G)$ from

@@ -203,3 +203,60 @@ func TestValidator_CIPOSMustSpanZero(t *testing.T) {
 		}
 	}
 }
+
+func TestParser_RejectsInvalidContigName(t *testing.T) {
+	// The SAM-compatible regex forbids leading '*' and '='.
+	// (A comma in a contig ID would also be invalid, but the
+	// current parser splits on comma before validating the
+	// ID, so that case is exercised separately if at all.)
+	cases := []struct {
+		name string
+		id   string
+	}{
+		{"leading-asterisk", "*chr1"},
+		{"leading-equals", "=chr1"},
+	}
+	for _, c := range cases {
+		src := "##fileformat=VCFv4.2\n" +
+			"##contig=<ID=" + c.id + ",length=1000>\n" +
+			"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+		dec := NewDecoder(strings.NewReader(src))
+		_, err := dec.Header()
+		if err == nil {
+			t.Errorf("%s (%q): expected error, got nil", c.name, c.id)
+			continue
+		}
+		if !strings.Contains(err.Error(), "contig") {
+			t.Errorf("%s (%q): error %q should mention contig", c.name, c.id, err)
+		}
+	}
+}
+
+func TestParser_AcceptsValidContigName(t *testing.T) {
+	// Common contig name forms: "1", "chr1", "NC_000001.1",
+	// names with dots, dashes, pluses.
+	for _, id := range []string{"chr1", "1", "NC_000001.1", "chrX", "scaffold_42", "MT", "HLA-DRB1*01:01"} {
+		src := "##fileformat=VCFv4.2\n" +
+			"##contig=<ID=" + id + ",length=1000>\n" +
+			"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+		dec := NewDecoder(strings.NewReader(src))
+		if _, err := dec.Header(); err != nil {
+			t.Errorf("ID %q: unexpected err: %v", id, err)
+		}
+	}
+}
+
+func TestParser_RejectsTrailingTabInHeaderLine(t *testing.T) {
+	// The spec says the header line must not end with a tab.
+	// We append one here.
+	src := "##fileformat=VCFv4.2\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\t\n"
+	dec := NewDecoder(strings.NewReader(src))
+	_, err := dec.Header()
+	if err == nil {
+		t.Fatal("expected error for trailing tab, got nil")
+	}
+	if !strings.Contains(err.Error(), "tab") {
+		t.Errorf("error should mention tab, got: %v", err)
+	}
+}
