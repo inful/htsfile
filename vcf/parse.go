@@ -384,6 +384,13 @@ func (h *Header) parseHeaderLine(raw []byte, lineNo int) error {
 			return &ParseError{Line: lineNo, Field: "FORMAT",
 				Msg: fmt.Sprintf("empty sample name at column %d", i+1)}
 		}
+		// Sample names must not contain whitespace or tabs;
+		// the spec calls this out for several fields and
+		// the parser is the natural place to enforce it.
+		if strings.ContainsAny(name, " \t") {
+			return &ParseError{Line: lineNo, Field: "FORMAT",
+				Msg: fmt.Sprintf("sample name %q contains whitespace", name)}
+		}
 		if seen[name] {
 			return &ParseError{Line: lineNo, Field: "FORMAT",
 				Msg: fmt.Sprintf("duplicate sample name %q", name)}

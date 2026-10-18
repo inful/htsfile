@@ -23,5 +23,5 @@ chrA	2	delbp1	T	T[chrA:5[	.	.	MATEID=delbp2;EVENT=DEL_split_bp_cn	GT	0/1
 chrA	2	delbp2	A	]chrA:2]A	.	.	MATEID=delbp1;EVENT=DEL_split_bp_cn	GT	0/1
 chrA	2	.	T	<DEL>	.	.	SVLEN=2;SVCLAIM=D;EVENT=DEL_split_bp_cn	GT	0/1
 chrA	5	.	G	GAAA	.	.	EVENT=homology_seq	GT	1/1
-chrA	5	.	G	<DUP>	.	.	SVLEN=3;CIPOS=0,5;EVENT=homology_dup	GT	0/1
+chrA	5	.	G	<DUP>	.	.	SVLEN=3;SVCLAIM=DJ;CIPOS=0,5;EVENT=homology_dup	GT	0/1
 chrA	14	.	T	<INS>	.	.	IMPRECISE;SVLEN=100;CILEN=-50,50;CIPOS=-10,10	GT	0/1

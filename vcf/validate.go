@@ -2,6 +2,7 @@ package vcf
 
 import (
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -295,6 +296,15 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	// INFO field checks.
 	issues = append(issues, v.checkInfo(h, rec, idx)...)
 
+	// SVCLAIM rules per symbolic allele type. Per
+	// VCFv4.5 §1.6.1.7:
+	//   - DEL/DUP: SVCLAIM must be specified, allowed D/J/DJ.
+	//   - CNV: optional, but if specified must be D or ".".
+	//   - INV/INS/breakend: optional, but if specified must
+	//     be J, DJ, or ".".
+	//   - non-SV: must be "." if present.
+	issues = append(issues, v.checkSVClaim(rec, idx)...)
+
 	// FILTER values must be declared (or "PASS"/".").
 	issues = append(issues, v.checkFilter(h, rec, idx)...)
 
@@ -424,6 +434,136 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 		}
 	}
 	return issues
+}
+
+// checkSVClaim enforces the per-symbolic-allele SVCLAIM
+// rules from VCFv4.5 §1.6.1.7.
+//
+//   - DEL/DUP: SVCLAIM must be specified and one of D, J, DJ.
+//   - CNV: optional, but if specified must be D or ".".
+//   - INV/INS/breakend alleles: optional, but if specified
+//     must be J, DJ, or ".".
+//   - non-SV (e.g. SNV) alleles: must be "." if present.
+//
+// The check is a no-op when the record has no SVCLAIM key
+// in its INFO column.
+func (v *Validator) checkSVClaim(rec *Record, idx int) []ValidationError {
+	raw, ok := rec.Info["SVCLAIM"]
+	// SVCLAIM is stored on Strs (the spec declares it as
+	// Type=String). Fall back to Ints for hand-built records
+	// (BCF-encoded claims).
+	claims := raw.Strs
+	if len(claims) == 0 {
+		for _, n := range raw.Ints {
+			claims = append(claims, intToSVClaim(n))
+		}
+	}
+	if !ok || len(claims) == 0 {
+		// SVCLAIM is missing: spec says it must be present
+		// for DEL/DUP records. Flag here only when those
+		// alleles exist.
+		for _, alt := range rec.Alt {
+			if alt == "<DEL>" || alt == "<DUP>" {
+				return []ValidationError{{
+					Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+					Field: "INFO/SVCLAIM",
+					Msg:   "SVCLAIM must be specified for DEL and DUP symbolic alleles",
+				}}
+			}
+		}
+		return nil
+	}
+	var issues []ValidationError
+	for i, alt := range rec.Alt {
+		if i >= len(claims) {
+			break
+		}
+		claim := claims[i]
+		want := svClaimAllowed(alt)
+		if want == "" {
+			// Non-SV allele: claim must be "." if present.
+			if claim != "." {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+					Field: "INFO/SVCLAIM",
+					Msg: fmt.Sprintf("non-SV allele %q must have SVCLAIM \".\" (got %q)", alt, claim),
+				})
+			}
+			continue
+		}
+		// Symbolic SV: claim must be one of want.
+		if !svClaimInSet(claim, want) {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+				Field: "INFO/SVCLAIM",
+				Msg: fmt.Sprintf("SVCLAIM[%d] for ALT %q must be one of %s (got %q)", i, alt, want, claim),
+			})
+		}
+	}
+	return issues
+}
+
+// intToSVClaim decodes a BCF-encoded SVCLAIM int back into
+// the spec's letter form. The BCF v1 spec uses the values
+// 0 (PASS / no claim), 1 (D), 2 (J), 3 (DJ). Anything else
+// is reported as a "?(<n>)" string the validator surfaces
+// verbatim.
+func intToSVClaim(n int64) string {
+	switch n {
+	case 0:
+		return "."
+	case 1:
+		return "D"
+	case 2:
+		return "J"
+	case 3:
+		return "DJ"
+	}
+	return fmt.Sprintf("?(%d)", n)
+}
+
+// svClaimAllowed returns the set of spec-allowed SVCLAIM
+// letters for the given ALT allele. Empty string means the
+// allele is non-SV and only "." is allowed.
+func svClaimAllowed(alt string) string {
+	// Symbolic structural variants: <ID> form.
+	if !strings.HasPrefix(alt, "<") || !strings.HasSuffix(alt, ">") {
+		return ""
+	}
+	id := alt[1 : len(alt)-1]
+	switch id {
+	case "DEL", "DUP":
+		return "{D, J, DJ}"
+	case "CNV":
+		return "{D, .}"
+	case "INV", "INS", "*":
+		return "{J, DJ, .}"
+	}
+	// Breakend alleles: <DEL> / <DUP> with qualifiers, or
+	// the bracket-form breakends. Per spec they are
+	// implicit J claims.
+	if isBreakend(alt) {
+		return "{J, .}"
+	}
+	// User-defined symbolic alleles: spec is silent; allow
+	// all four codes plus "." to avoid false positives.
+	return "{D, J, DJ, .}"
+}
+
+func svClaimInSet(claim, allowed string) bool {
+	if claim == "." {
+		return strings.Contains(allowed, ".")
+	}
+	if claim == "D" {
+		return strings.Contains(allowed, "D")
+	}
+	if claim == "J" {
+		return strings.Contains(allowed, "J")
+	}
+	if claim == "DJ" {
+		return strings.Contains(allowed, "DJ")
+	}
+	return false
 }
 
 // checkFilter validates FILTER column values against declared filters.
@@ -695,6 +835,29 @@ func isBreakend(a string) bool {
 	return false
 }
 
+// vcfFloatPattern is the VCF v4.5 §1.4.3 "Data types" regex for
+// Float values:
+//
+//	^[-+]?\d*\.?\d+([eE][-+]?\d+)?$|^[-+]?(INF|INFINITY|NAN)$
+//	case-insensitively
+//
+// The regex rejects "1." (trailing dot) and "1e" (trailing
+// exponent with no digits) which strconv.ParseFloat accepts.
+var vcfFloatPattern = regexp.MustCompile(`^[-+]?\d*\.?\d+([eE][-+]?\d+)?$`)
+
+// validFloatString reports whether s matches the VCF Float
+// format. The spec allows "INF", "INFINITY", "NAN" (and
+// negative variants) case-insensitively; everything else
+// must match vcfFloatPattern.
+func validFloatString(s string) bool {
+	upper := strings.ToUpper(s)
+	switch upper {
+	case "INF", "INFINITY", "-INF", "-INFINITY", "NAN":
+		return true
+	}
+	return vcfFloatPattern.MatchString(s)
+}
+
 // validTypedValue reports whether s is a valid representation of a value
 // of the declared type.
 func validTypedValue(t FieldType, s string) bool {
@@ -706,8 +869,7 @@ func validTypedValue(t FieldType, s string) bool {
 		_, err := strconv.ParseInt(s, 10, 32)
 		return err == nil
 	case TypeFloat:
-		_, err := parseVCFFloat(s)
-		return err == nil
+		return validFloatString(s)
 	case TypeFlag:
 		return s == ""
 	case TypeCharacter:

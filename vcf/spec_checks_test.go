@@ -260,3 +260,180 @@ func TestParser_RejectsTrailingTabInHeaderLine(t *testing.T) {
 		t.Errorf("error should mention tab, got: %v", err)
 	}
 }
+
+func TestParser_RejectsSampleNameWithWhitespace(t *testing.T) {
+	src := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA 00001\n"
+	dec := NewDecoder(strings.NewReader(src))
+	_, err := dec.Header()
+	if err == nil {
+		t.Fatal("expected error for whitespace in sample name, got nil")
+	}
+	if !strings.Contains(err.Error(), "whitespace") {
+		t.Errorf("error should mention whitespace, got: %v", err)
+	}
+}
+
+func TestValidator_FloatFormatStrict(t *testing.T) {
+	// The spec regex rejects "1." (trailing dot) and "1e"
+	// (trailing exponent with no digits), which
+	// strconv.ParseFloat accepts.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##INFO=<ID=AF,Number=A,Type=Float,Description=\"freq\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	for _, bad := range []string{"1.", "1e", "1e+", ".e5"} {
+		// The parser itself is lenient (it doesn't reject bad
+		// float formats at parse time); the validator catches
+		// them.
+		rec := &Record{
+			Chrom: "chr1", Pos: 100, Ref: "A", Alt: []string{"C"},
+			Info: map[string]InfoValue{
+				"AF": {typedCore: typedCore{
+					Type: TypeFloat,
+					Strs: []string{bad},
+					Raw:  []string{bad},
+				}},
+			},
+		}
+		v := NewValidator(ModeStrict)
+		issues := v.Validate(parseHeaderForTest(t, hdrText), []*Record{rec})
+		found := false
+		for _, iss := range issues {
+			if iss.Field == "INFO/AF" && strings.Contains(iss.Msg, "Type=\"Float\"") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("AF=%q: expected Float format issue, got: %+v", bad, issues)
+		}
+	}
+	// Valid formats: no issue.
+	for _, good := range []string{"0.5", "1", "0.5e-3", "1.5E+10", ".5", "INF", "NAN"} {
+		rec := &Record{
+			Chrom: "chr1", Pos: 100, Ref: "A", Alt: []string{"C"},
+			Info: map[string]InfoValue{
+				"AF": {typedCore: typedCore{
+					Type: TypeFloat,
+					Strs: []string{good},
+					Raw:  []string{good},
+				}},
+			},
+		}
+		issues := NewValidator(ModeStrict).Validate(parseHeaderForTest(t, hdrText), []*Record{rec})
+		for _, iss := range issues {
+			if iss.Field == "INFO/AF" && strings.Contains(iss.Msg, "Type=\"Float\"") {
+				t.Errorf("AF=%q: unexpected Float format issue: %+v", good, iss)
+			}
+		}
+	}
+}
+
+func TestValidator_SVCLAIMMissingForDEL(t *testing.T) {
+	// A DEL record without SVCLAIM is a spec violation.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##INFO=<ID=SVCLAIM,Number=A,Type=String,Description=\"claim\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t<DEL>\t.\t.\t.\n"))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+	found := false
+	for _, iss := range issues {
+		if iss.Field == "INFO/SVCLAIM" && strings.Contains(iss.Msg, "must be specified") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected SVCLAIM-required issue for DEL, got: %+v", issues)
+	}
+}
+
+func TestValidator_SVCLAIMValidForDEL(t *testing.T) {
+	// A DEL record with SVCLAIM=DJ passes.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##INFO=<ID=SVCLAIM,Number=A,Type=String,Description=\"claim\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t<DEL>\t.\t.\tSVCLAIM=DJ\n"))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+	for _, iss := range issues {
+		if iss.Field == "INFO/SVCLAIM" {
+			t.Errorf("unexpected SVCLAIM issue for valid DEL+DJ: %+v", iss)
+		}
+	}
+}
+
+func TestValidator_SVCLAIMInvalidForDEL(t *testing.T) {
+	// A DEL with SVCLAIM=X (not in {D,J,DJ}) is invalid.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##INFO=<ID=SVCLAIM,Number=A,Type=String,Description=\"claim\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t<DEL>\t.\t.\tSVCLAIM=X\n"))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+	found := false
+	for _, iss := range issues {
+		if iss.Field == "INFO/SVCLAIM" && strings.Contains(iss.Msg, "must be one of") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected SVCLAIM invalid-claim issue, got: %+v", issues)
+	}
+}
+
+func TestValidator_SVCLAIMNonSVAlleleMustBeDot(t *testing.T) {
+	// A non-SV (SNV) record with SVCLAIM=A is invalid.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##INFO=<ID=SVCLAIM,Number=A,Type=String,Description=\"claim\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC\t.\t.\tSVCLAIM=A\n"))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+	found := false
+	for _, iss := range issues {
+		if iss.Field == "INFO/SVCLAIM" && strings.Contains(iss.Msg, "non-SV") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("expected non-SV SVCLAIM issue, got: %+v", issues)
+	}
+}
