@@ -1015,6 +1015,64 @@ func TestValidator_FTNoWhitespaceOrSemicolons(t *testing.T) {
 	}
 }
 
+func TestValidator_RNDeterminedFieldsCardinality(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.7: "The length of these fields
+	// [RUS, RUL, RB, CIRUC, RUC, CIRB] must match the
+	// sum of all RN values for the record."
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=CNV:TR,Description=\"x\">\n" +
+		"##INFO=<ID=RN,Number=A,Type=Integer,Description=\"x\">\n" +
+		"##INFO=<ID=RUS,Number=.,Type=String,Description=\"x\">\n" +
+		"##INFO=<ID=RUL,Number=.,Type=Integer,Description=\"x\">\n" +
+		"##INFO=<ID=RB,Number=.,Type=Integer,Description=\"x\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, info string
+		want       bool
+	}{
+		// Two CNV:TR alleles, RN per allele = 2,2 -> sum 4
+		{"RN=2,2 RUS=4 ok", "RN=2,2;RUS=CAG,TG,CAGG,CAA", false},
+		{"RN=2,2 RUS=3 wrong", "RN=2,2;RUS=CAG,TG,CAGG", true},
+		{"RN=2,2 RUL=4 ok", "RN=2,2;RUL=3,2,4,1", false},
+		{"RN=2,2 RUL=3 wrong", "RN=2,2;RUL=3,2,4", true},
+		{"RN=2,2 RB=4 ok", "RN=2,2;RB=30,15,12,20", false},
+		{"RN=2,2 RB=3 wrong", "RN=2,2;RB=30,15,12", true},
+		// RUS length matches RUL per element.
+		{"RUS RUL aligned ok", "RN=2,2;RUS=CAG,TG,CAA,TT;RUL=3,2,3,2", false},
+		{"RUS RUL mismatch", "RN=2,2;RUS=CAG,TG,CAA,TT;RUL=3,2,3,5", true},
+		// No <CNV:TR> → skip the RN checks.
+		{"no CNV:TR RUS mismatch", "RUS=CAG", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			alt := "<CNV:TR>,<CNV:TR>"
+			if c.name == "no CNV:TR RUS mismatch" {
+				alt = "C"
+			}
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t" + alt + "\t.\t.\t" + c.info + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "does not match") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("info=%q alt=%s: found=%v, want %v; issues=%+v", c.info, alt, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_CNVTRRequiresRUSorRUL(t *testing.T) {
 	// Per VCFv4.5 §"Representing tandem repeats":
 	// "RUS or RUL must be specified for each <CNV:TR>."

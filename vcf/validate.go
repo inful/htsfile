@@ -587,7 +587,123 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 			Msg:   "<CNV:TR> allele is present but neither RUS nor RUL is declared",
 		})
 	}
+
+	// RN-determined fields (RUS / RUL / RUC / RB / CIRUC /
+	// CIRB) must have a total length equal to the sum of
+	// RN values (VCFv4.5 §1.6.1.7 RN). Missing RN entries
+	// are treated as 0.
+	if rnSum := computeRNSum(rec); rnSum >= 0 {
+		checkRNDeterminedFields(rec, rnSum, idx, line, &issues)
+	}
 	return issues
+}
+
+// checkRNDeterminedFields enforces the cardinality
+// invariants on RUS / RUL / RUC / RB / CIRUC / CIRB
+// relative to the sum of RN values (VCFv4.5 §1.6.1.7)
+// and the RUS length vs RUL value rule. Extracted to
+// keep checkInfo under the cognitive-complexity lint cap.
+func checkRNDeterminedFields(rec *Record, rnSum, idx, line int, issues *[]ValidationError) {
+	for _, key := range rnDeterminedKeys {
+		fv, has := rec.Info[key]
+		if !has || !fv.HasValue() {
+			continue
+		}
+		got := valueLen(&fv)
+		if got != rnSum {
+			*issues = append(*issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "INFO/" + key,
+				Msg: fmt.Sprintf("%s length %d does not match sum of RN values %d", key, got, rnSum),
+			})
+		}
+	}
+	// RUS length must match RUL per element (VCFv4.5
+	// §1.6.1.7 RUS).
+	rus, hasRUS := rec.Info["RUS"]
+	rul, hasRUL := rec.Info["RUL"]
+	if !hasRUS || !hasRUL || !rus.HasValue() || !rul.HasValue() {
+		return
+	}
+	if len(rus.Strs) != len(rul.Ints) {
+		return
+	}
+	for i, s := range rus.Strs {
+		rlen := len(s)
+		if rlen != int(rul.Ints[i]) {
+			*issues = append(*issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "INFO/RUS",
+				Msg: fmt.Sprintf("RUS[%d] length %d does not match RUL[%d]=%d", i, rlen, i, rul.Ints[i]),
+			})
+		}
+	}
+}
+
+// computeRNSum returns the sum of all RN values in the
+// record (treating missing as 0 for non-<CNV:TR>
+// alleles and 1 for <CNV:TR> alleles when RN is absent).
+// Returns -1 when no <CNV:TR> allele is present so the
+// caller can skip the RN-determined checks.
+func computeRNSum(rec *Record) int {
+	hasCNVTR := false
+	for _, a := range rec.Alt {
+		if strings.HasPrefix(a, "<CNV:TR") && strings.HasSuffix(a, ">") {
+			hasCNVTR = true
+			break
+		}
+	}
+	if !hasCNVTR {
+		return -1
+	}
+	rnFV, hasRN := rec.Info["RN"]
+	if !hasRN {
+		// Default RN per allele (1 for CNV:TR, 0
+		// otherwise) — but we only care about CNV:TR
+		// alleles in this branch.
+		var sum int
+		for _, a := range rec.Alt {
+			if strings.HasPrefix(a, "<CNV:TR") && strings.HasSuffix(a, ">") {
+				sum++
+			}
+		}
+		return sum
+	}
+	var sum int
+	for i, n := range rnFV.Ints {
+		if i < len(rec.Alt) && strings.HasPrefix(rec.Alt[i], "<CNV:TR") {
+			if n > 0 {
+				sum += int(n)
+			}
+		}
+	}
+	return sum
+}
+
+// valueLen returns the cardinality of a typedCore for
+// the purpose of RN-summed checks: number of entries
+// for strings/floats, number of integer values for ints.
+func valueLen(v *InfoValue) int {
+	switch v.Type {
+	case TypeInteger:
+		return len(v.Ints)
+	case TypeFloat:
+		return len(v.Floats)
+	case TypeString, TypeCharacter:
+		return len(v.Strs)
+	case TypeFlag:
+		if v.Flag {
+			return 1
+		}
+	}
+	return len(v.Raw)
+}
+
+// rnDeterminedKeys lists the INFO keys whose total length
+// must equal the sum of RN values for the record
+// (VCFv4.5 §1.6.1.7 RN).
+var rnDeterminedKeys = [...]string{
+	"RUS", "RUL", "RUC", "RB", "CIRUC", "CIRB",
 }
 
 // reservedEventTypes is the set of EVENTTYPE values the spec
