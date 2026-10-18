@@ -386,11 +386,12 @@ htsget/refget and crypt4gh remain pending.
         (`cf102ca`).
       - Mitochondrial chromosome exemptions: POS and
         END checks skip mtDNA per §1.6.1.6 (`7e072fb`).
+      - `##contig` species / taxonomy sub-fields
+        promoted to typed fields on `Contig`, with
+        round-trip through the encoder (`02f1bdd`).
 
   Remaining:
 
-  - **`##contig` species / taxonomy / assembly** field
-    validation.
   - **Compressed `.vcf.gz` reader pipeline** (BGZF wrapper
     + tabix/CSI region access). All the building blocks
     exist (`internal/bgzf`, `tabix`, `csi`); no wired-up
