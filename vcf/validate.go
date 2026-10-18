@@ -52,6 +52,21 @@ type Validator struct {
 	prevPos     int64   // POS of the most recently fed record; -1 means "no previous"
 	headerDone  bool    // true once HeaderChecks has been called
 	finished    bool    // true once Finish has been called
+
+	// phaseStyle tracks the phasing separator ("|" or "/")
+	// observed in each (sample, PS) pair so far. The key is
+	// sample-index and PS-string; the value is one of "phased",
+	// "unphased", or "" (no GT). The map resets across
+	// chromosomes because phase sets are chromosome-bound per
+	// the spec.
+	phaseStyle map[phaseKey]string
+}
+
+// phaseKey identifies a (sample, PS) pair. PS of "" means
+// the implicit default phase set.
+type phaseKey struct {
+	sampleIdx int
+	ps        string
 }
 
 // NewValidator constructs a Validator with the given mode.
@@ -88,6 +103,7 @@ func (v *Validator) Reset() {
 	v.prevPos = -1
 	v.headerDone = false
 	v.finished = false
+	v.phaseStyle = nil
 }
 
 // HeaderChecks runs the header-only checks and the
@@ -137,6 +153,13 @@ func (v *Validator) Next(h *Header, rec *Record) []ValidationError {
 	if rec.Pos > v.prevPos {
 		v.prevPos = rec.Pos
 	}
+
+	// Per-sample PS phasing consistency. The spec says all
+	// phased genotypes in the same phase set use the same
+	// separator style. We track the first observed style per
+	// (sample, PS) and flag any later inconsistency.
+	issues = append(issues, v.checkPhaseStyle(rec, idx)...)
+
 	return issues
 }
 
@@ -499,6 +522,56 @@ func (v *Validator) checkEventType(rec *Record, idx int) []ValidationError {
 			}
 			issues = append(issues, iss)
 		}
+	}
+	return issues
+}
+
+// checkPhaseStyle enforces the PS phasing-consistency rule
+// from VCFv4.5 §"PS": records that share a PS value (and
+// the same sample + chromosome) must use the same GT
+// separator style. We only check records that declare an
+// explicit PS — the spec is silent on records without PS
+// (the implicit default phase set), and the spec example
+// itself mixes separators on records without PS.
+func (v *Validator) checkPhaseStyle(rec *Record, idx int) []ValidationError {
+	if v.Mode != ModeStrict {
+		return nil
+	}
+	if rec.Chrom != v.prevChrom {
+		v.phaseStyle = nil
+	}
+	if v.phaseStyle == nil {
+		v.phaseStyle = map[phaseKey]string{}
+	}
+	var issues []ValidationError
+	for sIdx, g := range rec.Samples {
+		psv, ok := g.Fields["PS"]
+		if !ok || psv.Missing || len(psv.Ints) == 0 {
+			continue
+		}
+		ps := fmt.Sprintf("%d", psv.Ints[0])
+		vv, ok := g.Fields["GT"]
+		if !ok || vv.Missing || len(vv.Strs) == 0 {
+			continue
+		}
+		gt := vv.Strs[0]
+		if !strings.Contains(gt, "|") && !strings.Contains(gt, "/") {
+			continue
+		}
+		style := "unphased"
+		if strings.Contains(gt, "|") {
+			style = "phased"
+		}
+		key := phaseKey{sampleIdx: sIdx, ps: ps}
+		if prev, seen := v.phaseStyle[key]; seen && prev != style {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+				Field: fmt.Sprintf("FORMAT/GT/sample[%d]", sIdx),
+				Msg: fmt.Sprintf("GT separator style for sample %d, PS %q changed from %s to %s within CHROM %s",
+					sIdx, ps, prev, style, rec.Chrom),
+			})
+		}
+		v.phaseStyle[key] = style
 	}
 	return issues
 }

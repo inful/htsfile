@@ -1,6 +1,7 @@
 package vcf
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -203,6 +204,91 @@ func TestValidator_Streaming_EquivalenceWithValidate(t *testing.T) {
 	for i := range batch {
 		if batch[i].Field != stream[i].Field || batch[i].Msg != stream[i].Msg {
 			t.Errorf("issue %d differs: batch=%+v, stream=%+v", i, batch[i], stream[i])
+		}
+	}
+}
+
+// streamingTestHeaderPS declares GT and PS in the FORMAT
+// column so tests can exercise the cross-record PS check.
+const streamingTestHeaderPS = "##fileformat=VCFv4.2\n" +
+	"##contig=<ID=chr1,length=1000>\n" +
+	"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+	"##FORMAT=<ID=PS,Number=1,Type=Integer,Description=\"phase set\">\n" +
+	"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+
+// streamRecordPS builds a record that includes PS for the
+// streaming phase-style test.
+func streamRecordPS(t *testing.T, pos int64, gt string, ps int64) *Record {
+	t.Helper()
+	sample := gt
+	if ps > 0 {
+		sample = gt + ":" + fmt.Sprintf("%d", ps)
+	}
+	line := "chr1\t" + itoa(pos) + "\t.\tC\tA\t.\t.\t.\tGT:PS\t" + sample + "\n"
+	dec := NewDecoder(strings.NewReader(streamingTestHeaderPS + line))
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	return rec
+}
+
+func TestValidator_Streaming_PhaseStyleMismatch(t *testing.T) {
+	// Two records on the same chrom with the same PS value
+	// but different phasing styles (one phased, one
+	// unphased) must produce a cross-record issue in
+	// ModeStrict.
+	dec := NewDecoder(strings.NewReader(streamingTestHeaderPS))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	v := NewValidator(ModeStrict)
+	_ = v.HeaderChecks(hdr)
+	issues := v.Next(hdr, streamRecordPS(t, 100, "0|1", 42))
+	if len(issues) != 0 {
+		t.Errorf("first record: got %d issues, want 0: %+v", len(issues), issues)
+	}
+	issues = v.Next(hdr, streamRecordPS(t, 200, "0/1", 42))
+	found := false
+	for _, iss := range issues {
+		if iss.Field == "FORMAT/GT/sample[0]" && strings.Contains(iss.Msg, "separator style") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Errorf("second record: expected phase-style issue, got: %+v", issues)
+	}
+	// A third record with a different PS (or no PS) on the
+	// same chrom must not fire.
+	issues = v.Next(hdr, streamRecordPS(t, 300, "0|1", 99))
+	for _, iss := range issues {
+		if iss.Field == "FORMAT/GT/sample[0]" && strings.Contains(iss.Msg, "separator style") {
+			t.Errorf("third record (different PS): unexpected phase-style issue: %+v", iss)
+		}
+	}
+}
+
+func TestValidator_Streaming_PhaseStyleConsistent(t *testing.T) {
+	// Two records with the same PS and consistent phasing
+	// style must not produce any phase-style issue.
+	dec := NewDecoder(strings.NewReader(streamingTestHeaderPS))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	v := NewValidator(ModeStrict)
+	_ = v.HeaderChecks(hdr)
+	for _, gt := range []string{"0|1", "1|0", "0|1|2"} {
+		issues := v.Next(hdr, streamRecordPS(t, 100, gt, 42))
+		for _, iss := range issues {
+			if iss.Field == "FORMAT/GT/sample[0]" && strings.Contains(iss.Msg, "separator style") {
+				t.Errorf("GT=%q: unexpected phase-style issue: %+v", gt, iss)
+			}
 		}
 	}
 }
