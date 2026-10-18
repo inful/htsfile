@@ -82,7 +82,13 @@ func (e *Encoder) WriteHeader(hdr *Header) error {
 		return fmt.Errorf("bcf: writing header: %w", err)
 	}
 
-	// Build contig lookup.
+	// Build contig lookup. (The binary reference dictionary
+	// — n_ref + per-ref entries — is part of the BCF v2.1
+	// spec but the v1 decoder only parses the VCF text. We
+	// keep the contig map in the encoder for the record-time
+	// chromIdx resolution but don't emit the dictionary
+	// bytes; this matches what the v1 test fixtures do and
+	// what the v1 decoder expects.)
 	e.contigIdx = make(map[string]int32, len(hdr.Contigs))
 	for i, c := range hdr.Contigs {
 		e.contigIdx[c] = int32(i)

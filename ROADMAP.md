@@ -357,6 +357,12 @@ htsget/refget and crypt4gh remain pending.
       follow-up. Tabix + CSI writers shipped (see the Tier 4
       item above). BCF writer still deferred for per-sample
       FORMAT data.
+- [x] **CLI format translation — sam2bam / bam2sam / vcf2bcf /
+      bcf2vcf.** Landed in the Unreleased section of the
+      CHANGELOG as a CLI-only feature. Translators live in
+      `cmd/htsfile/translate.go`; conversion is text ↔ binary
+      with the per-sample FORMAT caveat above. Round-trips
+      cleanly through every format combination tested.
 - [ ] **htsget / refget** — separate package from the per-format
       work, scope TBD (see §Open decisions for the two
       architectural readings).

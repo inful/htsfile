@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
-file formats. It currently targets nine specifications from
+file formats. It currently targets ten specifications from
 [samtools/hts-specs](https://github.com/samtools/hts-specs) and
 the Sequence Ontology:
 
@@ -16,7 +16,8 @@ the Sequence Ontology:
 - **GFF3** — Generic Feature Format Version 3 (9 columns + free-form attributes)
 - **FASTA** — Sequence records (`>` header + multi-line sequence); read-only `.fai` index reader
 - **FASTQ** — Short-read sequencing records (`@` header + sequence + `+` + qualities), with Phred+33 / Phred+64 auto-detection
-- **BCF v2.1** — Binary VCF (BGZF-compressed). **Read-only** in v1.
+- **BCF v2.1** — Binary VCF (BGZF-compressed). Writer added in
+  v0.5.0 (no per-sample FORMAT).
 - **Tabix v1** — Generic position index for sorted bgzipped files. **Read-only** in v1.
 - **CSI v1** — Coordinate-sorted index (successor to Tabix). **Read-only** in v1.
 
@@ -286,6 +287,14 @@ htsfile roundtrip sequences.fa > out.fa  # FASTA round-trip (80-char wrapping)
 # read-only in v1). .bam and .bcf round-trip is supported
 # as of v0.5.0. .tbi and .csi round-trip is supported.
 
+# Convert between text and binary forms (translation subcommands)
+htsfile sam2bam reads.sam > reads.bam      # SAM text → BAM binary
+htsfile bam2sam aligned.bam > aligned.sam  # BAM binary → SAM text
+htsfile vcf2bcf variants.vcf > variants.bcf # VCF text → BCF binary
+htsfile bcf2vcf variants.bcf > variants.vcf # BCF binary → VCF text
+# BCF→VCF drops per-sample FORMAT data (matches the v1 BCF
+# reader scope). Translation is otherwise lossless.
+
 # Print a header summary
 htsfile summary sample.vcf
 htsfile summary peaks.bed                 # BED summary: track, type, records, chroms
@@ -354,9 +363,10 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | 4-bit packed SEQ / CIGAR / qual        |   ✅   |
 | All 12 BAM tag type codes (A, c, C, s, S, i, I, f, d, Z, H, B) | ✅ |
 | `ModeDefault` and `ModeStrict` validators | ✅ |
-| BAM **writer** (round-trip)             |   ❌   |
+| BAM **writer** (round-trip)             |   ✅   |
 | BAI index reader (`bam/bai`)            |   ✅   |
 | BAI-based region queries                |   🔜   |
+| CLI translation (`sam2bam` / `bam2sam`) |   ✅   |
 
 ### gff/ package (GFF3)
 
@@ -414,6 +424,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | **BCF writer (record-side)**           |   ✅   |
 | Per-sample FORMAT column               |   ❌   |
 | BCF 2.2 (latest version) support       |   ❌   |
+| CLI translation (`vcf2bcf` / `bcf2vcf`) |   ✅   |
 
 ### tabix/ package (Tabix v1)
 
