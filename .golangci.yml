@@ -86,6 +86,13 @@ linters:
       - path: fasta/cli_test\.go
         linters:
           - gosec
+      # Tabix and CSI are also binary parsers; same G115
+      # false-positive pattern as BAM/BCF/internal/bgzf.
+      # Exclude gosec for the production parsers and the test
+      # builders (including CLI smoke tests).
+      - path: (tabix|csi)/.*\.go
+        linters:
+          - gosec
       # BCF is also a binary parser; same G115 false-positive
       # pattern as BAM/internal/bgzf. Exclude gosec for the
       # production parser and the test builder.

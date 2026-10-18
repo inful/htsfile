@@ -7,6 +7,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tabix v1 index reader.** A new `tabix` package
+  (`github.com/inful/htsfile/tabix`) reads the general-purpose
+  position index for sorted bgzipped text files (file
+  extension `.tbi`). Decodes the 4-byte magic (`TBI\x01`),
+  the per-reference bin index (samtools 5-level binning with
+  bin numbers 0-4680), and the linear index of BGZF virtual
+  offsets. Convenience helpers `BinFromRange(beg, end)` and
+  `LinearIndexOffset(pos)` cover the common caller-side
+  workflow of "which chunks might contain my region?".
+  **Read-only in v1.** The optional `n_no_coor` field is
+  always read; EOF acts as the absence signal for single-ref
+  legacy files. Multi-reference legacy files without
+  `n_no_coor` (pre-samtools-0.1.18) will misalign — those
+  should use CSI v1 instead.
+
+- **CSI v1 index reader.** A new `csi` package
+  (`github.com/inful/htsfile/csi`) reads the Coordinate-
+  Sorted Index format (file extension `.csi`) used by
+  samtools ≥ 1.10. Adds an explicit version marker (`CSI\x01`)
+  plus tunable `min_shift` (linear-index window size exponent)
+  and `depth` (number of bin levels). The format is otherwise
+  similar to Tabix. Unlike Tabix, CSI has no optional
+  `n_no_coor` field — the explicit version byte is enough to
+  unambiguously parse the binary format. **Read-only in v1.**
+  CSI is the recommended choice for new code (use Tabix only
+  when reading pre-existing `.tbi` files from samtools
+  0.1.18-1.9).
+
+- **CLI integration for Tabix and CSI.** The `cmd/htsfile`
+  CLI auto-dispatches by extension (`.tbi`, `.csi`) and
+  surfaces a clear "Tabix is read-only" / "CSI is read-only"
+  error for `roundtrip`. `check` and `summary` work normally
+  for both formats. (Tabix and CSI are not auto-sniffed from
+  stdin — use the file extension to disambiguate.)
+
 ## [0.1.0] — 2026-10-18
 
 This release builds on the v0.0.1 VCF-only baseline with five

@@ -1,17 +1,17 @@
 // Command htsfile is a small command-line interface over the
-// vcf, bed, sam, bam, gff, fasta, and bcf packages.
+// vcf, bed, sam, bam, gff, fasta, bcf, tabix, and csi packages.
 //
 // Usage:
 //
-//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.bcf
+//	htsfile check [--strict] [--warnings] file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
 //	htsfile roundtrip [--crlf] file.vcf | file.bed | file.sam | file.gff[3] | file.fa[sta]
-//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.bcf
+//	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
 //	htsfile version
 //
 // The format is auto-detected from the file extension (.vcf,
 // .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .fna, .ffn,
-// .faa, .bcf). For stdin ("-") or unknown extensions, the
-// first non-empty line is sniffed: "##fileformat" → VCF;
+// .faa, .bcf, .tbi, .csi). For stdin ("-") or unknown
+// extensions, the first non-empty line is sniffed: "##fileformat" → VCF;
 // "track", "browser", or a tab-separated chrom/start/end
 // triple → BED; "@HD" or an 11-column tab-separated record
 // with integer FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM
@@ -19,7 +19,8 @@
 // to disambiguate); "##gff-version" or a 9-column
 // tab-separated feature line → GFF3; a ">" header line → FASTA.
 // BCF is not auto-sniffed from stdin (it shares its outer
-// BGZF container with BAM); use the .bcf extension.
+// BGZF container with BAM); use the .bcf extension. Tabix
+// (.tbi) and CSI (.csi) are not sniffed — use the extension.
 //
 // Subcommands:
 //
@@ -28,10 +29,9 @@
 //	summary   print a one-line summary of the file's header.
 //	version   print the htsfile version (set via -ldflags at build time).
 //
-// BAM v1 is read-only: `roundtrip` is not supported for .bam
-// files. BCF v1 is read-only for the same reason (no BCF
-// writer; deferred to v2 per the ROADMAP scope decision).
-// `check` and `summary` work normally.
+// BAM v1, BCF v1, Tabix, and CSI are all read-only in v1;
+// `roundtrip` is not supported for any of them. `check` and
+// `summary` work normally for everything.
 package main
 
 import (
@@ -49,9 +49,11 @@ import (
 	"github.com/inful/htsfile/bam"
 	"github.com/inful/htsfile/bcf"
 	"github.com/inful/htsfile/bed"
+	"github.com/inful/htsfile/csi"
 	"github.com/inful/htsfile/fasta"
 	"github.com/inful/htsfile/gff"
 	"github.com/inful/htsfile/sam"
+	"github.com/inful/htsfile/tabix"
 	"github.com/inful/htsfile/vcf"
 )
 
@@ -79,6 +81,8 @@ const (
 	formatGFF
 	formatFASTA
 	formatBCF
+	formatTabix
+	formatCSI
 )
 
 func (f format) String() string {
@@ -97,6 +101,10 @@ func (f format) String() string {
 		return "FASTA"
 	case formatBCF:
 		return "BCF"
+	case formatTabix:
+		return "Tabix"
+	case formatCSI:
+		return "CSI"
 	default:
 		return "unknown"
 	}
@@ -135,7 +143,7 @@ func main() {
 }
 
 func usage(w io.Writer) {
-	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|file.fa[sta]|file.bcf|->
+	_, _ = fmt.Fprintln(w, `Usage: htsfile <command> [flags] <file.vcf|file.bed|file.sam|file.bam|file.gff[3]|file.fa[sta]|file.bcf|file.tbi|file.csi|->
 
 Commands:
   check       Validate the file. Exits non-zero if any errors are found.
@@ -145,10 +153,10 @@ Commands:
               --crlf       use CR+LF line endings
   summary     Print a summary of the file (header / column count / records).
 
-Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .bcf). For
+Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .bcf, .tbi, .csi). For
 stdin ("-") or unknown extensions, the first non-empty line is sniffed.
-BAM v1 is read-only: the roundtrip subcommand does not support .bam files.
-BCF v1 is also read-only (deferred to v2; use the .bcf extension).`)
+BAM v1, BCF v1, Tabix, and CSI are all read-only: the roundtrip subcommand
+does not support these formats. check and summary work for everything.`)
 }
 
 // openFileOrStdin returns the named file, or os.Stdin if path is "-".
@@ -214,6 +222,18 @@ func detectFormat(path string) (format, io.Reader, error) {
 			return formatUnknown, nil, err
 		}
 		return formatBCF, f, nil
+	case ".tbi":
+		f, err := openFileOrStdin(path)
+		if err != nil {
+			return formatUnknown, nil, err
+		}
+		return formatTabix, f, nil
+	case ".csi":
+		f, err := openFileOrStdin(path)
+		if err != nil {
+			return formatUnknown, nil, err
+		}
+		return formatCSI, f, nil
 	}
 	// Unknown extension (or no extension) — open once, buffer, and sniff.
 	return sniffFormat(path)
@@ -630,6 +650,10 @@ func runCheck(args []string) error {
 		return runCheckFASTA(r, path, *strict, *warnings)
 	case formatBCF:
 		return runCheckBCF(r, path, *strict, *warnings)
+	case formatTabix:
+		return runCheckTabix(r, path)
+	case formatCSI:
+		return runCheckCSI(r, path)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -755,6 +779,10 @@ func runRoundtrip(args []string) error {
 		return runRoundtripFASTA(r, *crlf)
 	case formatBCF:
 		return runRoundtripBCF()
+	case formatTabix:
+		return runRoundtripTabix()
+	case formatCSI:
+		return runRoundtripCSI()
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -897,6 +925,10 @@ func runSummary(args []string) error {
 		return runSummaryFASTA(r, path)
 	case formatBCF:
 		return runSummaryBCF(r, path)
+	case formatTabix:
+		return runSummaryTabix(r, path)
+	case formatCSI:
+		return runSummaryCSI(r, path)
 	default:
 		return fmt.Errorf("could not detect format for %s", path)
 	}
@@ -1406,5 +1438,101 @@ func runSummaryBCF(f io.Reader, path string) error {
 	}
 	fmt.Fprintf(&b, "  records:    %d\n", nRec)
 	_, _ = fmt.Fprint(os.Stdout, b.String())
+	return nil
+}
+
+// runCheckTabix parses and validates a Tabix index. The
+// "validation" is structural (magic, lengths, range checks);
+// Tabix has no domain-specific issues like VCF/BED/VCF.
+func runCheckTabix(f io.Reader, path string) error {
+	idx, err := tabix.NewReader(f).Read()
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	var totalBins, totalChunks int
+	for _, ref := range idx.References {
+		totalBins += len(ref.Bins)
+		for _, chunks := range ref.Bins {
+			totalChunks += len(chunks)
+		}
+	}
+	fmt.Printf("%s: clean (%d references, %d bins, %d chunks)\n",
+		path, len(idx.References), totalBins, totalChunks)
+	return nil
+}
+
+// runRoundtripTabix returns an error explaining that Tabix is
+// read-only in v1.
+func runRoundtripTabix() error {
+	return errors.New("roundtrip: Tabix is read-only in this build (no index writer; deferred to v2)")
+}
+
+// runSummaryTabix prints a summary of the Tabix file.
+func runSummaryTabix(f io.Reader, path string) error {
+	idx, err := tabix.NewReader(f).Read()
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	var totalBins, totalChunks, totalIntv int
+	for _, ref := range idx.References {
+		totalBins += len(ref.Bins)
+		for _, chunks := range ref.Bins {
+			totalChunks += len(chunks)
+		}
+		totalIntv += len(ref.Intervals)
+	}
+	fmt.Printf("%s\n", path)
+	fmt.Printf("  references: %d\n", len(idx.References))
+	fmt.Printf("  bins:       %d\n", totalBins)
+	fmt.Printf("  chunks:     %d\n", totalChunks)
+	fmt.Printf("  intervals:  %d\n", totalIntv)
+	return nil
+}
+
+// runCheckCSI parses and validates a CSI index.
+func runCheckCSI(f io.Reader, path string) error {
+	idx, err := csi.NewReader(f).Read()
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	var totalBins, totalChunks int
+	for _, ref := range idx.References {
+		totalBins += len(ref.Bins)
+		for _, chunks := range ref.Bins {
+			totalChunks += len(chunks)
+		}
+	}
+	fmt.Printf("%s: clean (min_shift=%d, depth=%d, %d references, %d bins, %d chunks)\n",
+		path, idx.MinShift, idx.Depth, len(idx.References), totalBins, totalChunks)
+	return nil
+}
+
+// runRoundtripCSI returns an error explaining that CSI is
+// read-only in v1.
+func runRoundtripCSI() error {
+	return errors.New("roundtrip: CSI is read-only in this build (no index writer; deferred to v2)")
+}
+
+// runSummaryCSI prints a summary of the CSI file.
+func runSummaryCSI(f io.Reader, path string) error {
+	idx, err := csi.NewReader(f).Read()
+	if err != nil {
+		return fmt.Errorf("parse: %w", err)
+	}
+	var totalBins, totalChunks, totalIntv int
+	for _, ref := range idx.References {
+		totalBins += len(ref.Bins)
+		for _, chunks := range ref.Bins {
+			totalChunks += len(chunks)
+		}
+		totalIntv += len(ref.Intervals)
+	}
+	fmt.Printf("%s\n", path)
+	fmt.Printf("  min_shift:  %d  (window = %d bp)\n", idx.MinShift, idx.WindowSize())
+	fmt.Printf("  depth:      %d\n", idx.Depth)
+	fmt.Printf("  references: %d\n", len(idx.References))
+	fmt.Printf("  bins:       %d\n", totalBins)
+	fmt.Printf("  chunks:     %d\n", totalChunks)
+	fmt.Printf("  intervals:  %d\n", totalIntv)
 	return nil
 }

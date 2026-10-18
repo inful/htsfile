@@ -5,7 +5,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
 `htsfile` is a Go library for parsing, writing, and validating bioinformatics
-file formats. It currently targets seven specifications from
+file formats. It currently targets nine specifications from
 [samtools/hts-specs](https://github.com/samtools/hts-specs) and
 the Sequence Ontology:
 
@@ -15,10 +15,12 @@ the Sequence Ontology:
 - **BAM v1** — Binary SAM (BGZF-compressed) with read-only BAI index reader
 - **GFF3** — Generic Feature Format Version 3 (9 columns + free-form attributes)
 - **FASTA** — Sequence records (`>` header + multi-line sequence); read-only `.fai` index reader
-- **BCF v2.1** — Binary VCF (BGZF-compressed). **Read-only** in v1 — see "Tier 3 status" below.
+- **BCF v2.1** — Binary VCF (BGZF-compressed). **Read-only** in v1.
+- **Tabix v1** — Generic position index for sorted bgzipped files. **Read-only** in v1.
+- **CSI v1** — Coordinate-sorted index (successor to Tabix). **Read-only** in v1.
 
 See [ROADMAP.md](ROADMAP.md) for the planned expansion (full
-FASTQ → SAM/VCF converters, Tabix, CRAM v3, etc.).
+FASTQ → SAM/VCF converters, CRAM v3, etc.).
 
 The implementation aims to be:
 
@@ -208,20 +210,50 @@ the per-sample FORMAT column. A BCF writer (with full round-trip
 support) is queued for v2. The validator's `ModeStrict` cross-
 references undeclared INFO keys.
 
+### Tabix / CSI Index Parsing
+
+The `tabix` and `csi` packages read the two general-purpose
+position indexes used by samtools/htslib:
+
+```go
+// Tabix (magic "TBI\x01")
+idx, _ := tabix.NewReader(f).Read()
+for _, ref := range idx.References {
+    // ref.Bins (bin number → chunks), ref.Intervals (linear index),
+    // ref.NoCoor (unmapped count)
+    _ = tabix.BinFromRange(1000, 5000) // bin numbers covering [1000, 5000)
+}
+
+// CSI (magic "CSI\x01"; version-aware with min_shift/depth)
+idx, _ := csi.NewReader(f).Read()
+// idx.MinShift (window size exponent), idx.Depth (bin levels),
+// idx.WindowSize() = 1 << MinShift bp
+```
+
+Both packages are read-only in v1. The Tabix format has an
+optional `n_no_coor` field per reference that creates an
+ambiguity for multi-reference legacy files (the decoder reads
+it unconditionally and treats EOF as the absence signal). CSI
+adds an explicit version byte and avoids that ambiguity; if you
+need to read pre-samtools-1.10 multi-reference Tabix files,
+CSI is the safer choice.
+
 ## CLI
 
 A small command-line tool ships in `cmd/htsfile`. Format is
 auto-detected from the file extension (`.vcf`, `.bed`, `.sam`,
 `.bam`, `.gff`, `.gff3`, `.fa`, `.fasta`, `.fna`, `.ffn`,
-`.faa`, `.bcf`); for stdin (`-`) or unknown extensions, the
-first non-empty line is sniffed (`##fileformat` → VCF; `track`,
-`browser`, or a tab-separated `chrom\tstart\tend` triple → BED;
-`@HD` or an 11-column tab-separated record with integer
-FLAG/MAPQ → SAM; the gzip+FEXTRA prefix → BAM (this also
-matches BCF's outer wrapper — use the `.bcf` extension to
-disambiguate; BCF is not auto-sniffed from stdin);
-`##gff-version` or a 9-column tab-separated feature line →
-GFF3; a `>` header line → FASTA).
+`.faa`, `.bcf`, `.tbi`, `.csi`); for stdin (`-`) or unknown
+extensions, the first non-empty line is sniffed
+(`##fileformat` → VCF; `track`, `browser`, or a tab-separated
+`chrom\tstart\tend` triple → BED; `@HD` or an 11-column
+tab-separated record with integer FLAG/MAPQ → SAM; the
+gzip+FEXTRA prefix → BAM (this also matches BCF's outer
+wrapper — use the `.bcf` extension to disambiguate; BCF is
+not auto-sniffed from stdin); `##gff-version` or a 9-column
+tab-separated feature line → GFF3; a `>` header line →
+FASTA. Tabix (`.tbi`) and CSI (`.csi`) are not sniffed — use
+the extension.
 
 ```sh
 # Validate a file
@@ -234,6 +266,8 @@ htsfile check aligned.bam                 # BAM is auto-detected by extension
 htsfile check genes.gff3                  # GFF3 is auto-detected by extension
 htsfile check sequences.fa                # FASTA is auto-detected by extension
 htsfile check sample.bcf                  # BCF is auto-detected by extension
+htsfile check sample.bcf.tbi              # Tabix index (.tbi) by extension
+htsfile check sample.bcf.csi              # CSI index (.csi) by extension
 
 # Re-emit a file (verifies round-trip)
 htsfile roundtrip sample.vcf > out.vcf
@@ -242,7 +276,7 @@ htsfile roundtrip peaks.bed > out.bed     # BED round-trip
 htsfile roundtrip reads.sam > out.sam     # SAM round-trip
 htsfile roundtrip genes.gff3 > out.gff3   # GFF3 round-trip
 htsfile roundtrip sequences.fa > out.fa  # FASTA round-trip (80-char wrapping)
-# roundtrip does not support .bam or .bcf files (both are read-only in v1).
+# roundtrip does not support .bam, .bcf, .tbi, or .csi files (all are read-only in v1).
 
 # Print a header summary
 htsfile summary sample.vcf
@@ -252,6 +286,8 @@ htsfile summary aligned.bam               # BAM summary: version, @SQ/@RG/@PG co
 htsfile summary genes.gff3                # GFF3 summary: version, pragmas, seqids, types, records
 htsfile summary sequences.fa              # FASTA summary: records, bases, unique IDs
 htsfile summary sample.bcf                # BCF summary: fileformat, contigs, filters, records
+htsfile summary sample.bcf.tbi            # Tabix summary: references, bins, chunks, intervals
+htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, references, bins, chunks
 ```
 
 ## Status
@@ -358,9 +394,28 @@ htsfile summary sample.bcf                # BCF summary: fileformat, contigs, fi
 | Per-sample FORMAT column               |   ❌   |
 | BCF 2.2 (latest version) support       |   ❌   |
 
+### tabix/ package (Tabix v1)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| `TBI\x01` magic + per-reference bin and linear index |   ✅   |
+| Bin number → chunks resolution (`BinFromRange`, `LookupChunks`) | ✅ |
+| Multiple references with optional `n_no_coor` | ✅ (modern format; legacy multi-ref without n_no_coor produces a parse error) | ✅ |
+| **Tabix writer (generation)**          |   ❌   |
+
+### csi/ package (CSI v1)
+
+| Feature                                | Status |
+|----------------------------------------|:------:|
+| `CSI\x01` magic + tunable `min_shift`/`depth` |   ✅   |
+| Bin number → chunks resolution (`BinFromRange`, `LookupChunks`) | ✅ |
+| Multiple references                    | ✅   |
+| No `n_no_coor` ambiguity (version byte disambiguates) | ✅ |
+| **CSI writer (generation)**            |   ❌   |
+
 ### Planned (see [ROADMAP.md](ROADMAP.md))
 
-- **Tier 3 (next)**: Tabix, CSI (BCF writer deferred to v2)
+- **Tier 3 (next)**: index generation (Tabix + CSI writers) — read-only v1 defers this per the ROADMAP scope decision
 - **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ
 
 ## Releases
