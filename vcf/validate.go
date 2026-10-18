@@ -364,6 +364,19 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 
 	// Per-sample checks.
 	for sIdx, g := range rec.Samples {
+		// GT structural checks (separator consistency, allele
+		// index range) — emit one issue per problem so the
+		// caller can see all errors at once.
+		if v, ok := g.Fields["GT"]; ok && !v.Missing && len(v.Strs) > 0 {
+			if err := checkGT(v.Strs[0], len(rec.Alt)); err != nil {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: fmt.Sprintf("FORMAT/GT/sample[%d]", sIdx),
+					Msg:   err.Error(),
+				})
+			}
+		}
+
 		// Determine the last present FORMAT index for this sample — keys
 		// past that index are considered dropped (per spec).
 		lastPresent := -1
@@ -585,4 +598,52 @@ func ploidyFromGT(g Genotype) int {
 		}
 	}
 	return count + 1
+}
+
+// checkGT performs the two structural checks the spec
+// requires for a GT field:
+//   1. A single record may not mix / and | separators (the
+//      phasing must be consistent within a record).
+//   2. Each allele index must be a valid 0-based index into
+//      REF+ALT. The missing value "." is always allowed.
+//
+// Returns nil for a clean GT. nAlts is the number of ALT
+// alleles in the record (0 means REF-only).
+func checkGT(gt string, nAlts int) error {
+	if gt == "" {
+		return nil
+	}
+	var sawPipe, sawSlash bool
+	for i := 0; i < len(gt); {
+		c := gt[i]
+		switch c {
+		case '|':
+			sawPipe = true
+			i++
+		case '/':
+			sawSlash = true
+			i++
+		default:
+			// Read the allele token up to the next separator.
+			j := i
+			for j < len(gt) && gt[j] != '|' && gt[j] != '/' {
+				j++
+			}
+			tok := gt[i:j]
+			if tok != "." {
+				n, err := strconv.Atoi(tok)
+				if err != nil {
+					return fmt.Errorf("GT allele %q is not an integer", tok)
+				}
+				if n < 0 || n > nAlts {
+					return fmt.Errorf("GT allele %d is out of range (REF + %d ALT alleles)", n, nAlts)
+				}
+			}
+			i = j
+		}
+	}
+	if sawPipe && sawSlash {
+		return fmt.Errorf("GT mixes unphased (/) and phased (|) separators within a single record")
+	}
+	return nil
 }
