@@ -397,6 +397,14 @@ htsget/refget and crypt4gh remain pending.
     exist (`internal/bgzf`, `tabix`, `csi`); no wired-up
     `vcf.Open(path)` that returns a streaming decoder.
 
+  The full per-task compliance plan lives in
+  [vcf/SPEC_COMPLIANCE.md](vcf/SPEC_COMPLIANCE.md): 17
+  remaining tasks across 4 phases (parser hardening,
+  per-record checks, cross-record checks, feature work),
+  each with a spec quote, scope, and acceptance criteria.
+  That file is the source of truth for picking up new
+  work in fresh sessions.
+
   Tracked here as Tier 3 follow-up; not blockers for any
   released feature. The full list of checks shipped in
   v0.7.0 lives in the `v0.7.0` CHANGELOG entry.
