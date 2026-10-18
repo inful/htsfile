@@ -231,7 +231,10 @@ idx, _ := csi.NewReader(f).Read()
 // idx.WindowSize() = 1 << MinShift bp
 ```
 
-Both packages are read-only in v1. The Tabix format has an
+Both packages expose `NewReader`/`Read` plus a symmetric
+`NewWriter`/`Write(*Index)` (added in v0.4.0). The CLI's
+`roundtrip` subcommand works for `.tbi` and `.csi` files.
+The Tabix format has an
 optional `n_no_coor` field per reference that creates an
 ambiguity for multi-reference legacy files (the decoder reads
 it unconditionally and treats EOF as the absence signal). CSI
@@ -279,7 +282,8 @@ htsfile roundtrip peaks.bed > out.bed     # BED round-trip
 htsfile roundtrip reads.sam > out.sam     # SAM round-trip
 htsfile roundtrip genes.gff3 > out.gff3   # GFF3 round-trip
 htsfile roundtrip sequences.fa > out.fa  # FASTA round-trip (80-char wrapping)
-# roundtrip does not support .bam, .bcf, .tbi, or .csi files (all are read-only in v1).
+# roundtrip does not support .bam or .bcf files (both are
+# read-only in v1). .tbi and .csi round-trip is supported.
 
 # Print a header summary
 htsfile summary sample.vcf
@@ -417,7 +421,7 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | `TBI\x01` magic + per-reference bin and linear index |   ✅   |
 | Bin number → chunks resolution (`BinFromRange`, `LookupChunks`) | ✅ |
 | Multiple references with optional `n_no_coor` | ✅ (modern format; legacy multi-ref without n_no_coor produces a parse error) | ✅ |
-| **Tabix writer (generation)**          |   ❌   |
+| **Tabix writer (generation)**          |   ✅   |
 
 ### csi/ package (CSI v1)
 
@@ -427,12 +431,13 @@ htsfile summary sample.bcf.csi            # CSI summary: min_shift, depth, refer
 | Bin number → chunks resolution (`BinFromRange`, `LookupChunks`) | ✅ |
 | Multiple references                    | ✅   |
 | No `n_no_coor` ambiguity (version byte disambiguates) | ✅ |
-| **CSI writer (generation)**            |   ❌   |
+| **CSI writer (generation)**            |   ✅   |
 
 ### Planned (see [ROADMAP.md](ROADMAP.md))
 
-- **Tier 3 (next)**: index generation (Tabix + CSI writers) — read-only v1 defers this per the ROADMAP scope decision
-- **Tier 4**: CRAM v3, htsget/refget, crypt4gh, FASTQ
+- **Tier 4**: CRAM v3, htsget/refget, crypt4gh. FASTQ shipped
+  in v0.3.0; Tabix + CSI writers shipped in v0.4.0. BCF
+  writer still deferred (per-sample FORMAT data).
 
 ## Releases
 

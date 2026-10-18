@@ -7,6 +7,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Tabix and CSI index writers.** Each package now has a
+  symmetric `Writer` (NewWriter + Write(*Index)) alongside its
+  Reader. The Writer takes an already-built `*Index` and
+  serializes it to the underlying `io.Writer` in the standard
+  Tabix / CSI file format. Bin numbers are emitted in
+  ascending order and chunks within each bin are sorted by
+  `Beg` for deterministic output (byte-for-byte round-trip
+  through the existing Reader).
+
+  This closes the Tabix + CSI halves of the ROADMAP §Open
+  decisions item **"Index generation (BCF + Tabix + CSI
+  writers)"**. The BCF half is still deferred — the BCF
+  writer requires per-sample FORMAT data support, which v1's
+  BCF reader explicitly deferred for the same reason (see
+  the v0.2.0 release notes).
+
+  The `htsfile roundtrip` subcommand now works for `.tbi` and
+  `.csi` files: it reads the file and re-emits it to stdout.
+  BAM v1 and BCF v1 remain read-only (`roundtrip` returns a
+  clear "read-only" error for those).
+
 ## [0.3.0] — 2026-10-18
 
 This release builds on the v0.2.0 baseline by adding the

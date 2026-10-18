@@ -342,9 +342,19 @@ FASTQ shipped in v0.3.0. CRAM v3 is at the design-survey
 stage (see `cram/SPEC.md`); the codec gap is the blocker.
 htsget/refget and crypt4gh remain pending.
 
-- [ ] **Index generation (BCF + Tabix + CSI writers).** v2
-      follow-up. Per the open-decision scope, the three
-      readers were shipped read-only; the writers come next.
+- [x] **Index generation — Tabix + CSI writers.** Done in
+      commits `22ac357` (tabix) and `996a347` (csi). Both
+      packages now expose `Writer` + `Write(*Index)`. The CLI
+      `roundtrip` subcommand works for `.tbi` and `.csi`
+      files. Closes the Tabix + CSI halves of this item.
+- [ ] **Index generation — BCF writer.** Still deferred.
+      The BCF writer requires per-sample FORMAT data support
+      (binary FORMAT/sample format), which v1's BCF reader
+      explicitly deferred for the same reason. See the v0.2.0
+      release notes for the BCF reader's read-only rationale.
+      follow-up. Tabix + CSI writers shipped (see the Tier 4
+      item above). BCF writer still deferred for per-sample
+      FORMAT data.
 - [ ] **CRAM v3** — design-survey stage only. Codecs 3–8 are
       not in Go stdlib and the no-runtime-deps rule precludes
       samtools/htscodecs. Resume when stdlib adds the codecs,
