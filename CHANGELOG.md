@@ -9,6 +9,118 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- *(nothing yet)*
+
+## [0.7.0] — 2026-10-18
+
+This release rounds out the VCF v4.5 spec compliance surface
+with 14 per-record and cross-record checks, the streaming
+`Validator` API, full BCF 2.2 read/write, semantic CIGAR
+parsing, `.fai` index generation, and the FASTA section in
+GFF3 encoders. 28 commits since v0.6.0.
+
+### Added — VCF spec compliance
+
+- **Streaming `Validator` API** (`Validator.HeaderChecks`,
+  `Next`, `Finish`, `Reset`). The previous batch `Validate`
+  still works; the streaming API lets callers pipe records
+  through the validator without buffering them. The state
+  (cross-record `prevChrom`/`prevPos`, PS phase-style map)
+  lives on the `Validator` itself. `fbc068a`.
+
+- **GT structural checks** (VCFv4.5 §1.6.1.7). Mixed
+  `|` and `/` separators inside a single GT fire a
+  `SeverityError`; allele indices outside `[0, len(ALT)]`
+  fire an error. `e0c9730`.
+
+- **END is a computed field** per VCF v4.5 §1.6.1.6. The
+  parser computes `END = POS + len(REF) - 1` when END is
+  not declared; an explicitly declared END that disagrees
+  with the computation fires an error in `ModeStrict`.
+  `244e456`.
+
+- **PSL / PSO / PSQ recognition** with `Number=P` cardinality
+  (1 + per-sample ploidy). Reserved FORMAT keys declared in
+  the header now match the spec's `Number=P` rule. `cb01bf4`.
+
+- **M-family value range** (`MFamily`). `M` must be in
+  `[0, 1]`; `DPM` and `ADM` must be non-negative integers.
+  `2252f20`.
+
+- **Non-printable byte rejection** in any header or data
+  field. Bytes in `U+0000..U+0008`, `U+000B..U+000C`, and
+  `U+000E..U+001F` are rejected at parse time. `1947130`.
+
+- **Integer range check** for BCF-unsafe values: integers
+  outside `[-2^31, -2^31 + 7]` fire a warning
+  (the spec says these cannot round-trip through BCF).
+  `1947130`.
+
+- **SVLEN sign rule** per §1.6.1.7: positive for INS, negative
+  for DEL, either sign for INV/DUP/CNV. `1947130`.
+
+- **CIPOS / CIEND / CILEN must span 0** (the spec's
+  confidence interval must include the breakpoint).
+  `1947130`.
+
+- **##contig name regex** (SAM-compatible, §1.4.7). Contig
+  IDs that fail the regex are rejected at parse time.
+  `7c1b302`.
+
+- **Header-line trailing-tab rejection.** A `##` line whose
+  final character is a tab (other than inside a quoted
+  string) is rejected. `7c1b302`.
+
+- **Strict Float format regex.** Rejects `1.`, `1e`, etc.;
+  accepts `INF`, `-INF`, `NAN`, `NaN` case-insensitively.
+  `65301fb`.
+
+- **Sample-name whitespace check.** Sample names must not
+  contain whitespace. `65301fb`.
+
+- **SVCLAIM per-allele rules** per §1.6.1.7. Each symbolic
+  ALLELE's SVCLAIM value must be in the allowed set for that
+  allele. `65301fb`.
+
+- **EVENTTYPE reserved-value check** (`IsReservedEventType`).
+  The 15 reserved values from §1.6.1.7 (DEL, DEL:ME, INS,
+  INS:ME, DUP, DUP:TANDEM, DUP:DISPERSED, INV, TRA,
+  TRA:BALANCED, TRA:UNBALANCED, CHROMOTHRIPSIS,
+  CHROMOPLEXY, BFB, DOUBLEMINUTE) are accepted; unreserved
+  values fire a `SeverityWarning` (default mode) or
+  `SeverityError` (`ModeStrict`). `eb4eed3`.
+
+- **LAA value-range check.** Each LAA value must be a 1-based
+  index in `[1, len(ALT)]`. `0658c19`.
+
+- **LAA distinctness check.** LAA values must be distinct
+  integers per the spec's "n distinct integers" rule.
+  Duplicate values fire a `SeverityError`. `162c941`.
+
+- **Cross-record PS phasing-style consistency.** Records
+  that share a `PS` value (and the same sample + chromosome)
+  must use the same GT separator style (phased `|` vs
+  unphased `/`). The check is restricted to records that
+  declare an explicit PS — the spec is silent on the implicit
+  default phase set, and the spec example itself mixes
+  separators on records without PS. State held in
+  `Validator.phaseStyle`, cleared on chromosome change.
+  `0a93ec3`.
+
+- **##contig MD5 format validation.** The MD5 must be
+  32 lowercase hex characters per §1.4.7. The actual digest
+  is not recomputed (the sequence is not in the header);
+  malformed MD5 strings produce a `ParseError` at parse
+  time. `5996115`.
+
+- **IUPAC ambiguity code reduction in REF.** REF now reduces
+  each IUPAC code (R, Y, S, W, K, M, B, D, H, V) to one of
+  its constituent bases during parsing (e.g. R → A, Y → C,
+  K → G). Case is preserved. This satisfies the spec's
+  rule that REF must be only A/C/G/T/N. `cbfce74`.
+
+### Added — Other packages
+
 - **GFF3 `###` FASTA section** (`Encoder.EncodeFastaSection`).
   GFF3 allows an optional FASTA block after the `###`
   directive; the encoder previously stopped at the feature
@@ -186,7 +298,8 @@ remaining reader/writer asymmetry and is the natural v2
 follow-up if/when needed.
 
 [0.5.0]: https://github.com/inful/htsfile/compare/v0.4.0...v0.5.0
-[Unreleased]: https://github.com/inful/htsfile/compare/v0.6.0...HEAD
+[0.7.0]: https://github.com/inful/htsfile/compare/v0.6.0...v0.7.0
+[Unreleased]: https://github.com/inful/htsfile/compare/v0.7.0...HEAD
 
 ## [0.4.0] — 2026-10-18
 
