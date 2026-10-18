@@ -788,6 +788,49 @@ func TestParser_NonRefAlias(t *testing.T) {
 	}
 }
 
+func TestValidator_PSAndPSLMutuallyExclusive(t *testing.T) {
+	// Per VCFv4.5 §1.6.2: "A given sample-genotype must
+	// not have values for both PS and PSL."
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=PS,Number=1,Type=Integer,Description=\"p\">\n" +
+		"##FORMAT=<ID=PSL,Number=P,Type=String,Description=\"l\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, sample string
+		want         bool
+	}{
+		{"only PS", "0|1:100", false},
+		{"only PSL", "0|1:chr1*100*1,chr1*200*1", false},
+		{"both PS and PSL", "0|1:100:chr1*100*1,chr1*200*1", true},
+		{"neither", "0|1", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC,G\t.\t.\t.\tGT:PS:PSL\t" + c.sample + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "PS and PSL cannot both be present") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("sample=%q: found=%v, want %v; issues=%+v", c.sample, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_ENDMatchesComputed(t *testing.T) {
 	// END is a computed field per VCFv4.5 §1.6.1.6. When
 	// declared, the value must match the computed END

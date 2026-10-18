@@ -932,6 +932,17 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 
 	// Per-sample checks.
 	for sIdx, g := range rec.Samples {
+		// PS and PSL are mutually exclusive per sample
+		// (VCFv4.5 §1.6.2: "A given sample-genotype must
+		// not have values for both PS and PSL").
+		if hasPSandPSL(g) {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/PS,sample[%d]", sIdx),
+				Msg:   "PS and PSL cannot both be present on the same sample",
+			})
+		}
+
 		// GT structural checks (separator consistency, allele
 		// index range) — emit one issue per problem so the
 		// caller can see all errors at once.
@@ -960,20 +971,12 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 		// empty LAA is equivalent to missing for the
 		// purpose of this rule, so the check fires only
 		// when LAA is genuinely non-empty.
-		laaFV, hasLAA := g.Fields["LAA"]
-		laaPresent := hasLAA && !laaFV.Missing && !laaFV.empty()
-		if !laaPresent {
-			for _, key := range localAlleleKeys {
-				fv, ok := g.Fields[key]
-				if !ok || fv.Missing {
-					continue
-				}
-				issues = append(issues, ValidationError{
-					Severity: SeverityError, Record: idx + 1, Line: line,
-					Field: fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
-					Msg:   fmt.Sprintf("local-allele field %q requires LAA to be present on the same sample", key),
-				})
-			}
+		for _, key := range missingLAAFields(g) {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx),
+				Msg:   fmt.Sprintf("local-allele field %q requires LAA to be present on the same sample", key),
+			})
 		}
 
 		// Determine the last present FORMAT index for this sample — keys
@@ -1225,12 +1228,43 @@ func (fv *FieldValue) empty() bool {
 	return false
 }
 
+// hasPSandPSL reports whether the sample carries both
+// PS and PSL with non-empty values.
+func hasPSandPSL(g Genotype) bool {
+	psFV, hasPS := g.Fields["PS"]
+	if !hasPS || psFV.empty() {
+		return false
+	}
+	pslFV, hasPSL := g.Fields["PSL"]
+	return hasPSL && !pslFV.empty()
+}
+
 // localAlleleKeys lists the FORMAT keys that depend on
 // LAA being present (VCFv4.5 §1.6.2). If any of these is
 // declared on a sample without LAA, the sample is invalid.
 var localAlleleKeys = [...]string{
 	"LAD", "LADF", "LADR", "LEC",
 	"LGL", "LGP", "LPL", "LPP",
+}
+
+// missingLAAFields returns the local-allele FORMAT keys
+// declared on the sample whose LAA field is missing or
+// empty.
+func missingLAAFields(g Genotype) []string {
+	laaFV, hasLAA := g.Fields["LAA"]
+	laaPresent := hasLAA && !laaFV.empty()
+	if laaPresent {
+		return nil
+	}
+	var missing []string
+	for _, key := range localAlleleKeys {
+		fv, ok := g.Fields[key]
+		if !ok || fv.empty() {
+			continue
+		}
+		missing = append(missing, key)
+	}
+	return missing
 }
 
 // checkLAA validates a sample's LAA field. Per VCFv4.5
