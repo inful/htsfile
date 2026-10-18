@@ -100,8 +100,142 @@ func TestTagType_StringAndParse(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// CIGAR op extraction tests
+// Validator edge cases — strict-mode branches, QUAL length
+// mismatch, and the strict-mode POS check. These live in
+// coverage_test.go because they exist primarily to pin the
+// otherwise-untested branches in checkOne; the round-trip
+// path through checkOne is otherwise only hit by the
+// happy-path TestValidator_CleanRecords /
+// TestValidator_BadRefID tests in parse_test.go.
 // ---------------------------------------------------------------------------
+
+func TestValidator_BadQUALLength(t *testing.T) {
+	// The BAM parser enforces SEQ/QUAL length agreement via
+	// l_seq, so this test constructs the mismatch directly
+	// on the exported Record struct (bypassing the binary
+	// path) to exercise the validator branch.
+	rec := &Record{
+		Line:  1,
+		Seq:   "ACGTA",
+		Qual:  []byte("IIII"), // 4 vs 5
+		Cigar: []uint32{cigar(CigarM, 5)},
+	}
+	issues := NewValidator(ModeDefault).Validate(nil, []*Record{rec})
+	if len(issues) == 0 {
+		t.Fatal("expected QUAL-length error")
+	}
+	var found bool
+	for _, iss := range issues {
+		if iss.Field == "QUAL" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no QUAL issue found: %v", issues)
+	}
+}
+
+func TestValidator_StrictModeBadPOS(t *testing.T) {
+	b := newBuilder()
+	if err := b.writeBAMHeader("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\n", []struct {
+		name   string
+		length int64
+	}{{"chr1", 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	// POS = 0 with flag bit 0x4 (unmapped) clear — strict mode rejects.
+	if err := b.writeRecord(&Record{
+		QName: "bad", RefID: 0, Pos: 0, MapQ: 60, Bin: 4681,
+		Flag:   0, // not unmapped
+		Cigar:  []uint32{cigar(CigarM, 5)},
+		Seq:    "ACGTA", Qual: []byte("IIIII"),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data := b.finish()
+	hdr, recs := readAll(t, data)
+	issues := NewValidator(ModeStrict).Validate(hdr, recs)
+	if len(issues) == 0 {
+		t.Fatal("expected strict-mode POS error")
+	}
+	var found bool
+	for _, iss := range issues {
+		if iss.Field == "POS" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no POS issue found: %v", issues)
+	}
+}
+
+func TestValidator_StrictModeDuplicateTag(t *testing.T) {
+	b := newBuilder()
+	if err := b.writeBAMHeader("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\n", []struct {
+		name   string
+		length int64
+	}{{"chr1", 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	// Two tags with key NM — strict mode warns on duplicates.
+	if err := b.writeRecord(&Record{
+		QName: "dup", RefID: 0, Pos: 100, MapQ: 60, Bin: 4681,
+		Cigar: []uint32{cigar(CigarM, 5)},
+		Seq:   "ACGTA", Qual: []byte("IIIII"),
+		Tags: []Tag{
+			{Key: "NM", Type: Tagi, Value: "1"},
+			{Key: "NM", Type: Tagi, Value: "2"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data := b.finish()
+	hdr, recs := readAll(t, data)
+	issues := NewValidator(ModeStrict).Validate(hdr, recs)
+	var found bool
+	for _, iss := range issues {
+		if iss.Field == "tag" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected duplicate-tag warning, got %v", issues)
+	}
+}
+
+func TestValidator_StrictModeBadNextRefID(t *testing.T) {
+	b := newBuilder()
+	if err := b.writeBAMHeader("@HD\tVN:1.6\n@SQ\tSN:chr1\tLN:1000\n", []struct {
+		name   string
+		length int64
+	}{{"chr1", 1000}}); err != nil {
+		t.Fatal(err)
+	}
+	// NextRefID = 5 with only 1 reference — strict mode rejects.
+	if err := b.writeRecord(&Record{
+		QName: "bad", RefID: 0, Pos: 100, MapQ: 60, Bin: 4681,
+		Cigar:     []uint32{cigar(CigarM, 5)},
+		Seq:       "ACGTA", Qual: []byte("IIIII"),
+		NextRefID: 5,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	data := b.finish()
+	hdr, recs := readAll(t, data)
+	issues := NewValidator(ModeStrict).Validate(hdr, recs)
+	if len(issues) == 0 {
+		t.Fatal("expected strict-mode next_refID error")
+	}
+	var found bool
+	for _, iss := range issues {
+		if iss.Field == "next_refID" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no next_refID issue found: %v", issues)
+	}
+}
 
 func TestCigarOpChar_EdgeCases(t *testing.T) {
 	tests := []struct {
