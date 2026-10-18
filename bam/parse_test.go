@@ -7,7 +7,6 @@ import (
 	"errors"
 	"hash/crc32"
 	"io"
-	"math"
 	"strconv"
 	"testing"
 )
@@ -133,7 +132,7 @@ func (b *builder) writeRecord(r *Record) error {
 	if lSeq > 0 {
 		packed := make([]byte, (int(lSeq)+1)/2)
 		for i := 0; i < int(lSeq); i++ {
-			code := baseCode(r.Seq[i])
+			code := testBaseCode(r.Seq[i])
 			if i%2 == 0 {
 				packed[i/2] = code << 4
 			} else {
@@ -153,7 +152,7 @@ func (b *builder) writeRecord(r *Record) error {
 		}
 	}
 	// aux tags.
-	aux := encodeAuxTags(r.Tags)
+	aux := testEncodeAuxTags(r.Tags)
 	rem.Write(aux)
 	// Compute block_size = 32 (core) + len(rem).
 	core := make([]byte, 32)
@@ -187,157 +186,9 @@ func (b *builder) writeRecord(r *Record) error {
 	return err
 }
 
-// baseCode returns the 4-bit BAM code for an ASCII base char.
-// Unknown chars map to N (15).
-func baseCode(c byte) byte {
-	switch c {
-	case '=':
-		return 0
-	case 'A', 'a':
-		return 1
-	case 'C', 'c':
-		return 2
-	case 'M', 'm':
-		return 3
-	case 'G', 'g':
-		return 4
-	case 'R', 'r':
-		return 5
-	case 'S', 's':
-		return 6
-	case 'V', 'v':
-		return 7
-	case 'T', 't':
-		return 8
-	case 'W', 'w':
-		return 9
-	case 'Y', 'y':
-		return 10
-	case 'H', 'h':
-		return 11
-	case 'K', 'k':
-		return 12
-	case 'D', 'd':
-		return 13
-	case 'B', 'b':
-		return 14
-	case 'N', 'n':
-		return 15
-	default:
-		return 15
-	}
-}
-
-// encodeAuxTags serialises a slice of tags into BAM binary form.
-// This is the inverse of parseAuxTags.
-func encodeAuxTags(tags []Tag) []byte {
-	var buf bytes.Buffer
-	for _, t := range tags {
-		buf.WriteString(t.Key)
-		buf.WriteByte(byte(t.Type))
-		buf.Write(encodeTagValue(t))
-	}
-	return buf.Bytes()
-}
-
-// encodeTagValue serialises a single tag value.
-func encodeTagValue(t Tag) []byte {
-	var buf bytes.Buffer
-	switch t.Type {
-	case TagA:
-		if len(t.Value) > 0 {
-			buf.WriteByte(t.Value[0])
-		} else {
-			buf.WriteByte(0)
-		}
-	case Tagc:
-		v := parseInt64(t.Value)
-		buf.WriteByte(byte(int8(v)))
-	case TagC:
-		v := parseUint64(t.Value)
-		buf.WriteByte(byte(v))
-	case Tags:
-		v := parseInt64(t.Value)
-		var b [2]byte
-		binary.LittleEndian.PutUint16(b[:], uint16(int16(v)))
-		buf.Write(b[:])
-	case TagS:
-		v := parseUint64(t.Value)
-		var b [2]byte
-		binary.LittleEndian.PutUint16(b[:], uint16(v))
-		buf.Write(b[:])
-	case Tagi:
-		v := parseInt64(t.Value)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(int32(v)))
-		buf.Write(b[:])
-	case TagI:
-		v := parseUint64(t.Value)
-		var b [4]byte
-		binary.LittleEndian.PutUint32(b[:], uint32(v))
-		buf.Write(b[:])
-	case Tagf:
-		var b [4]byte
-		// Simple ASCII parse; for tests we accept plain decimals.
-		var f float32
-		parseFloat(t.Value, &f)
-		binary.LittleEndian.PutUint32(b[:], math.Float32bits(f))
-		buf.Write(b[:])
-	case Tagd:
-		var b [8]byte
-		f, _ := strconv.ParseFloat(t.Value, 64)
-		binary.LittleEndian.PutUint64(b[:], math.Float64bits(f))
-		buf.Write(b[:])
-	case TagZ, TagH:
-		buf.WriteString(t.Value)
-		buf.WriteByte(0)
-	case TagB:
-		// Sub-type + count + elements.
-		sub := t.Type
-		buf.WriteByte(byte(sub))
-		parts := splitComma(t.Value)
-		var c [4]byte
-		binary.LittleEndian.PutUint32(c[:], uint32(len(parts)))
-		buf.Write(c[:])
-		for _, p := range parts {
-			switch sub {
-			case Tagc:
-				v := parseInt64(p)
-				buf.WriteByte(byte(int8(v)))
-			case TagC:
-				v := parseUint64(p)
-				buf.WriteByte(byte(v))
-			case Tags:
-				v := parseInt64(p)
-				var b [2]byte
-				binary.LittleEndian.PutUint16(b[:], uint16(int16(v)))
-				buf.Write(b[:])
-			case TagS:
-				v := parseUint64(p)
-				var b [2]byte
-				binary.LittleEndian.PutUint16(b[:], uint16(v))
-				buf.Write(b[:])
-			case Tagi:
-				v := parseInt64(p)
-				var b [4]byte
-				binary.LittleEndian.PutUint32(b[:], uint32(int32(v)))
-				buf.Write(b[:])
-			case TagI:
-				v := parseUint64(p)
-				var b [4]byte
-				binary.LittleEndian.PutUint32(b[:], uint32(v))
-				buf.Write(b[:])
-			case Tagf:
-				var f float32
-				parseFloat(p, &f)
-				var b [4]byte
-				binary.LittleEndian.PutUint32(b[:], math.Float32bits(f))
-				buf.Write(b[:])
-			}
-		}
-	}
-	return buf.Bytes()
-}
+// Test-only helpers for tag encoding (testEncodeAuxTags,
+// testEncodeTagValue, testBaseCode, testSplitComma) live in
+// parse_helpers_test.go.
 
 // small numeric parsers for tag values.
 func parseInt64(s string) int64 {
@@ -378,23 +229,6 @@ func parseFloat(s string, out *float32) {
 		return
 	}
 	*out = float32(v)
-}
-
-// splitComma splits on commas for B-array values.
-func splitComma(s string) []string {
-	if s == "" {
-		return nil
-	}
-	var out []string
-	start := 0
-	for i := 0; i < len(s); i++ {
-		if s[i] == ',' {
-			out = append(out, s[start:i])
-			start = i + 1
-		}
-	}
-	out = append(out, s[start:])
-	return out
 }
 
 // finish writes the EOF marker and returns the assembled stream.
