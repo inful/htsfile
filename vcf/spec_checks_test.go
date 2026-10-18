@@ -935,6 +935,76 @@ func TestValidator_ENDBoundsWithReference(t *testing.T) {
 	}
 }
 
+func TestValidator_BreakendPositionsWithReference(t *testing.T) {
+	// Per VCFv4.5 §1.6.5.1, a breakend replacement string
+	// has the form t]p], t[p[, ]p]t, or [p[t, where p
+	// names a remote contig and position. With a FASTA
+	// reference attached, the remote position must be
+	// within the remote contig's length.
+	refText := ">chr1\nACGTACGTACGTACGT\n>chr2\nGATTACAGATTACA\n" // 16 + 14 bases
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(refPath, []byte(refText), 0o600); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	ref, err := fasta.Open(refPath)
+	if err != nil {
+		t.Fatalf("fasta.Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+
+	hdr := "##fileformat=VCFv4.2\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		// Breakend with remote position within chr1
+		// (length 16). Forms: t]p] and t[p[.
+		{"t]p] within contig", "chr1\t3\t.\tA\tA]chr1:10]\t.\t.\t.", false},
+		{"t[p[ within contig", "chr1\t3\t.\tA\tA[chr1:10[\t.\t.\t.", false},
+		// Cross-contig breakend within chr2 (length 14).
+		{"]p]t within remote", "chr1\t3\t.\tA\t]chr2:5]A\t.\t.\t.", false},
+		{"[p[t within remote", "chr1\t3\t.\tA\t[chr2:5[A\t.\t.\t.", false},
+		// Remote position past contig length.
+		{"remote past contig", "chr1\t3\t.\tA\tA]chr1:100]\t.\t.\t.", true},
+		// Remote position past chr2 length (chr2 = 14).
+		{"remote past chr2", "chr1\t3\t.\tA\tA]chr2:100]\t.\t.\t.", true},
+		// Unknown remote contig: warning in ModeDefault,
+		// promoted to error in ModeStrict.
+		{"unknown remote contig", "chr1\t3\t.\tA\tA]chrX:100]\t.\t.\t.", true},
+		// Telomere breakpoint (no position): skip.
+		{"telomere (no position)", "chr1\t3\t.\tA\t]chr1]A\t.\t.\t.", false},
+		// Non-breakend ALT: skip.
+		{"non-breakend ALT", "chr1\t3\t.\tA\tT\t.\t.\t.", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			v := NewValidator(ModeStrict).WithReference(ref)
+			issues := v.Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "exceeds contig length") ||
+					strings.Contains(iss.Msg, "unknown contig") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_SVLENBoundsWithReference(t *testing.T) {
 	// With a FASTA reference, POS + |SVLEN| - 1 must be
 	// within the contig.

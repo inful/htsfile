@@ -11,6 +11,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.13.0] — 2026-10-18
+
+This release adds a reference-aware check for
+breakend remote positions (§1.6.5.1). For every
+breakend ALT in a record, the remote contig and
+position are parsed and the position is verified
+against the reference contig length.
+
+### Added — vcf validator
+
+- **`checkBreakendPositions`** (`f3a0a8c`). Fires
+  only when a FASTA reference is attached. For every
+  ALT matching the breakend shape `t]p]`, `t[p[`,
+  `]p]t`, or `[p[t`, parse the remote position
+  (`chr:pos`) and verify `pos <= ref.Length(chr)`.
+  - Unknown remote contig → SeverityWarning in
+    ModeDefault, SeverityError in ModeStrict.
+  - Telomere breakends (no position) → skip.
+  - Non-breakend ALTs → skip.
+- **`parseBreakendPosition`** (exported inside
+  the package). Handles the four breakend forms
+  plus the optional strand-bracket trailing the
+  position.
+
+9 new sub-tests cover the four breakend forms,
+within-contig, past-contig, cross-contig, telomere,
+unknown-remote-contig, and non-breakend cases.
+
 ## [0.12.0] — 2026-10-18
 
 This release adds two reference-aware bounds checks

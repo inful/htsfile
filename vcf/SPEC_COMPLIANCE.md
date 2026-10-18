@@ -731,6 +731,52 @@ convention for missing) is filtered out via
 
 **Status:** ✅ (v0.12.0)
 
+### T4.6 — Breakend remote-position bounds (§1.6.5.1)
+
+**Spec (§1.6.5.1, "Specifying complex rearrangements
+with breakends"):**
+
+> The position p of the mate breakend, indicated by
+> a string of the form "chr:pos".
+
+The four valid breakend shapes are `t]p]`, `t[p[`,
+`]p]t`, `[p[t`. The position is bracketed by two
+matching brackets (`[` or `]`).
+
+**Scope:** per-record, conditioned on a FASTA
+reference being attached. For every breakend ALT,
+parse the remote position and verify it lies within
+the remote contig's length. Without a reference,
+this check is skipped.
+
+**Where:**
+- `vcf/validate.go`: `parseBreakendPosition` parses
+  the four breakend forms plus the optional
+  trailing strand-bracket. `checkBreakendPositions`
+  fires `SeverityError` when `pos > ref.Length` for
+  the remote contig; unknown remote contigs degrade
+  to SeverityWarning in ModeDefault, SeverityError in
+  ModeStrict. Telomere breakends (no position) and
+  non-breakend ALTs are skipped.
+
+**Acceptance:**
+- `A]chr1:10]` (t]p] form, pos=10) against
+  `ref.Length(chr1)=16` passes.
+- `A]chr1:100]` (pos past contig) fires
+  `breakend position exceeds contig length`.
+- `A]chrX:100]` (unknown remote contig) fires
+  warning (default) / error (strict).
+- `]chr1]A` (telomere, no position) is skipped.
+- `T` (non-breakend ALT) is skipped.
+
+**Notes:** breakend ALTs are written as literal
+strings (e.g. `A]chr1:10]`), not as symbolic IDs
+in `<>` form. The local base character is part of
+the replacement string per the spec, not a
+declared ALT type.
+
+**Status:** ✅ (v0.13.0)
+
 ---
 
 ## Quick index — by spec section

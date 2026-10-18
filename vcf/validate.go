@@ -609,6 +609,9 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	if v.Reference != nil {
 		issues = append(issues, v.checkENDBounds(rec, idx, line)...)
 		issues = append(issues, v.checkSVLENBounds(rec, idx, line)...)
+		// Breakend remote positions must lie within the
+		// remote contig (§1.6.5.1).
+		issues = append(issues, v.checkBreakendPositions(rec, idx, line)...)
 	}
 
 	// FILTER values must be declared (or "PASS"/".").
@@ -2171,6 +2174,101 @@ func checkMKeyRange(key string, val *InfoValue, idx, line int) []ValidationError
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "INFO/" + key,
 				Msg: fmt.Sprintf("%s[%d]=%g is out of range; M-key values must be between 0 and 1 (§1.6.1.5)", key, j, f),
+			})
+		}
+	}
+	return issues
+}
+
+// parseBreakendPosition extracts the remote contig and
+// 1-based position from a breakend replacement string of
+// the forms t]p], t[p[, ]p]t, or [p[t. Per §1.6.5.1, the
+// position specifier is bracketed by two matching brackets
+// (`[` or `]`). The inner content is "chr[:pos[:strand]]"
+// where the trailing bracket character (if present)
+// encodes the strand of the remote end.
+//
+// Returns (contig, pos, true) on success. Returns
+// ("", 0, false) when the string is not a breakend,
+// when the position spec omits the position (a telomere
+// breakpoint), or when the position cannot be parsed.
+func parseBreakendPosition(a string) (contig string, pos int64, ok bool) {
+	if len(a) < 4 {
+		return "", 0, false
+	}
+	start := -1
+	for i := 0; i < len(a); i++ {
+		if a[i] == '[' || a[i] == ']' {
+			start = i
+			break
+		}
+	}
+	if start < 0 {
+		return "", 0, false
+	}
+	open := a[start]
+	for i := start + 1; i < len(a); i++ {
+		if a[i] != open {
+			continue
+		}
+		inner := a[start+1 : i]
+		colonIdx := strings.LastIndex(inner, ":")
+		if colonIdx < 0 {
+			return "", 0, false
+		}
+		contig := inner[:colonIdx]
+		posStr := inner[colonIdx+1:]
+		if posStr != "" && (posStr[len(posStr)-1] == '[' || posStr[len(posStr)-1] == ']') {
+			posStr = posStr[:len(posStr)-1]
+		}
+		pos, err := strconv.ParseInt(posStr, 10, 64)
+		if err != nil || pos < 1 {
+			return "", 0, false
+		}
+		return contig, pos, true
+	}
+	return "", 0, false
+}
+
+// checkBreakendPositions fires when a FASTA reference is
+// attached. For every breakend ALT, the remote position
+// must be within the remote contig's length. ALTs that
+// omit the position (a telomere breakpoint) are skipped
+// because there is no position to bound-check. Unknown
+// remote contigs degrade to SeverityWarning in ModeStrict
+// and are skipped in ModeDefault.
+func (v *Validator) checkBreakendPositions(rec *Record, idx, line int) []ValidationError {
+	if v.Reference == nil {
+		return nil
+	}
+	var issues []ValidationError
+	for i, alt := range rec.Alt {
+		if !isBreakend(alt) {
+			continue
+		}
+		contig, pos, ok := parseBreakendPosition(alt)
+		if !ok {
+			continue
+		}
+		contigLen, err := v.Reference.Length(contig)
+		if err != nil {
+			iss := ValidationError{
+				Severity: SeverityWarning,
+				Record:   idx + 1, Line: line,
+				Field:    fmt.Sprintf("ALT[%d]", i),
+				Msg:      fmt.Sprintf("breakend references unknown contig %q: %v", contig, err),
+			}
+			if v.Mode == ModeStrict {
+				iss.Severity = SeverityError
+			}
+			issues = append(issues, iss)
+			continue
+		}
+		if pos > contigLen {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("ALT[%d]", i),
+				Msg:   fmt.Sprintf("breakend position %d on %q exceeds contig length %d", pos, contig, contigLen),
 			})
 		}
 	}
