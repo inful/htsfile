@@ -284,6 +284,28 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 			Msg:   "negative position",
 		})
 	}
+	// POS / POS+len(REF)-1 must not extend past a declared
+	// contig's length (per VCFv4.5 §1.4.7 / §1.6.1.2). We
+	// only check when the contig is declared AND has a
+	// length; otherwise we cannot constrain it.
+	if len(h.Contigs) > 0 {
+		if c, ok := h.LookupContig(rec.Chrom); ok && c.Length > 0 {
+			end := rec.Pos + int64(len(rec.Ref)) - 1
+			if rec.Pos > c.Length {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "POS",
+					Msg:   fmt.Sprintf("POS %d exceeds declared contig length %d for %s", rec.Pos, c.Length, rec.Chrom),
+				})
+			} else if end > c.Length {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "REF",
+					Msg:   fmt.Sprintf("REF extends past declared contig length %d for %s (POS+len(REF)-1 = %d)", c.Length, rec.Chrom, end),
+				})
+			}
+		}
+	}
 
 	// REF must contain only A/C/G/T/N (case insensitive) per spec.
 	if v.Mode == ModeStrict && !validRefBases(rec.Ref) {

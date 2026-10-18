@@ -610,3 +610,69 @@ func TestValidator_LAADistinctness(t *testing.T) {
 		t.Errorf("expected LAA duplicate issue, got: %+v", issues)
 	}
 }
+
+func TestValidator_POSWithinContigLength(t *testing.T) {
+	// VCFv4.5 §1.6.1.2: a record's POS must not exceed the
+	// declared ##contig length, and POS+len(REF)-1 must
+	// not extend past it either.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name  string
+		line  string
+		field string // expected field on the issue ("POS" or "REF")
+		want  bool
+	}{
+		{"pos within", "chr1\t100\t.\tA\tC\t.\t.\t.", "POS", false},
+		{"ref end within", "chr1\t999\t.\tA\tC\t.\t.\t.", "POS", false},
+		{"pos exceeds", "chr1\t2000\t.\tA\tC\t.\t.\t.", "POS", true},
+		{"ref extends past", "chr1\t1000\t.\tAA\tC\t.\t.\t.", "REF", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + c.line + "\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if iss.Field == c.field && (strings.Contains(iss.Msg, "contig length") || strings.Contains(iss.Msg, "extends past")) {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("issue found=%v, want %v; issues=%+v", found, c.want, issues)
+			}
+		})
+	}
+}
+
+func TestValidator_POSWithinContigLength_Undeclared(t *testing.T) {
+	// When the CHROM is not declared, the position
+	// constraint must not fire (no length to compare
+	// against).
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\tC\t.\t.\t.\n"))
+	hdr, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	for _, iss := range NewValidator(ModeStrict).Validate(hdr, []*Record{rec}) {
+		if strings.Contains(iss.Msg, "contig length") {
+			t.Errorf("unexpected contig-length issue for undeclared contig: %+v", iss)
+		}
+	}
+}
