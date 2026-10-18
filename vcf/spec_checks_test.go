@@ -922,6 +922,55 @@ func TestValidator_ENDMatchesComputed(t *testing.T) {
 	}
 }
 
+func TestValidator_CNVAllelesShareSVLENWhenFormatCN(t *testing.T) {
+	// Per VCFv4.5 §"FORMAT keys used for structural
+	// variants": "When FORMAT CN is present, all <CNV>,
+	// <DEL> and <DUP> alleles must have the same SVLEN."
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=CNV,Description=\"x\">\n" +
+		"##ALT=<ID=DEL,Description=\"x\">\n" +
+		"##ALT=<ID=DUP,Description=\"x\">\n" +
+		"##INFO=<ID=SVLEN,Number=A,Type=Integer,Description=\"x\">\n" +
+		"##FORMAT=<ID=CN,Number=1,Type=Float,Description=\"x\">\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	cases := []struct {
+		name, alt, svlen string
+		want             bool
+	}{
+		{"CNV all share", "<CNV>,<CNV>", "100,100", false},
+		{"CNV different", "<CNV>,<CNV>", "100,200", true},
+		{"DEL DUP same", "<DEL>,<DUP>", "50,50", false},
+		{"DEL DUP different", "<DEL>,<DUP>", "50,100", true},
+		{"mixed INV same ok", "<DEL>,<INV>,<DUP>", "30,30,30", false},
+		{"mixed INV different", "<DEL>,<INV>,<DUP>", "30,30,40", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdrText + "chr1\t100\t.\tA\t" + c.alt + "\t.\t.\tSVLEN=" + c.svlen + "\tGT:CN\t0/0:1.0\n"))
+			hdr, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(hdr, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "must share the same SVLEN") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("alt=%s svlen=%s: found=%v, want %v; issues=%+v", c.alt, c.svlen, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_CICNCardinality(t *testing.T) {
 	// VCFv4.5 §1.6.1.7: "CICN ... If present, the
 	// number of entries must be twice the number of

@@ -488,6 +488,13 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 		// must be positive. (The spec says SVLEN is always
 		// positive, even for INV.)
 		if key == "SVLEN" {
+			// When FORMAT CN is present, all <CNV>,
+			// <DEL>, and <DUP> alleles must share the
+			// same SVLEN (VCFv4.5 §1.6.1.7 SV FORMAT
+			// keys).
+			if _, hasCN := h.Formats["CN"]; hasCN {
+				checkCNVAllelesShareSVLEN(rec, val.Ints, idx, line, &issues)
+			}
 			for i, n := range val.Ints {
 				if n <= 0 {
 					alt := "."
@@ -1310,6 +1317,68 @@ func missingLAAFields(g Genotype) []string {
 	}
 	return missing
 }
+
+// checkCNVAllelesShareSVLEN enforces the VCFv4.5
+// §"FORMAT keys used for structural variants" rule:
+//
+//   When FORMAT CN is present, all <CNV>, <DEL> and
+//   <DUP> alleles must have the same SVLEN.
+//
+// The check fires in ModeStrict.
+func checkCNVAllelesShareSVLEN(rec *Record, svlens []int64, idx, line int, issues *[]ValidationError) {
+	// Collect SVLENs from <CNV>, <DEL>, <DUP> alleles,
+	// skipping missing values (.). The first non-missing
+	// SVLEN is the reference; subsequent ones must match.
+	var first int64
+	firstSeen := false
+	for i, alt := range rec.Alt {
+		if !isCNVAllele(alt) {
+			continue
+		}
+		if i >= len(svlens) || svlens[i] == -1 || isMissing(svlens[i]) {
+			continue
+		}
+		if !firstSeen {
+			first = svlens[i]
+			firstSeen = true
+			continue
+		}
+		if svlens[i] != first {
+			*issues = append(*issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "INFO/SVLEN",
+				Msg: fmt.Sprintf("all <CNV>, <DEL>, and <DUP> alleles must share the same SVLEN when FORMAT CN is declared; %q has SVLEN=%d, expected %d", alt, svlens[i], first),
+			})
+		}
+	}
+}
+
+// isCNVAllele reports whether a is a CNV-family symbolic
+// allele (<CNV>, <CNV:TR>, <DEL>, <DUP>, including their
+// subtypes).
+func isCNVAllele(a string) bool {
+	if !strings.HasPrefix(a, "<") || !strings.HasSuffix(a, ">") {
+		return false
+	}
+	inner := a[1 : len(a)-1]
+	for _, prefix := range []string{"CNV", "DEL", "DUP"} {
+		if inner == prefix || strings.HasPrefix(inner, prefix+":") {
+			return true
+		}
+	}
+	return false
+}
+
+// isMissing is a small helper that treats a sentinel
+// value (the parser uses -1 to mean "missing" for the
+// Ints slice when the field has fewer entries than ALT
+// alleles) as missing. The actual VALUE MISSING (".")
+// round-trips through as 0 in the typedCore, but for
+// SVLEN a 0 entry is already caught by the
+// "must be positive" check; we skip the SVLEN-
+// equality check on zero values to avoid false
+// positives.
+func isMissing(n int64) bool { return n <= 0 }
 
 // checkLAA validates a sample's LAA field. Per VCFv4.5
 // §1.6.1.4, LAA is a list of 1-based indices into ALT and
