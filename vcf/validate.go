@@ -288,7 +288,10 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	// contig's length (per VCFv4.5 §1.4.7 / §1.6.1.2). We
 	// only check when the contig is declared AND has a
 	// length; otherwise we cannot constrain it.
-	if len(h.Contigs) > 0 {
+// Mitochondrial chromosomes are exempt: the reference is
+// circular (§1.6.1.6), so POS can wrap past the declared
+// length.
+	if len(h.Contigs) > 0 && !isMitochondrial(rec.Chrom) {
 		if c, ok := h.LookupContig(rec.Chrom); ok && c.Length > 0 {
 			end := rec.Pos + int64(len(rec.Ref)) - 1
 			if rec.Pos > c.Length {
@@ -644,6 +647,22 @@ func hasGT(s []string) bool {
 	return false
 }
 
+// isMitochondrial reports whether chrom names a
+// mitochondrial contig. VCFv4.5 §1.6.1.6 calls out
+// mitochondrial DNA (chrM / MT / M / etc.) as a special
+// case: the reference is circular, POS can exceed the
+// contig length, and END can be smaller than POS. The
+// list covers the common conventions; callers using
+// non-standard names can set a ##contig attribute in
+// the future.
+func isMitochondrial(chrom string) bool {
+	switch chrom {
+	case "MT", "Mt", "mt", "chrM", "chrm", "M", "chrMT", "chrMt", "MTDNA", "mtdna":
+		return true
+	}
+	return false
+}
+
 // checkPloidy enforces VCFv4.5 §1.6.2: all samples in a
 // record must have the same ploidy. Mixed ploidies in a
 // single record make Number=G and Number=P cardinality
@@ -685,9 +704,14 @@ func (v *Validator) checkPloidy(rec *Record, idx int) []ValidationError {
 // field. When the header declares ##INFO=<ID=END,...> and
 // the record carries an END value, the value must match
 // the computed END (POS+len(REF)-1, plus SVLEN / LEN
-// adjustments for symbolic ALT alleles).
+// adjustments for symbolic ALT alleles). Mitochondrial
+// chromosomes are exempt: the reference is circular and
+// END may legitimately wrap past the origin.
 func (v *Validator) checkEND(rec *Record, idx int) []ValidationError {
 	if v.Mode != ModeStrict {
+		return nil
+	}
+	if isMitochondrial(rec.Chrom) {
 		return nil
 	}
 	raw, ok := rec.Info["END"]

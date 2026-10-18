@@ -970,6 +970,103 @@ func TestValidator_PloidyConsistencyAcrossRecord(t *testing.T) {
 	})
 }
 
+func TestValidator_MitochondrialChromExemptions(t *testing.T) {
+	// VCFv4.5 §1.6.1.6: the mitochondrial reference is
+	// circular. POS may exceed the contig length and END
+	// may not match the simple POS+len(REF)-1 formula
+	// because of origin-spanning variants. Both checks
+	// must skip mitochondrial chromosomes.
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chrM,length=16569>\n" +
+		"##INFO=<ID=END,Number=1,Type=Integer,Description=\"end position\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
+	// POS > length: a normal chromosome would be
+	// rejected; chrM must be accepted.
+	t.Run("pos exceeds length", func(t *testing.T) {
+		dec := NewDecoder(strings.NewReader(hdrText + "chrM\t20000\t.\tA\tC\t.\t.\t.\tGT\t0/1\n"))
+		hdr, err := dec.Header()
+		if err != nil {
+			t.Fatalf("Header: %v", err)
+		}
+		rec, err := dec.Record()
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		for _, iss := range NewValidator(ModeStrict).Validate(hdr, []*Record{rec}) {
+			if strings.Contains(iss.Msg, "contig length") {
+				t.Errorf("mtDNA: unexpected length issue: %+v", iss)
+			}
+		}
+	})
+	// END that doesn't match the linear formula: a
+	// normal chromosome would be rejected; chrM must
+	// be accepted.
+	t.Run("end wraps past origin", func(t *testing.T) {
+		dec := NewDecoder(strings.NewReader(hdrText + "chrM\t16000\t.\tACGT\tA\t.\t.\tEND=50\tGT\t0/1\n"))
+		hdr, err := dec.Header()
+		if err != nil {
+			t.Fatalf("Header: %v", err)
+		}
+		rec, err := dec.Record()
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		for _, iss := range NewValidator(ModeStrict).Validate(hdr, []*Record{rec}) {
+			if iss.Field == "INFO/END" {
+				t.Errorf("mtDNA: unexpected END issue: %+v", iss)
+			}
+		}
+	})
+	// Other mitochondrial name conventions must also
+	// be exempt.
+	for _, name := range []string{"MT", "M", "chrMT"} {
+		t.Run("alt name "+name, func(t *testing.T) {
+			hdr := "##fileformat=VCFv4.2\n" +
+				"##contig=<ID=" + name + ",length=100>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+			dec := NewDecoder(strings.NewReader(hdr + name + "\t200\t.\tA\tC\t.\t.\t.\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			for _, iss := range NewValidator(ModeStrict).Validate(h, []*Record{rec}) {
+				if strings.Contains(iss.Msg, "contig length") {
+					t.Errorf("mtDNA %q: unexpected length issue: %+v", name, iss)
+				}
+			}
+		})
+	}
+	// Non-mitochondrial chromosomes are still checked.
+	t.Run("non-mt still checked", func(t *testing.T) {
+		hdr := "##fileformat=VCFv4.2\n" +
+			"##contig=<ID=chr1,length=1000>\n" +
+			"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+		dec := NewDecoder(strings.NewReader(hdr + "chr1\t2000\t.\tA\tC\t.\t.\t.\n"))
+		h, err := dec.Header()
+		if err != nil {
+			t.Fatalf("Header: %v", err)
+		}
+		rec, err := dec.Record()
+		if err != nil {
+			t.Fatalf("Record: %v", err)
+		}
+		found := false
+		for _, iss := range NewValidator(ModeStrict).Validate(h, []*Record{rec}) {
+			if strings.Contains(iss.Msg, "contig length") {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("chr1 POS=2000 should still fire the length check")
+		}
+	})
+}
+
 func TestValidator_GTMustBeFirstFormatField(t *testing.T) {
 	// Per VCFv4.5 §1.6.2, GT must be the first FORMAT
 	// key when it is declared. The check fires in
