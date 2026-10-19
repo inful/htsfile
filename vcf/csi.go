@@ -145,7 +145,7 @@ func (r *CSIReader) Query(chrom string, start, end int64) ([]*Record, error) {
 	})
 	var recs []*Record
 	for _, c := range pendingChunks {
-		chunkRecs, err := r.decodeChunk(c.virt)
+		chunkRecs, err := r.decodeChunk(c.virt, c.end)
 		if err != nil {
 			return nil, err
 		}
@@ -159,14 +159,20 @@ func (r *CSIReader) Query(chrom string, start, end int64) ([]*Record, error) {
 }
 
 // decodeChunk seeks to virtualOff and decodes VCF records
-// until EOF. Records are filtered by region by the caller.
-func (r *CSIReader) decodeChunk(virtualOff uint64) ([]*Record, error) {
+// until the BGZF virtual offset reaches chunkEndOff (or
+// EOF, whichever comes first). Records are filtered by
+// region by the caller.
+func (r *CSIReader) decodeChunk(virtualOff, chunkEndOff uint64) ([]*Record, error) {
 	if err := r.seek.Seek(virtualOff); err != nil {
 		return nil, fmt.Errorf("vcf: seek chunk: %w", err)
 	}
 	dec := NewDecoder(r.seek)
 	var recs []*Record
 	for {
+		off := r.seek.VirtualOffset()
+		if chunkEndOff > 0 && off >= chunkEndOff {
+			break
+		}
 		rec, err := dec.Record()
 		if err != nil {
 			if errors.Is(err, io.EOF) {

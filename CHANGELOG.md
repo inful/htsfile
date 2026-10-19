@@ -14,7 +14,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [0.15.1] — 2026-10-19
 
 Patch release adding the `htsfile vcf query` CLI
-subcommand on top of v0.15.0.
+subcommand and a chunk-boundary stop optimisation
+on top of v0.15.0.
 
 ### Added — cmd/htsfile
 
@@ -29,6 +30,34 @@ subcommand on top of v0.15.0.
   `.csi`. 5 new tests cover region match, whole
   contig, malformed region, missing index, and the
   region parser.
+
+### Changed — vcf, internal/bgzf
+
+- **`decodeChunk` stops at the chunk's End BGZF
+  virtual offset instead of decoding until EOF**
+  (`e1a52bf`). Tabix/CSI chunks carry an explicit End
+  byte offset that marks the last byte of the last
+  record in the chunk; the reader now respects it.
+  Two pieces were needed:
+
+  1. **`bgzf.Reader.VirtualOffset()`** tracks the
+     absolute BGZF virtual offset of the next byte to
+     return, by wrapping the underlying io.Reader in
+     a `countingReader` that captures the file
+     position at NewReader time. `SeekReader.VirtualOffset`
+     forwards it.
+  2. **`TabixReader.decodeChunk` and
+     `CSIReader.decodeChunk`** accept `chunkEndOff`
+     and break the read loop when the BGZF position
+     reaches it. Callers (`Query`) pass each chunk's
+     `End` value.
+
+  One new test (`TestTabixReader_ChunkEndStop`)
+  builds a multi-block fixture, discovers the second
+  block's BGZF virtual offset via the new
+  `VirtualOffset()`, rebuilds the index with a chunk
+  End at that boundary, and confirms Query returns
+  fewer records than the full-file query.
 
 ## [0.15.0] — 2026-10-19
 

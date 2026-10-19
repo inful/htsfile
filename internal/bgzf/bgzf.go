@@ -94,12 +94,65 @@ var (
 // final block's payload (typically the 28-byte EOF marker is the
 // last block seen, with an empty payload).
 //
+// countingReader wraps an io.Reader and tracks the bytes
+// consumed. It captures the underlying reader's starting
+// position at construction time (via Seek(0, SeekCurrent)
+// if r is an io.Seeker) so the cumulative position can be
+// reported as an absolute file offset — which BGZF
+// virtual-offset bookkeeping needs.
+type countingReader struct {
+	r    io.Reader
+	n    int64
+	base int64
+}
+
+func newCountingReader(r io.Reader) *countingReader {
+	c := &countingReader{r: r}
+	if seeker, ok := r.(io.Seeker); ok {
+		// Capture the current position so cr.Absolute()
+		// returns the right value even if r is shared
+		// across multiple Readers (e.g. when SeekReader
+		// re-seeks the file and creates a fresh Reader).
+		if pos, err := seeker.Seek(0, io.SeekCurrent); err == nil {
+			c.base = pos
+		}
+	}
+	return c
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.r.Read(p)
+	c.n += int64(n)
+	return n, err
+}
+
+// Absolute returns the underlying reader's position as an
+// absolute byte offset (the seeked-to start of this Reader's
+// window plus the number of bytes consumed since).
+func (c *countingReader) Absolute() int64 {
+	return c.base + c.n
+}
+
 // A Reader is not safe for concurrent use.
 type Reader struct {
 	// br reads the compressed stream. We use a 64 KiB buffer
 	// because each BGZF block is at most that size, so a single
 	// block always fits in one fill.
 	br *bufio.Reader
+
+	// cr is the counting wrapper around the underlying
+	// io.Reader that br consumes from. It tracks how many
+	// bytes have been pulled from the file, which lets us
+	// recover the BGZF block-start offset for the
+	// currently-decoded block.
+	cr *countingReader
+
+	// blockStart is the byte offset in the underlying file
+	// where the current decompressed block starts. Captured
+	// at the start of nextBlock. Combined with offset (the
+	// within-decompressed-block cursor), it produces the
+	// BGZF virtual offset for the next byte to return.
+	blockStart int64
 
 	// buf holds the decompressed payload of the current block
 	// (or the next block that has been read-ahead).
@@ -122,7 +175,20 @@ type Reader struct {
 // The Reader buffers one block at a time; no Read on the
 // underlying r happens until the first call to Read.
 func NewReader(r io.Reader) *Reader {
-	return &Reader{br: bufio.NewReaderSize(r, ioBufSize)}
+	cr := newCountingReader(r)
+	return &Reader{br: bufio.NewReaderSize(cr, ioBufSize), cr: cr}
+}
+
+// VirtualOffset returns the BGZF virtual offset (high 48
+// bits: byte offset of the current block in the underlying
+// file; low 16 bits: byte offset within the decompressed
+// payload) of the next byte that Read would return.
+//
+// Useful for callers that need to know the absolute stream
+// position of records they extract (for example, tabix /
+// CSI chunk boundary checks).
+func (r *Reader) VirtualOffset() uint64 {
+	return uint64(r.blockStart)<<16 | uint64(r.offset)
 }
 
 // Read decompresses the next BGZF block as needed and copies
@@ -164,6 +230,13 @@ func (r *Reader) Read(p []byte) (int, error) {
 // marker is recognised and recorded; once seen, the next call
 // to Read returns io.EOF.
 func (r *Reader) nextBlock() error {
+	// Capture the absolute file offset where the next
+	// block starts. At this point no bytes of the new
+	// block have been read yet, so cr.Absolute() is the
+	// exact file offset of the block boundary. The
+	// virtual-offset returned by VirtualOffset uses this
+	// in the high 48 bits.
+	r.blockStart = r.cr.Absolute()
 	hdr := make([]byte, headerSize)
 	n, err := io.ReadFull(r.br, hdr)
 	if err != nil {

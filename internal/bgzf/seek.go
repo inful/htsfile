@@ -22,7 +22,7 @@ type SeekReader struct {
 	// rs is the current BGZF reader. Each Seek creates a
 	// new BGZF reader positioned at the right block
 	// boundary; the previous one is discarded.
-	rs io.Reader
+	rs *Reader
 
 	// blockOff is the byte offset in the underlying file
 	// of the block that rs is currently positioned at.
@@ -85,4 +85,16 @@ func (s *SeekReader) Seek(virtualOff uint64) error {
 // ends.
 func (s *SeekReader) Read(p []byte) (int, error) {
 	return s.rs.Read(p)
+}
+
+// VirtualOffset returns the BGZF virtual offset of the
+// next byte that Read would return. It is the high 48 bits
+// of the file offset of the current block plus the low 16
+// bits of the within-decompressed-block cursor. Used by
+// tabix / CSI chunk boundary checks.
+func (s *SeekReader) VirtualOffset() uint64 {
+	if s.rs == nil {
+		return 0
+	}
+	return s.rs.VirtualOffset()
 }

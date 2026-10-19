@@ -151,7 +151,7 @@ func (r *TabixReader) Query(chrom string, start, end int64) ([]*Record, error) {
 	_ = pendingChunks // silence unused warning if needed
 	var recs []*Record
 	for _, c := range pendingChunks {
-		chunkRecs, err := r.decodeChunk(c.virt)
+		chunkRecs, err := r.decodeChunk(c.virt, c.end)
 		if err != nil {
 			return nil, err
 		}
@@ -165,17 +165,24 @@ func (r *TabixReader) Query(chrom string, start, end int64) ([]*Record, error) {
 }
 
 // decodeChunk seeks to virtualOff and decodes VCF records
-// until EOF. Records are filtered by region by the caller.
-// Stopping at the chunk's End offset would require the
-// Decoder to expose per-record byte offsets; for now
-// callers filter overlapping records on POS.
-func (r *TabixReader) decodeChunk(virtualOff uint64) ([]*Record, error) {
+// until the BGZF virtual offset reaches chunkEndOff (or
+// EOF, whichever comes first). Records are filtered by
+// region by the caller.
+func (r *TabixReader) decodeChunk(virtualOff, chunkEndOff uint64) ([]*Record, error) {
 	if err := r.seek.Seek(virtualOff); err != nil {
 		return nil, fmt.Errorf("vcf: seek chunk: %w", err)
 	}
 	dec := NewDecoder(r.seek)
 	var recs []*Record
 	for {
+		// Capture the BGZF virtual offset before
+		// reading the next record. If we're already
+		// at or past chunkEndOff, the record would
+		// belong to the next chunk — stop.
+		off := r.seek.VirtualOffset()
+		if chunkEndOff > 0 && off >= chunkEndOff {
+			break
+		}
 		rec, err := dec.Record()
 		if err != nil {
 			if errors.Is(err, io.EOF) {
