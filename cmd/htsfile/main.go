@@ -10,6 +10,7 @@
 //	htsfile vcf2bcf < file.vcf > file.bcf    # convert VCF to BCF
 //	htsfile bcf2vcf < file.bcf > file.vcf    # convert BCF to VCF
 //	htsfile vcf query [--index=auto|tabix|csi] file.vcf.gz chr:start-end
+//	htsfile vcf index [--format=auto|tabix|csi] [--min-shift=N] [--depth=N] file.vcf.gz
 //	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.fq | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
 //	htsfile version
 //
@@ -182,6 +183,10 @@ Commands:
   summary     Print a summary of the file (header / column count / records).
   vcf query    Query an indexed .vcf.gz by region (chrom:start-end).
                --index=auto|tabix|csi   index type (default: auto)
+  vcf index    Build a tabix or CSI index next to a BGZF VCF.
+               --format=auto|tabix|csi  index format (default: auto → tabix)
+               --min-shift=N           CSI binning window exponent (default: 14)
+               --depth=N               CSI bin levels (default: 5)
 
 Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .fq, .bcf, .tbi, .csi). For
 stdin ("-") or unknown extensions, the first non-empty line is sniffed.
@@ -1872,20 +1877,75 @@ func parseVCFRegion(s string) (chrom string, start, end int64, err error) {
 	return chrom, start, end, nil
 }
 
-// runVCF dispatches the "vcf" subcommand. The only
-// current subcommand is "query" for indexed region
-// queries. Future subcommands (e.g. "vcf index" to
-// write a tabix/CSI index) go here.
+// runVCF dispatches the "vcf" subcommand. Supported
+// subcommands are:
+//
+//   - query — run a region query against an indexed VCF
+//   - index — emit a tabix/CSI index next to a VCF
 func runVCF(args []string) error {
 	if len(args) == 0 {
-		return errors.New("vcf: expected subcommand (e.g. \"query\")")
+		return errors.New("vcf: expected subcommand (e.g. \"query\", \"index\")")
 	}
 	switch args[0] {
 	case "query":
 		return runVCFQuery(args[1:])
+	case "index":
+		return runVCFIndex(args[1:])
 	default:
 		return fmt.Errorf("vcf: unknown subcommand %q", args[0])
 	}
+}
+
+// clampInt32 narrows an int to int32 with explicit
+// clamping at the int32 boundaries so a user-supplied
+// `--min-shift=99999` doesn't silently wrap to a tiny
+// value at the int32 cast site.
+func clampInt32(v int) int32 {
+	const maxI32 = int32(^uint32(0) >> 1)
+	const minI32 = -maxI32 - 1
+	if v > int(maxI32) {
+		return maxI32
+	}
+	if v < int(minI32) {
+		return minI32
+	}
+	return int32(v)
+}
+
+// runVCFIndex builds a tabix or CSI index next to a
+// BGZF-compressed VCF file. Format selection matches
+// `samtools tabix -p vcf` (default: tabix) and
+// `bcftools index` (CSI for genomes > 512 MiB).
+func runVCFIndex(args []string) error {
+	fs := flag.NewFlagSet("vcf index", flag.ExitOnError)
+	format := fs.String("format", "auto", "index format: auto, tabix, or csi")
+	minShift := fs.Int("min-shift", 14, "CSI min_shift (bin window = 2^N bp; tabix default 14)")
+	depth := fs.Int("depth", 5, "CSI depth (number of bin levels; tabix default 5)")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("vcf index: expected exactly one file argument")
+	}
+	path := fs.Arg(0)
+	opts := vcf.IndexOpts{
+		MinShift: clampInt32(*minShift),
+		Depth:    clampInt32(*depth),
+	}
+	switch *format {
+	case "auto":
+		// Default to tabix; that is what most VCF
+		// tools emit and what the v0.15.1
+		// `htsfile vcf query` defaults to.
+		opts.Format = vcf.FormatTabix
+	case "tabix":
+		opts.Format = vcf.FormatTabix
+	case "csi":
+		opts.Format = vcf.FormatCSI
+	default:
+		return fmt.Errorf("vcf index: unknown format %q", *format)
+	}
+	return vcf.BuildIndex(path, opts)
 }
 
 // runVCFQuery is the dispatcher for "htsfile vcf query".

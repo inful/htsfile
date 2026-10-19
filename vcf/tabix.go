@@ -19,10 +19,11 @@ import (
 //
 // A TabixReader is not safe for concurrent use.
 type TabixReader struct {
-	seek *bgzf.SeekReader
-	idx  *tabix.Index
-	hdr  *Header
-	path string
+	seek     *bgzf.SeekReader
+	idx      *tabix.Index
+	hdr      *Header
+	path     string
+	chromIdx map[string]int
 }
 
 // OpenTabix opens a tabix-indexed VCF file at path. The
@@ -51,7 +52,8 @@ func OpenTabix(path string) (*TabixReader, error) {
 		_ = seek.Close()
 		return nil, fmt.Errorf("vcf: parse index %s: %w", tbiPath, err)
 	}
-	return &TabixReader{seek: seek, idx: idx, path: path}, nil
+	chromIdx := make(map[string]int)
+	return &TabixReader{seek: seek, idx: idx, path: path, chromIdx: chromIdx}, nil
 }
 
 // Close releases the underlying BGZF reader.
@@ -121,6 +123,10 @@ func (r *TabixReader) Query(chrom string, start, end int64) ([]*Record, error) {
 			idx = i
 			break
 		}
+		// Populate the chromIdx map the first time
+		// we walk the header, so dedupKey can pack
+		// (chromIdx, pos) cheaply.
+		r.chromIdx[c.ID] = i
 	}
 	if idx < 0 {
 		return nil, nil
@@ -150,18 +156,61 @@ func (r *TabixReader) Query(chrom string, start, end int64) ([]*Record, error) {
 	})
 	_ = pendingChunks // silence unused warning if needed
 	var recs []*Record
+	// dedup is the set of (Chrom, Pos) pairs already
+	// emitted in this query. Multiple bins can cover
+	// the same records (a record sits in every bin
+	// its POS falls into), so the same record can
+	// appear in multiple chunks. We track them by
+	// packing (chromIndex, pos) into a single uint64
+	// for fast comparison.
+	dedup := make(map[uint64]struct{})
 	for _, c := range pendingChunks {
 		chunkRecs, err := r.decodeChunk(c.virt, c.end)
 		if err != nil {
 			return nil, err
 		}
 		for _, rec := range chunkRecs {
-			if rec.Pos >= start && rec.Pos < end {
-				recs = append(recs, rec)
+			// Chunks are aligned to BGZF blocks,
+			// which can hold records from
+			// multiple CHROMs. Filter by chrom
+			// here — the ref selection in the
+			// outer loop just narrows down
+			// which bins we walk.
+			if rec.Chrom != chrom {
+				continue
 			}
+			if rec.Pos < start || rec.Pos >= end {
+				continue
+			}
+			key := dedupKey(r.chromIdx, rec.Chrom, rec.Pos)
+			if _, ok := dedup[key]; ok {
+				continue
+			}
+			dedup[key] = struct{}{}
+			recs = append(recs, rec)
 		}
 	}
 	return recs, nil
+}
+
+// dedupKey packs (chromIndex, pos) into a single uint64
+// for set membership. chromIndex fits in 16 bits
+// (65535 references is more than enough for any
+// realistic VCF); pos fits in the low 48 bits.
+func dedupKey(chromIdx map[string]int, chrom string, pos int64) uint64 {
+	const maxPos = uint64(0x0000FFFFFFFFFFFF)
+	idx := chromIdx[chrom]
+	if idx < 0 {
+		idx = 0
+	} else if idx > 0xFFFF {
+		idx = 0xFFFF
+	}
+	key := uint64(idx) << 48
+	if pos < 0 {
+		pos = 0
+	}
+	key |= uint64(pos) & maxPos
+	return key
 }
 
 // decodeChunk seeks to virtualOff and decodes VCF records

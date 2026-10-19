@@ -11,6 +11,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.4] — 2026-10-19
+
+Patch release adding `htsfile vcf index` and the
+index-builder API.
+
+### Added — vcf
+
+- **`BuildIndex(path, opts)`** (`7b3d11e`). Reads a
+  BGZF-compressed VCF and writes either a tabix
+  `.tbi` (default) or a CSI `.csi` index next to it.
+  Algorithm: the vcf.Decoder buffers blocks ahead,
+  so per-record offsets inside a block are
+  unreliable; we use the BGZF block boundary as the
+  natural chunk boundary and emit one chunk per
+  (ref, bin) per block. End is set to the start of
+  the next block, or to the BGZF virtual offset of
+  the EOF marker for the last block, which is what
+  samtools / bcftools emit by default and what
+  makes the chunk-End stop actually fire on
+  single-block files. The linear index records the
+  BGZF offset of the first record in each
+  `(2^min_shift)`-bp window. 6 tests cover the
+  happy path, both formats, options validation,
+  small-region round-trip, EOF handling, and bad
+  paths.
+
+- **`IndexOpts` / `IndexFormat` types** alongside
+  `BuildIndex`. `FormatTabix` is the default;
+  `FormatCSI` takes `MinShift` (bin window
+  exponent) and `Depth` (bin levels).
+
+- **`TabixReader.Query` / `CSIReader.Query` CHROM
+  + dedup fix** (`7b3d11e`). Two correctness
+  changes needed for the index writer to round-trip:
+  1. Chunks are aligned to BGZF blocks, which can
+     hold records from multiple CHROMs. Queries now
+     filter by `rec.Chrom == chrom` in the inner
+     loop, in addition to the existing POS range
+     filter.
+  2. Multiple bins can cover the same record (a
+     record sits in every bin its POS falls into),
+     so the same record can appear in multiple
+     chunks. Queries now dedup emitted records via a
+     `(chromIndex, pos)` set.
+
+### Added — cmd/htsfile
+
+- **`htsfile vcf index`** (`7b3d11e`). Wraps
+  `vcf.BuildIndex`. Flags:
+  `--format=auto|tabix|csi` (default: auto →
+  tabix), `--min-shift=N` (CSI bin window
+  exponent, default 14), `--depth=N` (CSI bin
+  levels, default 5). 4 new tests cover both
+  formats, the round-trip with `vcf query`, and
+  argument validation.
+
+`go test -race -count=1 ./...` is green; `golangci-lint run ./...` reports 0 issues.
+
+## [0.15.3] — 2026-10-19
+
 ## [0.15.3] — 2026-10-19
 
 Patch release adding benchmark coverage for the

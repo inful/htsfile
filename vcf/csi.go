@@ -18,10 +18,11 @@ import (
 //
 // A CSIReader is not safe for concurrent use.
 type CSIReader struct {
-	seek *bgzf.SeekReader
-	idx  *csi.Index
-	hdr  *Header
-	path string
+	seek     *bgzf.SeekReader
+	idx      *csi.Index
+	hdr      *Header
+	path     string
+	chromIdx map[string]int
 }
 
 // OpenCSI opens a CSI-indexed VCF file at path. The
@@ -49,7 +50,7 @@ func OpenCSI(path string) (*CSIReader, error) {
 		_ = seek.Close()
 		return nil, fmt.Errorf("vcf: parse index %s: %w", csiPath, err)
 	}
-	return &CSIReader{seek: seek, idx: idx, path: path}, nil
+	return &CSIReader{seek: seek, idx: idx, path: path, chromIdx: make(map[string]int)}, nil
 }
 
 // Close releases the underlying BGZF reader.
@@ -112,6 +113,7 @@ func (r *CSIReader) Query(chrom string, start, end int64) ([]*Record, error) {
 	}
 	idx := -1
 	for i, c := range hdr.Contigs {
+		r.chromIdx[c.ID] = i
 		if c.ID == chrom {
 			idx = i
 			break
@@ -144,15 +146,25 @@ func (r *CSIReader) Query(chrom string, start, end int64) ([]*Record, error) {
 		return pendingChunks[i].virt < pendingChunks[j].virt
 	})
 	var recs []*Record
+	dedup := make(map[uint64]struct{})
 	for _, c := range pendingChunks {
 		chunkRecs, err := r.decodeChunk(c.virt, c.end)
 		if err != nil {
 			return nil, err
 		}
 		for _, rec := range chunkRecs {
-			if rec.Pos >= start && rec.Pos < end {
-				recs = append(recs, rec)
+			if rec.Chrom != chrom {
+				continue
 			}
+			if rec.Pos < start || rec.Pos >= end {
+				continue
+			}
+			key := dedupKey(r.chromIdx, rec.Chrom, rec.Pos)
+			if _, ok := dedup[key]; ok {
+				continue
+			}
+			dedup[key] = struct{}{}
+			recs = append(recs, rec)
 		}
 	}
 	return recs, nil
