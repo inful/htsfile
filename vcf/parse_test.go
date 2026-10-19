@@ -662,6 +662,24 @@ func TestDecoder_Errors(t *testing.T) {
 				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n" +
 				"1\t100\t.\tA\tC\t.\t.\t.\tGT:GT\t0/1\n",
 		},
+		{
+			// VCFv4.5 §1.6.2: FORMAT keys must match
+			// `^([A-Za-z_][0-9A-Za-z_.]*|1000G)$`.
+			"FORMAT key with leading digit rejected",
+			"##fileformat=VCFv4.5\n" +
+				"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n" +
+				"1\t100\t.\tA\tC\t.\t.\t.\t1GT\t0/1\n",
+		},
+		{
+			// VCFv4.5 §1.6.2: FORMAT keys must match the
+			// regex; spaces are not allowed.
+			"FORMAT key with whitespace rejected",
+			"##fileformat=VCFv4.5\n" +
+				"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n" +
+				"1\t100\t.\tA\tC\t.\t.\t.\tG T\t0/1\n",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

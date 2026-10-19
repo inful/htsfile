@@ -1131,24 +1131,31 @@ called out as their own SPEC_COMPLIANCE task:
 
 In priority order (most spec-rule-fixing value):
 
-1. **FORMAT column duplicate keys within a record**
-   (§1.6.2). The existing header-side duplicate check is
-   correct; we need the record-side one too.
-2. **ID column duplicate values within a record**
-   (§1.6.1). Cross-record duplicates are caught by T3.2;
-   within-record duplicates aren't.
-3. **GT allele value range and haploid GT length**
-   (§1.6.2). Cheap to implement, lots of malformed data
-   out in the wild.
-4. **BCF2 binary type encoding** (§5, line 2258). Big
-   change, but the spec is precise about it.
-5. **CIRB bounds span zero** (§1.7.2). Symmetric with the
-   existing CIPOS rule.
-6. **LAA cross-check** — when an LAA present, all
-   local-allele fields must point into LAA.
+1. ✅ **FORMAT column duplicate keys within a record**
+   (closed by T4.11, v0.15.7).
+2. ✅ **ID column duplicate values within a record**
+   (closed by T4.11, v0.15.7).
+3. ✅ **FORMAT key regex enforcement** (closed by T4.13,
+   v0.15.8).
+4. ✅ **CIRB bounds span zero** (closed by T4.12, v0.15.7).
+5. ✅ **BCF2 forbidden Integer range** (closed by T4.14,
+   v0.15.8).
+6. ✅ **mtDNA haploid GT length** (closed by T4.15,
+   v0.15.8).
+7. ✅ **PEDIGREE Father/Mother/Original resolution**
+   (closed by T4.16, v0.15.8).
 
-The rest are either low-impact or require new public
-API surface (BCF2 binary is the biggest one).
+Remaining:
+
+1. **BCF2 binary type encoding** (§5, line 2258). The
+   spec is precise about the 1-byte type-prefixed
+   encoding. The current `bcf` package uses text. Big
+   change but completes §5.
+2. **LAA cross-check** — when LAA is present, all
+   local-allele fields must point into LAA. Existing
+   checks verify LAA's range / distinctness /
+   ordering; the cross-check (that each LA field's
+   indices are within LAA's set) is not implemented.
 
 ### T4.11 — Per-record ID/FORMAT duplicate checks (§1.6.1, §1.6.2)
 

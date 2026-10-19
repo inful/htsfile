@@ -910,12 +910,17 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 		}
 		rec.Format = strings.Split(formatStr, ":")
 		// Per VCFv4.5 §1.6.2 the FORMAT column keys must be
-		// unique within a record.
+		// unique within a record AND must match the
+		// `^([A-Za-z_][0-9A-Za-z_.]*|1000G)$` regex.
 		seenFmt := make(map[string]struct{}, len(rec.Format))
 		for _, k := range rec.Format {
 			if _, dup := seenFmt[k]; dup {
 				return nil, &ParseError{Line: lineNo, Field: "FORMAT",
 					Msg: "duplicate FORMAT key: " + k}
+			}
+			if !validFormatKey(k) {
+				return nil, &ParseError{Line: lineNo, Field: "FORMAT",
+					Msg: fmt.Sprintf("FORMAT key %q must match ^[A-Za-z_][0-9A-Za-z_.]*$ (or be 1000G)", k)}
 			}
 			seenFmt[k] = struct{}{}
 		}
@@ -1319,9 +1324,18 @@ func isContigNameCont(c byte) bool {
 	return isContigNameStart(c) || c == '*' || c == '='
 }
 
-// validInfoKey matches the regex ^([A-Za-z_][0-9A-Za-z_.]*|1000G)$ from
-// the spec.
-func validInfoKey(s string) bool {
+// validInfoKey matches the regex ^([A-Za-z_][0-9A-Za-z_.]*|1000G)$
+// from the spec. The same regex applies to FORMAT keys (§1.6.2),
+// so validFormatKey reuses this function.
+func validInfoKey(s string) bool { return validKey(s) }
+
+// validFormatKey matches the FORMAT key regex. Per §1.6.2 the
+// FORMAT key regex is identical to the INFO key regex.
+func validFormatKey(s string) bool { return validKey(s) }
+
+// validKey is the shared INFO/FORMAT key validator. Matches the
+// spec regex `^([A-Za-z_][0-9A-Za-z_.]*|1000G)$`.
+func validKey(s string) bool {
 	if s == "1000G" {
 		return true
 	}

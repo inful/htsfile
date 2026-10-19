@@ -2,6 +2,7 @@ package vcf
 
 import (
 	"fmt"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -446,6 +447,35 @@ func (v *Validator) checkHeader(h *Header) []ValidationError {
 		seen[name] = true
 	}
 
+	// PEDIGREE Father / Mother / Original references must
+	// resolve to declared samples (or to other PEDIGREE
+	// IDs). §"PedigreeInDetail" leaves the exact
+	// semantics open; we enforce the simpler "names
+	// must be known" rule in ModeStrict.
+	if v.Mode == ModeStrict && len(h.SampleNames) > 0 {
+		known := make(map[string]struct{}, len(h.SampleNames)+len(h.Pedigrees))
+		for _, n := range h.SampleNames {
+			known[n] = struct{}{}
+		}
+		for _, p := range h.Pedigrees {
+			known[p.ID] = struct{}{}
+		}
+		for _, p := range h.Pedigrees {
+			for _, ref := range []string{p.Original, p.Father, p.Mother} {
+				if ref == "" {
+					continue
+				}
+				if _, ok := known[ref]; !ok {
+					issues = append(issues, ValidationError{
+						Severity: SeverityError,
+						Field:    "header/PEDIGREE",
+						Msg:      fmt.Sprintf("PEDIGREE ID %q references unknown sample %q", p.ID, ref),
+					})
+				}
+			}
+		}
+	}
+
 	// ##META Values enforcement (§1.4.7 "Sample field
 	// format"): every ##SAMPLE field whose key matches
 	// a ##META ID that declares a Values list must have
@@ -727,6 +757,13 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 	var issues []ValidationError
 	altCount := len(rec.Alt)
 	line := rec.Line
+
+	// BCF Integer range (§1.4.2): the values from
+	// $-2^{31}$ to $-2^{31}+7$ cannot be stored in
+	// BCF2 and are therefore disallowed in both VCF
+	// and BCF (§"BcfTypeEncoding"). The eight
+	// forbidden values are MIN_INT32..MIN_INT32+7.
+	issues = append(issues, checkIntegerBCFRange(rec, idx, line)...)
 
 	// CIGAR consistency with REF and ALT (§1.6.1.1).
 	issues = append(issues, checkCIGAR(rec, idx, line)...)
@@ -1866,6 +1903,21 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 					Msg:   err.Error(),
 				})
 			}
+			// Haploid chromosomes (mtDNA) must have GT
+			// with exactly one allele (§1.6.2:
+			// "Haploid calls, e.g. on Y, male non-
+			// pseudoautosomal X, or mitochondria, should
+			// be indicated by having only one allele
+			// value."). We only check mtDNA — Y is
+			// ambiguous because PAR regions can carry
+			// diploid calls.
+			if isMitochondrial(rec.Chrom) && ploidyFromGT(g) != 1 {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: fmt.Sprintf("FORMAT/GT/sample[%d]", sIdx),
+					Msg:   fmt.Sprintf("mitochondrial chromosome %s should have a haploid GT (one allele) but found ploidy %d", rec.Chrom, ploidyFromGT(g)),
+				})
+			}
 		}
 
 		// PSL per-allele check (§1.6.2: "Unphased alleles
@@ -2702,6 +2754,50 @@ func impreciseFlagged(rec *Record) bool {
 		return false
 	}
 	return iv.Flag
+}
+
+// checkIntegerBCFRange enforces VCFv4.5 §1.4.2: Integer
+// values from -2147483648 to -2147483641 (the eight
+// values just above math.MinInt32) cannot be stored in
+// BCF2 and are therefore disallowed in both VCF and
+// BCF (§"BcfTypeEncoding"). The check walks every
+// Integer-typed INFO and FORMAT field across the
+// record and emits a SeverityError per offending
+// value.
+func checkIntegerBCFRange(rec *Record, idx, line int) []ValidationError {
+	const bcfMin = int64(math.MinInt32)
+	const bcfMaxForbidden = bcfMin + 7 // -2147483641
+	var issues []ValidationError
+	checkField := func(field string, ints []int64) {
+		for i, v := range ints {
+			if v < bcfMin || v > bcfMaxForbidden {
+				continue
+			}
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: fmt.Sprintf("%s[%d]", field, i),
+				Msg: fmt.Sprintf("Integer value %d is in the BCF2 forbidden range [%d, %d] (§1.4.2 / §BcfTypeEncoding)",
+					v, bcfMin, bcfMaxForbidden),
+			})
+		}
+	}
+	for key := range rec.Info {
+		val := rec.Info[key]
+		if len(val.Ints) == 0 {
+			continue
+		}
+		checkField("INFO/"+key, val.Ints)
+	}
+	for sIdx, sample := range rec.Samples {
+		for key := range sample.Fields {
+			val := sample.Fields[key]
+			if len(val.Ints) == 0 {
+				continue
+			}
+			checkField(fmt.Sprintf("FORMAT/%s/sample[%d]", key, sIdx), val.Ints)
+		}
+	}
+	return issues
 }
 
 // ciposCovers reports whether the CIPOS INFO field

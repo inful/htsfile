@@ -2882,3 +2882,213 @@ func TestValidator_BreakendMatePositionRoundTrip(t *testing.T) {
 		})
 	}
 }
+
+// TestValidator_IntegerBCFRange covers VCFv4.5 §1.4.2:
+// the eight values from -2147483648 to -2147483641 are
+// reserved by BCF2's integer encoding and therefore
+// disallowed in both VCF and BCF. Rejecting them at
+// parse-time prevents a round-trip VCF→BCF→VCF from
+// silently rewriting the values.
+func TestValidator_IntegerBCFRange(t *testing.T) {
+	hdr := "##fileformat=VCFv4.5\n" +
+		"##INFO=<ID=DP,Number=1,Type=Integer,Description=\"d\">\n" +
+		"##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"q\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		{
+			// DP=2147483647 (math.MaxInt32) is fine.
+			name: "MaxInt32 ok",
+			line: "chr1\t100\t.\tA\tC\t.\t.\tDP=2147483647\tGT\t0/1\n",
+			want: false,
+		},
+		{
+			// -2147483648 (MinInt32) is forbidden.
+			name: "MinInt32 in INFO forbidden",
+			line: "chr1\t100\t.\tA\tC\t.\t.\tDP=-2147483648\tGT\t0/1\n",
+			want: true,
+		},
+		{
+			// -2147483641 (MinInt32+7) is the last
+			// forbidden value.
+			name: "MinInt32+7 in INFO forbidden",
+			line: "chr1\t100\t.\tA\tC\t.\t.\tDP=-2147483641\tGT\t0/1\n",
+			want: true,
+		},
+		{
+			// -2147483640 (MinInt32+8) is fine.
+			name: "MinInt32+8 ok",
+			line: "chr1\t100\t.\tA\tC\t.\t.\tDP=-2147483640\tGT\t0/1\n",
+			want: false,
+		},
+		{
+			// FORMAT/GQ with MinInt32 also forbidden.
+			name: "MinInt32 in FORMAT forbidden",
+			line: "chr1\t100\t.\tA\tC\t.\t.\t.\tGT:GQ\t0/1:-2147483648\n",
+			want: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "BCF2 forbidden range") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("found=%v, want %v; issues=%+v", found, c.want, issues)
+			}
+		})
+	}
+}
+
+// TestValidator_HaploidGTForMtDNA covers VCFv4.5 §1.6.2:
+// "Haploid calls, e.g. on Y, male non-pseudoautosomal
+// X, or mitochondria, should be indicated by having
+// only one allele value." We only check mtDNA — Y is
+// ambiguous because of PAR regions.
+func TestValidator_HaploidGTForMtDNA(t *testing.T) {
+	hdr := "##fileformat=VCFv4.5\n" +
+		"##contig=<ID=chrM,length=16569>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		{
+			// Haploid GT on chrM: ok.
+			name: "mtDNA haploid ok",
+			line: "chrM\t100\t.\tA\tC\t.\t.\t.\tGT\t1\n",
+			want: false,
+		},
+		{
+			// Diploid GT on chrM: error.
+			name: "mtDNA diploid forbidden",
+			line: "chrM\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1\n",
+			want: true,
+		},
+		{
+			// Autosome (chr1) diploid GT: no issue
+			// (haploid rule only fires on mtDNA).
+			name: "autosome diploid ok",
+			line: "chr1\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1\n",
+			want: false,
+		},
+		{
+			// chrY diploid GT: not checked (Y is
+			// ambiguous).
+			name: "chrY diploid not checked",
+			line: "chrY\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1\n",
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "haploid GT") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("found=%v, want %v; issues=%+v", found, c.want, issues)
+			}
+		})
+	}
+}
+
+// TestValidator_PedigreeReference checks that PEDIGREE
+// Father / Mother / Original references resolve to a
+// declared sample or another PEDIGREE ID, per
+// VCFv4.5 §"PedigreeInDetail".
+func TestValidator_PedigreeReference(t *testing.T) {
+	hdrOK := "##fileformat=VCFv4.5\n" +
+		"##PEDIGREE=<ID=Child,Father=Dad,Mother=Mom,Original=Germline>\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+
+	cases := []struct {
+		name string
+		hdr  string
+		want bool
+	}{
+		{
+			name: "PEDIGREE Father/Mother/Original all declared",
+			hdr: "##fileformat=VCFv4.5\n" +
+				"##PEDIGREE=<ID=Child,Father=Dad,Mother=Mom,Original=Germline>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+				"chr1\t100\t.\tA\tC\t.\t.\t.\n",
+			want: false,
+		},
+		{
+			// Father is not declared as a sample.
+			// SampleNames is needed for the check to
+			// fire (only then is "unknown sample"
+			// meaningful).
+			name: "PEDIGREE Father undeclared",
+			hdr: "##fileformat=VCFv4.5\n" +
+				"##PEDIGREE=<ID=Child,Father=Unknown,Mother=Mom>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tMom\tChild\n" +
+				"chr1\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1\t0/1\n",
+			want: true,
+		},
+		{
+			// PEDIGREE references another PEDIGREE.
+			name: "PEDIGREE chain via Original",
+			hdr: "##fileformat=VCFv4.5\n" +
+				"##PEDIGREE=<ID=Germline>\n" +
+				"##PEDIGREE=<ID=Tumour,Original=Germline>\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tGermline\tTumour\n" +
+				"chr1\t100\t.\tA\tC\t.\t.\t.\tGT\t0/1\t0/1\n",
+			want: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(c.hdr))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			issues := NewValidator(ModeStrict).checkHeader(h)
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "references unknown sample") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("found=%v, want %v; issues=%+v", found, c.want, issues)
+			}
+		})
+	}
+	// Unused — silence linter.
+	_ = hdrOK
+}

@@ -11,6 +11,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.8] — 2026-10-19
+
+Patch release closing four smaller spec gaps surfaced
+by the v0.15.7 audit.
+
+### Added — vcf
+
+- **`Validator.checkIntegerBCFRange`** (T4.14). Per
+  `§1.4.2`, the eight Integer values from $-2^{31}$ to
+  $-2^{31}+7$ are reserved by BCF2's type encoding and
+  therefore disallowed in VCF too. Catching them at the
+  VCF layer prevents silent corruption on a VCF→BCF→VCF
+  round-trip. Walks `rec.Info` and `rec.Samples[*].Fields`.
+- **mtDNA haploid GT check** (T4.15). Per `§1.6.2`,
+  mitochondrial GT must have exactly one allele. Y is
+  skipped because PAR regions legitimately carry diploid
+  calls. 4 sub-tests.
+- **PEDIGREE Father/Mother/Original resolution** (T4.16).
+  Header-only ModeStrict check: PEDIGREE references must
+  resolve to a declared sample or another PEDIGREE ID.
+
+### Changed — vcf
+
+- **`parseRecord`** now enforces the FORMAT key regex
+  `^([A-Za-z_][0-9A-Za-z_.]*|1000G)$` per-record (T4.13,
+  `§1.6.2`). The header-side check already enforced it
+  for declared keys.
+
+### Tests
+
+- `TestValidator_IntegerBCFRange` with 5 sub-tests.
+- `TestValidator_HaploidGTForMtDNA` with 4 sub-tests.
+- `TestValidator_PedigreeReference` with 3 sub-tests.
+- `TestDecoder_Errors` gained 2 new FORMAT-key-regex
+  cases.
+
+`go test -race -count=1 ./...` is green; `golangci-lint run ./...` reports 0 issues; `make fmt-check` is clean.
+
 ## [0.15.7] — 2026-10-19
 
 Patch release closing two record-level spec gaps
