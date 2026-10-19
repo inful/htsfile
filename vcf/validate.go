@@ -2013,9 +2013,12 @@ func (v *Validator) checkSamples(h *Header, rec *Record, idx int) []ValidationEr
 				continue
 			}
 			// Number checking: depends on ploidy for G / LG. Use GT to
-			// derive ploidy when possible.
-			ploidy := ploidyFromGT(g)
-			want := def.Number.Cardinality(len(rec.Alt), ploidy)
+			// derive ploidy when possible. Local-allele
+			// FORMAT fields (LAD, LEC, LGL, …) derive their
+			// cardinality from LAA when present, not from
+			// the full ALT list (§1.6.2); without LAA they
+			// fall back to ALT count.
+			want := wantedCardinality(def.Number, key, g, rec)
 			got := len(fv.Raw)
 			if fv.Missing {
 				got = 0
@@ -2294,6 +2297,58 @@ func missingLAAFields(g Genotype) []string {
 		missing = append(missing, key)
 	}
 	return missing
+}
+
+// laaLenFor returns the effective allele count for
+// computing the cardinality of a local-allele FORMAT
+// field. When LAA is present and non-empty, that's the
+// count; otherwise fall back to the total ALT count
+// (matching the spec's behaviour when LAA is missing).
+//
+// Per the spec LAA's declared Type is String (§1.6.2),
+// so the values are stored in Strs (or fall back to Raw
+// for non-numeric lengths). Use whatever length is
+// non-zero so LAA works regardless of declared Type.
+func laaLenFor(g Genotype, altCount int) int {
+	laaFV, has := g.Fields["LAA"]
+	if !has || laaFV.empty() {
+		return altCount
+	}
+	if n := len(laaFV.Ints); n > 0 {
+		return n
+	}
+	if n := len(laaFV.Strs); n > 0 {
+		return n
+	}
+	return len(laaFV.Raw)
+}
+
+// wantedCardinality returns the expected element count
+// for a FORMAT field. Local-allele FORMAT fields
+// (LAD, LEC, LGL, …) derive their cardinality from LAA
+// when present (§1.6.2); without LAA they fall back to
+// the ALT count. The cross-check ensures LA-field
+// values are indexed into LAA, not the full ALT list —
+// the only meaningful interpretation of a per-allele
+// (LAD/LADR) or per-genotype (LGL/LGP/LPL/LPP) value
+// when LAA is present.
+func wantedCardinality(n Number, key string, g Genotype, rec *Record) int {
+	cardinalAlt := len(rec.Alt)
+	if isLocalAlleleKey(key) {
+		// For local-allele keys the cardinality is
+		// computed against LAA, not REF+ALTs.
+		// Number=G (= SymbolG) is the only case where
+		// the conventional formula adds REF back in
+		// (altCount+1); for LA semantics we want
+		// genotypeCount(len(LAA), ploidy) instead, so
+		// subtract 1 before calling Number.Cardinality.
+		cardinalAlt = laaLenFor(g, cardinalAlt)
+		if n.Fixed == SymbolG {
+			cardinalAlt--
+		}
+		return n.Cardinality(cardinalAlt, ploidyFromGT(g))
+	}
+	return n.Cardinality(cardinalAlt, ploidyFromGT(g))
 }
 
 // samePSL reports whether two PSL slices match element

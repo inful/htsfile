@@ -1151,11 +1151,45 @@ Remaining:
    spec is precise about the 1-byte type-prefixed
    encoding. The current `bcf` package uses text. Big
    change but completes §5.
-2. **LAA cross-check** — when LAA is present, all
-   local-allele fields must point into LAA. Existing
-   checks verify LAA's range / distinctness /
-   ordering; the cross-check (that each LA field's
-   indices are within LAA's set) is not implemented.
+
+### T4.17 — LAA cross-check (§1.6.2)
+
+The cross-check ensures LA-field values are
+interpreted as indices into LAA, not the full ALT
+list. With `LAA=[2,4]` (2 elements) and `GT=0/1`, an
+LGL field with `len(LGL)==6` is wrong: under the
+refactored rules the cardinality for an LA-format
+`Number=G` field is `C(len(LAA)+ploidy−1, ploidy)`,
+not `C(len(ALT)+ploidy, ploidy)`.
+
+**Where:**
+- `vcf/validate.go`:
+  - new `wantedCardinality` helper picks `len(LAA)`
+    when the key is a `localAlleleKeys` entry and
+    the LA count is non-zero; falls back to
+    `len(rec.Alt)` when LAA is absent.
+  - For `Number=G` LA fields the helper subtracts 1
+    from `cardinalAlt` because the conventional
+    formula adds REF back in, which doesn't apply
+    when LAA is the scope.
+  - `laaLenFor` looks at `Ints` / `Strs` / `Raw` to
+    handle the spec's `LAA Type=String` default.
+- `vcf/spec_checks_test.go`:
+  `TestValidator_LAACrossCheck` with 4 sub-tests
+  covering LEC with two values, LEC with four
+  values (error), LGL with three values (match),
+  LGL with five values (error).
+
+**Acceptance:**
+- `LAA=[2,4]`, `LEC=10,20`: cardinality 2 → OK.
+- `LAA=[2,4]`, `LEC=10,20,30,40`: cardinality 2 →
+  error.
+- `LAA=[2,4]`, ploidy 2, `LGL=0.1,0.2,0.3`:
+  cardinality 3 → OK.
+- `LAA=[2,4]`, ploidy 2, `LGL=<5 vals>`: cardinality
+  3 → error.
+
+**Status:** ✅ (v0.15.9)
 
 ### T4.11 — Per-record ID/FORMAT duplicate checks (§1.6.1, §1.6.2)
 

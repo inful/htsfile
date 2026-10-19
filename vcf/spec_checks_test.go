@@ -3092,3 +3092,91 @@ func TestValidator_PedigreeReference(t *testing.T) {
 	// Unused — silence linter.
 	_ = hdrOK
 }
+
+// TestValidator_LAACrossCheck covers VCFv4.5 §1.6.2:
+// local-allele FORMAT fields (LAD, LEC, LGL, …) derive
+// their cardinality from LAA when present, not from the
+// full ALT list. Verifies that the Number check uses
+// len(LAA) for these fields when LAA is non-empty.
+func TestValidator_LAACrossCheck(t *testing.T) {
+	// 4 ALTs total. LAA=[2,4] (2 elements) means the
+	// LA fields should have 2 values (not 4 for A, 6
+	// for G) per the spec.
+	hdr := "##fileformat=VCFv4.5\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"##FORMAT=<ID=LAA,Number=.,Type=String,Description=\"la\">\n" +
+		"##FORMAT=<ID=LEC,Number=A,Type=Integer,Description=\"lec\">\n" +
+		"##FORMAT=<ID=LGL,Number=G,Type=Float,Description=\"lgl\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n"
+	// hasCardinalityError returns the cardinality error
+	// from issues, if any. Filters to SeverityError so
+	// header warnings don't interfere.
+	hasCardinalityError := func(issues []ValidationError) (string, bool) {
+		for _, iss := range issues {
+			if iss.Severity != SeverityError {
+				continue
+			}
+			if strings.Contains(iss.Msg, "expected ") &&
+				strings.Contains(iss.Msg, "value(s) for Number=") {
+				return iss.Msg, true
+			}
+		}
+		return "", false
+	}
+	cases := []struct {
+		name, line string
+		wantOK     bool
+	}{
+		{
+			// LAA=[2,4] (len=2), LEC has 2 values.
+			// Cardinality = A.Cardinality(2,_)=2 → OK.
+			name: "LEC matches LAA length",
+			line: "chr1\t100\t.\tA\tC,T,G,N\t.\t.\t.\t" +
+				"GT:LAA:LEC\t0/1:2,4:10,20\n",
+			wantOK: true,
+		},
+		{
+			// LEC has 4 values but LAA=[2,4] (len=2)
+			// → cardinality mismatch against len(LAA).
+			name: "LEC cardinality uses LAA",
+			line: "chr1\t100\t.\tA\tC,T,G,N\t.\t.\t.\t" +
+				"GT:LAA:LEC\t0/1:2,4:10,20,30,40\n",
+			wantOK: false,
+		},
+		{
+			// LGL Number=G, len(LAA)=2, ploidy=2
+			// → cardinality = C(2+2-1, 2) = 3 → OK.
+			name: "LGL cardinality uses LAA length",
+			line: "chr1\t100\t.\tA\tC,T,G,N\t.\t.\t.\t" +
+				"GT:LAA:LGL\t0/1:2,4:0.1,0.2,0.3\n",
+			wantOK: true,
+		},
+		{
+			// LGL with 5 values, expects 3 → error.
+			name: "LGL cardinality error uses LAA",
+			line: "chr1\t100\t.\tA\tC,T,G,N\t.\t.\t.\t" +
+				"GT:LAA:LGL\t0/1:2,4:0.1,0.2,0.3,0.4,0.5\n",
+			wantOK: false,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			_, isErr := hasCardinalityError(issues)
+			if isErr == c.wantOK {
+				t.Errorf("cardinalityError=%v, wantOK=%v; issues=%+v",
+					isErr, c.wantOK, issues)
+			}
+		})
+	}
+}

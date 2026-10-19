@@ -11,6 +11,33 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.9] — 2026-10-19
+
+Patch release closing the LAA cross-check.
+
+### Changed — vcf
+
+- **LAA cross-check** (T4.17, §1.6.2). The validator's
+  per-FORMAT-key Number check now uses `len(LAA)` when
+  the field is one of the local-allele keys (`LAD`,
+  `LADF`, `LADR`, `LEC`, `LGL`, `LGP`, `LPL`, `LPP`)
+  and LAA is present. This enforces that the cardinality
+  of an LA field is interpreted as indexed into LAA, not
+  into the full ALT list. Without LAA, cardinality falls
+  back to ALT count as before.
+- `wantedCardinality` (new helper) isolates the cardinality
+  logic from the noise of the per-sample loop.
+- `laaLenFor` (new helper) handles the spec's
+  `LAA Type=String` by reading `Strs` / `Raw` after `Ints`.
+
+### Tests
+
+- `TestValidator_LAACrossCheck` with 4 sub-tests.
+
+`go test -race -count=1 ./...` is green;
+`golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean.
+
 ## [0.15.8] — 2026-10-19
 
 Patch release closing four smaller spec gaps surfaced
