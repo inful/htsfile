@@ -11,6 +11,45 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.5] — 2026-10-19
+
+Patch release adding §1.7 gVCF non-variant block
+validation.
+
+### Added — vcf
+
+- **`Validator.checkGVCFBlock`** (`bca688d`,
+  SPEC_COMPLIANCE T4.9). A non-variant block record —
+  `ALT="<*>"` (parser-normalised from `<NON_REF>`) plus
+  an INFO END — now gets four checks:
+  1. `<*>`-ALT must declare END (Strict → error;
+     default → warning).
+  2. END ≥ POS (block cannot go backwards).
+  3. Cross-record overlap: when the previous record
+     was a block, the next record's POS must be >
+     previous block's END.
+  4. With a FASTA reference attached, REF must match
+     the reference over the block range `[POS, END]`.
+
+- **`prevEnd` field** on the streaming Validator
+  tracks the previous block's END so the overlap
+  check (rule 3) can fire without a separate pass.
+
+### Tests
+
+- `TestValidator_GVCFBlockRules` covers rules 1-2
+  across modes.
+- `TestValidator_GVCFBlockOverlap` covers rule 3.
+- `TestValidator_GVCFBlockRefMatchesReference`
+  covers rule 4 with a real FASTA reference.
+
+### Docs
+
+- `SPEC_COMPLIANCE.md` T4.9 documented; quick index
+  §1.7 → `T1.6, T4.9`.
+
+`go test -race -count=1 ./...` is green; `golangci-lint run ./...` reports 0 issues; `make fmt-check` is clean.
+
 ## [0.15.4] — 2026-10-19
 
 Patch release adding `htsfile vcf index` and the
