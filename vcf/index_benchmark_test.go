@@ -106,7 +106,7 @@ func buildBlockedVCF(b *testing.B) (vcfPath string, blockOffs []uint64) {
 		if err == nil {
 			fileSize := stat.Size()
 			if fileSize > 28 {
-				if (last>>16) >= uint64(fileSize-28) {
+				if (last >> 16) >= uint64(fileSize-28) {
 					blockOffs = blockOffs[:len(blockOffs)-1]
 				}
 			}

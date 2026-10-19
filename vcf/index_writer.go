@@ -301,7 +301,7 @@ func (b *indexBuilder) writeCSI(path string) error {
 			chunks[bin] = out
 		}
 		intervals := make([]csi.VirtualOffset, len(r.intervals))
-	copy(intervals, r.intervals)
+		copy(intervals, r.intervals)
 		refs = append(refs, &csi.Reference{
 			Bins:      chunks,
 			Intervals: intervals,

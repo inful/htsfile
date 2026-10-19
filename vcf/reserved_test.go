@@ -50,8 +50,8 @@ func TestIsBaseModKey(t *testing.T) {
 		{"M100T", true},
 		{"M0", true}, // digit-only after M is also valid
 		// Negative cases.
-		{"M", false},  // no digit
-		{"MC", false}, // no digit before code
+		{"M", false},    // no digit
+		{"MC", false},   // no digit before code
 		{"N5mC", false}, // wrong prefix
 		{"", false},
 		{"m5mC", false}, // case-sensitive: M is uppercase per spec

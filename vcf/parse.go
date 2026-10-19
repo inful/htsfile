@@ -174,7 +174,7 @@ func (d *Decoder) readLine() (raw []byte, lineNo int, err error) {
 		if isDisallowedControl(b) {
 			return nil, lineNo, &ParseError{Line: lineNo,
 				Field: "<non-printable>",
-				Msg: fmt.Sprintf("non-printable byte 0x%02X at column %d is not allowed in VCF", b, i+1)}
+				Msg:   fmt.Sprintf("non-printable byte 0x%02X at column %d is not allowed in VCF", b, i+1)}
 		}
 	}
 	d.line = lineNo
@@ -791,7 +791,7 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 	rec.Pos = pos
 
 	// ID (col 3) — semicolon-separated. Per VCFv4.5 / BCF
-// v2.2 the ID field must not contain whitespace, comma,
+	// v2.2 the ID field must not contain whitespace, comma,
 	// semicolon, or equals signs (any of these would break
 	// downstream parsing).
 	idStr := string(fields[2])

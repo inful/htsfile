@@ -63,15 +63,15 @@ func TestParseCigarLowercase(t *testing.T) {
 
 func TestParseCigarErrors(t *testing.T) {
 	cases := []string{
-		"",       // empty
-		"M",      // missing length
-		"5",      // missing op
-		"5Q",     // unknown op
-		"5MM",    // missing length before second M
-		"abc",    // non-numeric length
-		"-1M",    // negative length (the '-' trips the parser)
-		"5M ",    // trailing whitespace
-		"5M2",    // trailing length without op
+		"",    // empty
+		"M",   // missing length
+		"5",   // missing op
+		"5Q",  // unknown op
+		"5MM", // missing length before second M
+		"abc", // non-numeric length
+		"-1M", // negative length (the '-' trips the parser)
+		"5M ", // trailing whitespace
+		"5M2", // trailing length without op
 	}
 	for _, in := range cases {
 		_, err := ParseCigar(in)

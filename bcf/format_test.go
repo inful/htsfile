@@ -12,11 +12,11 @@ func TestFormatRoundTrip(t *testing.T) {
 		"##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"depth\">\n" +
 		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
 	rec := &Record{
-		CHROM: "chr1",
-		Pos:   100,
-		Ref:   "A",
-		Alt:   []string{"C"},
-		Info:  map[string]InfoValue{},
+		CHROM:  "chr1",
+		Pos:    100,
+		Ref:    "A",
+		Alt:    []string{"C"},
+		Info:   map[string]InfoValue{},
 		Format: []uint16{0}, // DP is the only FORMAT key
 		Samples: []Sample{
 			{Fields: map[uint16]SampleValue{

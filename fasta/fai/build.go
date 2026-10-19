@@ -167,7 +167,7 @@ func (c *countingReader) Read(p []byte) (int, error) {
 // start of the stream) trivially computable from the wrapped
 // reader's byte count.
 type lineReader struct {
-	r io.Reader
+	r   io.Reader
 	buf []byte
 }
 

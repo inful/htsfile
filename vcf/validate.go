@@ -59,11 +59,11 @@ type Validator struct {
 
 	// Streaming state (used by Next / Finish). Zero value is
 	// fine; the validator initialises lazily.
-	recordIdx   int     // 0-based index of the most recently fed record
-	prevChrom   string  // CHROM of the most recently fed record
-	prevPos     int64   // POS of the most recently fed record; -1 means "no previous"
-	headerDone  bool    // true once HeaderChecks has been called
-	finished    bool    // true once Finish has been called
+	recordIdx  int    // 0-based index of the most recently fed record
+	prevChrom  string // CHROM of the most recently fed record
+	prevPos    int64  // POS of the most recently fed record; -1 means "no previous"
+	headerDone bool   // true once HeaderChecks has been called
+	finished   bool   // true once Finish has been called
 
 	// phaseStyle tracks the phasing separator ("|" or "/")
 	// observed in each (sample, PS) pair so far. The key is
@@ -96,8 +96,9 @@ type Validator struct {
 // record encountered with a given MATEID. The second
 // record with the same MATEID is checked against this
 // snapshot for the §1.6.2 rule:
-//   "Variants in breakpoint notation must have the
-//    same PSL and PSO on both records."
+//
+//	"Variants in breakpoint notation must have the
+//	 same PSL and PSO on both records."
 type mateSnapshot struct {
 	psl []string
 	pso []int64
@@ -488,9 +489,9 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	// contig's length (per VCFv4.5 §1.4.7 / §1.6.1.2). We
 	// only check when the contig is declared AND has a
 	// length; otherwise we cannot constrain it.
-// Mitochondrial chromosomes are exempt: the reference is
-// circular (§1.6.1.6), so POS can wrap past the declared
-// length.
+	// Mitochondrial chromosomes are exempt: the reference is
+	// circular (§1.6.1.6), so POS can wrap past the declared
+	// length.
 	if len(h.Contigs) > 0 && !isMitochondrial(rec.Chrom) {
 		if c, ok := h.LookupContig(rec.Chrom); ok && c.Length > 0 {
 			end := rec.Pos + int64(len(rec.Ref)) - 1
@@ -661,7 +662,7 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 				issues = append(issues, ValidationError{
 					Severity: SeverityError, Record: idx + 1, Line: line,
 					Field: "INFO/CIPOS",
-					Msg: fmt.Sprintf("IMPRECISE flag is set but CIPOS is missing for precise ALT %q; §1.6.1.7 requires CIPOS for every precise allele when IMPRECISE is set", alt),
+					Msg:   fmt.Sprintf("IMPRECISE flag is set but CIPOS is missing for precise ALT %q; §1.6.1.7 requires CIPOS for every precise allele when IMPRECISE is set", alt),
 				})
 			}
 		}
@@ -679,7 +680,7 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 			issues = append(issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "INFO/SVLEN",
-				Msg: fmt.Sprintf("symbolic ALT %q requires SVLEN to be specified (§1.6.1.7)", alt),
+				Msg:   fmt.Sprintf("symbolic ALT %q requires SVLEN to be specified (§1.6.1.7)", alt),
 			})
 		}
 	}
@@ -753,7 +754,7 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 					issues = append(issues, ValidationError{
 						Severity: SeverityError, Record: idx + 1, Line: line,
 						Field: "INFO/" + key,
-						Msg: fmt.Sprintf("Integer value %d is in the BCF-unsafe range [-2^31, -2^31+7]", n),
+						Msg:   fmt.Sprintf("Integer value %d is in the BCF-unsafe range [-2^31, -2^31+7]", n),
 					})
 				}
 			}
@@ -782,7 +783,7 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 					issues = append(issues, ValidationError{
 						Severity: SeverityError, Record: idx + 1, Line: line,
 						Field: "INFO/SVLEN",
-						Msg: fmt.Sprintf("SVLEN[%d] for ALT %q must be positive (got %d)", i, alt, n),
+						Msg:   fmt.Sprintf("SVLEN[%d] for ALT %q must be positive (got %d)", i, alt, n),
 					})
 				}
 			}
@@ -892,7 +893,7 @@ func checkRNDeterminedFields(rec *Record, rnSum, idx, line int, issues *[]Valida
 			*issues = append(*issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "INFO/" + key,
-				Msg: fmt.Sprintf("%s length %d does not match sum of RN values %d", key, got, rnSum),
+				Msg:   fmt.Sprintf("%s length %d does not match sum of RN values %d", key, got, rnSum),
 			})
 		}
 	}
@@ -909,7 +910,7 @@ func checkRNDeterminedFields(rec *Record, rnSum, idx, line int, issues *[]Valida
 			*issues = append(*issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "INFO/" + key,
-				Msg: fmt.Sprintf("%s length %d does not match 2 × sum of RN values (%d)", key, got, want),
+				Msg:   fmt.Sprintf("%s length %d does not match 2 × sum of RN values (%d)", key, got, want),
 			})
 		}
 	}
@@ -944,7 +945,7 @@ func checkRNDeterminedFields(rec *Record, rnSum, idx, line int, issues *[]Valida
 			*issues = append(*issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "INFO/RUS",
-				Msg: fmt.Sprintf("RUS[%d] length %d does not match RUL[%d]=%d", i, rlen, i, rul.Ints[i]),
+				Msg:   fmt.Sprintf("RUS[%d] length %d does not match RUL[%d]=%d", i, rlen, i, rul.Ints[i]),
 			})
 		}
 	}
@@ -986,7 +987,7 @@ func checkCIRUCMissing(base *InfoValue, rec *Record, confKey string, idx, line i
 				*issues = append(*issues, ValidationError{
 					Severity: SeverityError, Record: idx + 1, Line: line,
 					Field: "INFO/" + confKey,
-					Msg: fmt.Sprintf("%s[%d] is non-missing but the corresponding %s[%d] is missing (§1.6.1.7)", confKey, cj, pairKey(confKey), j),
+					Msg:   fmt.Sprintf("%s[%d] is non-missing but the corresponding %s[%d] is missing (§1.6.1.7)", confKey, cj, pairKey(confKey), j),
 				})
 			}
 		}
@@ -1079,21 +1080,21 @@ var rnDeterminedKeysDoubled = [...]string{
 // ModeStrict for non-reserved values, but they are not
 // strictly invalid.
 var reservedEventTypes = map[string]bool{
-	"DEL":             true,
-	"DEL:ME":          true,
-	"INS":             true,
-	"INS:ME":          true,
-	"DUP":             true,
-	"DUP:TANDEM":      true,
-	"DUP:DISPERSED":   true,
-	"INV":             true,
-	"TRA":             true,
-	"TRA:BALANCED":    true,
-	"TRA:UNBALANCED":  true,
-	"CHROMOTHRIPSIS":  true,
-	"CHROMOPLEXY":     true,
-	"BFB":             true,
-	"DOUBLEMINUTE":    true,
+	"DEL":            true,
+	"DEL:ME":         true,
+	"INS":            true,
+	"INS:ME":         true,
+	"DUP":            true,
+	"DUP:TANDEM":     true,
+	"DUP:DISPERSED":  true,
+	"INV":            true,
+	"TRA":            true,
+	"TRA:BALANCED":   true,
+	"TRA:UNBALANCED": true,
+	"CHROMOTHRIPSIS": true,
+	"CHROMOPLEXY":    true,
+	"BFB":            true,
+	"DOUBLEMINUTE":   true,
 }
 
 // IsReservedEventType reports whether value is one of the
@@ -1120,9 +1121,9 @@ func (v *Validator) checkEventType(rec *Record, idx int) []ValidationError {
 		if !IsReservedEventType(et) {
 			iss := ValidationError{
 				Severity: SeverityWarning,
-				Record:    idx + 1, Line: rec.Line,
-				Field:    "INFO/EVENTTYPE",
-				Msg:      fmt.Sprintf("EVENTTYPE[%d]=%q is not in the spec's reserved set (semantics are implementation-defined)", i, et),
+				Record:   idx + 1, Line: rec.Line,
+				Field: "INFO/EVENTTYPE",
+				Msg:   fmt.Sprintf("EVENTTYPE[%d]=%q is not in the spec's reserved set (semantics are implementation-defined)", i, et),
 			}
 			if v.Mode == ModeStrict {
 				iss.Severity = SeverityError
@@ -1238,8 +1239,8 @@ func (v *Validator) checkPloidy(rec *Record, idx int) []ValidationError {
 		if p != firstPloidy {
 			return []ValidationError{{
 				Severity: SeverityError, Record: idx + 1, Line: rec.Line,
-				Field:    "FORMAT/GT",
-				Msg:      fmt.Sprintf("samples have different ploidies in a single record (sample 0 ploidy %d, sample %d ploidy %d)", firstPloidy, sIdx, p),
+				Field: "FORMAT/GT",
+				Msg:   fmt.Sprintf("samples have different ploidies in a single record (sample 0 ploidy %d, sample %d ploidy %d)", firstPloidy, sIdx, p),
 			}}
 		}
 	}
@@ -1272,8 +1273,8 @@ func (v *Validator) checkEND(rec *Record, idx int) []ValidationError {
 	if got != want {
 		return []ValidationError{{
 			Severity: SeverityError, Record: idx + 1, Line: rec.Line,
-			Field:    "INFO/END",
-			Msg:      fmt.Sprintf("declared END %d does not match the computed END %d (POS+len(REF)-1, plus SVLEN/LEN adjustments)", got, want),
+			Field: "INFO/END",
+			Msg:   fmt.Sprintf("declared END %d does not match the computed END %d (POS+len(REF)-1, plus SVLEN/LEN adjustments)", got, want),
 		}}
 	}
 	return nil
@@ -1409,7 +1410,7 @@ func (v *Validator) checkSVClaim(rec *Record, idx int) []ValidationError {
 				issues = append(issues, ValidationError{
 					Severity: SeverityError, Record: idx + 1, Line: rec.Line,
 					Field: "INFO/SVCLAIM",
-					Msg: fmt.Sprintf("non-SV allele %q must have SVCLAIM \".\" (got %q)", alt, claim),
+					Msg:   fmt.Sprintf("non-SV allele %q must have SVCLAIM \".\" (got %q)", alt, claim),
 				})
 			}
 			continue
@@ -1419,7 +1420,7 @@ func (v *Validator) checkSVClaim(rec *Record, idx int) []ValidationError {
 			issues = append(issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: rec.Line,
 				Field: "INFO/SVCLAIM",
-				Msg: fmt.Sprintf("SVCLAIM[%d] for ALT %q must be one of %s (got %q)", i, alt, want, claim),
+				Msg:   fmt.Sprintf("SVCLAIM[%d] for ALT %q must be one of %s (got %q)", i, alt, want, claim),
 			})
 		}
 	}
@@ -2037,7 +2038,7 @@ func checkPSLUnphased(g Genotype, sIdx, idx, line int) []ValidationError {
 			issues = append(issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: fmt.Sprintf("FORMAT/PSL/sample[%d]", sIdx),
-				Msg: fmt.Sprintf("PSL[%d]=%q must be %q because the corresponding GT allele is unphased (§1.6.2)", alleleIdx, pslFV.Strs[alleleIdx], "."),
+				Msg:   fmt.Sprintf("PSL[%d]=%q must be %q because the corresponding GT allele is unphased (§1.6.2)", alleleIdx, pslFV.Strs[alleleIdx], "."),
 			})
 		}
 	}
@@ -2076,7 +2077,7 @@ func checkGPRange(g Genotype, sIdx, idx, line int) []ValidationError {
 			issues = append(issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: fmt.Sprintf("FORMAT/GP/sample[%d]", sIdx),
-				Msg: fmt.Sprintf("GP[%d]=%g is out of range; GP values must be between 0 and 1 (§1.6.2)", j, f),
+				Msg:   fmt.Sprintf("GP[%d]=%g is out of range; GP values must be between 0 and 1 (§1.6.2)", j, f),
 			})
 		}
 	}
@@ -2104,11 +2105,12 @@ func checkMRequiresGT(g Genotype, sIdx, idx, line int) []ValidationError {
 		return []ValidationError{{
 			Severity: SeverityError, Record: idx + 1, Line: line,
 			Field: fmt.Sprintf("FORMAT/%s/sample[%d]", k, sIdx),
-			Msg: fmt.Sprintf("base-modification field %q is present but GT is missing; §1.6.1.5 requires GT when any M-key is present", k),
+			Msg:   fmt.Sprintf("base-modification field %q is present but GT is missing; §1.6.1.5 requires GT when any M-key is present", k),
 		}}
 	}
 	return nil
 }
+
 // checkPSLTrio enforces VCFv4.5 §1.6.2 PSQ field: "The
 // missing value '$.$' should be used when the corresponding
 // PSL value is missing, or when the phasing is of unknown
@@ -2176,7 +2178,7 @@ func checkMKeyRange(key string, val *InfoValue, idx, line int) []ValidationError
 			issues = append(issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "INFO/" + key,
-				Msg: fmt.Sprintf("%s[%d]=%g is out of range; M-key values must be between 0 and 1 (§1.6.1.5)", key, j, f),
+				Msg:   fmt.Sprintf("%s[%d]=%g is out of range; M-key values must be between 0 and 1 (§1.6.1.5)", key, j, f),
 			})
 		}
 	}
@@ -2258,8 +2260,8 @@ func (v *Validator) checkBreakendPositions(rec *Record, idx, line int) []Validat
 			iss := ValidationError{
 				Severity: SeverityWarning,
 				Record:   idx + 1, Line: line,
-				Field:    fmt.Sprintf("ALT[%d]", i),
-				Msg:      fmt.Sprintf("breakend references unknown contig %q: %v", contig, err),
+				Field: fmt.Sprintf("ALT[%d]", i),
+				Msg:   fmt.Sprintf("breakend references unknown contig %q: %v", contig, err),
 			}
 			if v.Mode == ModeStrict {
 				iss.Severity = SeverityError
@@ -2300,8 +2302,8 @@ func checkMateMatch(existing, snap *mateSnapshot, mid string, idx, line int, iss
 // checkCNVAllelesShareSVLEN enforces the VCFv4.5
 // §"FORMAT keys used for structural variants" rule:
 //
-//   When FORMAT CN is present, all <CNV>, <DEL> and
-//   <DUP> alleles must have the same SVLEN.
+//	When FORMAT CN is present, all <CNV>, <DEL> and
+//	<DUP> alleles must have the same SVLEN.
 //
 // The check fires in ModeStrict.
 func checkCNVAllelesShareSVLEN(rec *Record, svlens []int64, idx, line int, issues *[]ValidationError) {
@@ -2326,7 +2328,7 @@ func checkCNVAllelesShareSVLEN(rec *Record, svlens []int64, idx, line int, issue
 			*issues = append(*issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
 				Field: "INFO/SVLEN",
-				Msg: fmt.Sprintf("all <CNV>, <DEL>, and <DUP> alleles must share the same SVLEN when FORMAT CN is declared; %q has SVLEN=%d, expected %d", alt, svlens[i], first),
+				Msg:   fmt.Sprintf("all <CNV>, <DEL>, and <DUP> alleles must share the same SVLEN when FORMAT CN is declared; %q has SVLEN=%d, expected %d", alt, svlens[i], first),
 			})
 		}
 	}
@@ -2454,16 +2456,16 @@ func checkCIGAR(rec *Record, idx, line int) []ValidationError {
 		if perr != nil {
 			issues = append(issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
-				Field:    "INFO/CIGAR",
-				Msg:      fmt.Sprintf("CIGAR[%d]=%q is malformed: %v", i, c, perr),
+				Field: "INFO/CIGAR",
+				Msg:   fmt.Sprintf("CIGAR[%d]=%q is malformed: %v", i, c, perr),
 			})
 			continue
 		}
 		if refLen != len(rec.Ref) {
 			issues = append(issues, ValidationError{
 				Severity: SeverityError, Record: idx + 1, Line: line,
-				Field:    "INFO/CIGAR",
-				Msg:      fmt.Sprintf("CIGAR[%d] consumes %d reference bases but REF has length %d", i, refLen, len(rec.Ref)),
+				Field: "INFO/CIGAR",
+				Msg:   fmt.Sprintf("CIGAR[%d] consumes %d reference bases but REF has length %d", i, refLen, len(rec.Ref)),
 			})
 		}
 		if i < len(rec.Alt) {
@@ -2471,8 +2473,8 @@ func checkCIGAR(rec *Record, idx, line int) []ValidationError {
 			if altLen != want {
 				issues = append(issues, ValidationError{
 					Severity: SeverityError, Record: idx + 1, Line: line,
-					Field:    "INFO/CIGAR",
-					Msg:      fmt.Sprintf("CIGAR[%d] consumes %d query bases but ALT[%d] has length %d", i, altLen, i, want),
+					Field: "INFO/CIGAR",
+					Msg:   fmt.Sprintf("CIGAR[%d] consumes %d query bases but ALT[%d] has length %d", i, altLen, i, want),
 				})
 			}
 		}
@@ -2663,10 +2665,10 @@ func ploidyFromGT(g Genotype) int {
 
 // checkGT performs the two structural checks the spec
 // requires for a GT field:
-//   1. A single record may not mix / and | separators (the
-//      phasing must be consistent within a record).
-//   2. Each allele index must be a valid 0-based index into
-//      REF+ALT. The missing value "." is always allowed.
+//  1. A single record may not mix / and | separators (the
+//     phasing must be consistent within a record).
+//  2. Each allele index must be a valid 0-based index into
+//     REF+ALT. The missing value "." is always allowed.
 //
 // Returns nil for a clean GT. nAlts is the number of ALT
 // alleles in the record (0 means REF-only).

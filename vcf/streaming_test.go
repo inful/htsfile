@@ -183,8 +183,8 @@ func TestValidator_Streaming_EquivalenceWithValidate(t *testing.T) {
 	recs := []*Record{
 		streamRecord(t, 100, "0/0", "0.5"),
 		streamRecord(t, 200, "0/1|2", "0.5"), // mixed separator
-		streamRecord(t, 300, "0/0", "1.5"),  // out of range
-		streamRecord(t, 50, "0/0", "0.5"),   // out of order
+		streamRecord(t, 300, "0/0", "1.5"),   // out of range
+		streamRecord(t, 50, "0/0", "0.5"),    // out of order
 	}
 	// Batch.
 	batch := NewValidator(ModeStrict).Validate(hdr, recs)

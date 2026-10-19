@@ -30,9 +30,9 @@ func TestComputeEND_RefOnly(t *testing.T) {
 func TestComputeEND_SymbolicSVWithSVLEN(t *testing.T) {
 	// POS=100, REF="A", ALT=<DEL>, SVLEN=5 → end = 100 + 5 = 105.
 	rec := &Record{
-		Pos:  100,
-		Ref:  "A",
-		Alt:  []string{"<DEL>"},
+		Pos: 100,
+		Ref: "A",
+		Alt: []string{"<DEL>"},
 		Info: map[string]InfoValue{
 			"SVLEN": {typedCore: typedCore{Type: TypeInteger, Ints: []int64{5}}},
 		},
@@ -45,9 +45,9 @@ func TestComputeEND_SymbolicSVWithSVLEN(t *testing.T) {
 func TestComputeEND_StarAlleleWithLEN(t *testing.T) {
 	// POS=100, REF="A", ALT=<*>, sample LEN=10 → end = 100 + 10 - 1 = 109.
 	rec := &Record{
-		Pos:  100,
-		Ref:  "A",
-		Alt:  []string{"<*>"},
+		Pos: 100,
+		Ref: "A",
+		Alt: []string{"<*>"},
 		Samples: []Genotype{{Fields: map[string]FieldValue{
 			"LEN": {typedCore: typedCore{Type: TypeInteger, Ints: []int64{10}}},
 		}}},

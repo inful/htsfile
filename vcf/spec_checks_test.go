@@ -205,7 +205,6 @@ func TestValidator_CIPOSCIENDCILENCardinality(t *testing.T) {
 	}
 }
 
-
 func TestValidator_CIPOSMustSpanZero(t *testing.T) {
 	hdrText := "##fileformat=VCFv4.2\n" +
 		"##contig=<ID=chr1,length=1000>\n" +
@@ -1187,7 +1186,7 @@ func TestValidator_PSLTrioConsistency(t *testing.T) {
 		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
 	cases := []struct {
 		name, gt, psl, pso, psq string
-		want                     bool
+		want                    bool
 	}{
 		{"all consistent", "|0|1", "chr1*5*1,chr1*5*2", "1,2", "10,20", false},
 		{"PSL miss, PSO has value", "|0|1", ".,chr1*5*2", "1,2", "10,20", true},
@@ -1329,7 +1328,7 @@ func TestValidator_MRequiresGT(t *testing.T) {
 		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
 	cases := []struct {
 		name, sample string
-		want        bool
+		want         bool
 	}{
 		{"GT present, M present", "0/1:0.5", false},
 		{"GT present, M missing", "0/1:.", false},
@@ -1413,9 +1412,9 @@ func TestValidator_METAValuesEnforced(t *testing.T) {
 	// from the list. Fires as a SeverityWarning in
 	// ModeStrict; skipped in ModeDefault.
 	cases := []struct {
-		name  string
-		samp  string
-		want  bool
+		name string
+		samp string
+		want bool
 	}{
 		{"allowed", "Assay=WholeGenome", false},
 		{"not in list", "Assay=Bogus", true},
@@ -1518,7 +1517,7 @@ func TestValidator_SVLENRequiredForSymbolicAlt(t *testing.T) {
 		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
 	cases := []struct {
 		name, alt, info string
-		want         bool
+		want            bool
 	}{
 		{"svlen present", "<DEL>", "SVLEN=100", false},
 		{"svlen missing (only 1 entry)", "<DEL>,<DUP>", "SVLEN=100", true},
@@ -1562,7 +1561,7 @@ func TestValidator_LAAPrecedesLocalAlleleKeys(t *testing.T) {
 		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tNA00001\n"
 	cases := []struct {
 		name, format, sample string
-		want                bool
+		want                 bool
 	}{
 		{"GT LAA LAD", "GT:LAA:LAD", "0/1:2:5,10", false},
 		{"GT LAD before LAD", "GT:LAA:LAD", "0/1:2:5,10", false},
@@ -1764,7 +1763,7 @@ func TestValidator_ENDMatchesComputed(t *testing.T) {
 		name, info string
 		want       bool
 	}{
-		{"matches computed", "END=103", false},        // POS=100, REF=ACGT => END=103
+		{"matches computed", "END=103", false}, // POS=100, REF=ACGT => END=103
 		{"does not match", "END=200", true},
 		{"missing END", ".", false},
 	}

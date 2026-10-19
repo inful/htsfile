@@ -419,6 +419,7 @@ func runSAMToBAM(src io.Reader, dst io.Writer) error {
 	}
 	return nil
 }
+
 // stream to dst.
 func runBAMToSAM(src io.Reader, dst io.Writer) error {
 	dec := bam.NewDecoder(src)
@@ -467,8 +468,8 @@ func vcfToBCFHeader(h *vcf.Header) *bcf.Header {
 	}
 	bh := &bcf.Header{
 		FileFormat: h.FileFormat.String(),
-		Raw:       sb.String(),
-		Infos:     vcfInfoDefsToBCF(h.Infos),
+		Raw:        sb.String(),
+		Infos:      vcfInfoDefsToBCF(h.Infos),
 	}
 	for _, c := range h.Contigs {
 		bh.Contigs = append(bh.Contigs, c.ID)
@@ -729,6 +730,7 @@ func runVCFToBCF(src io.Reader, dst io.Writer) error { //nolint:dupl // symmetri
 	}
 	return enc.Close()
 }
+
 // stream to dst.
 func runBCFToVCF(src io.Reader, dst io.Writer) error { //nolint:dupl // symmetric with runVCFToBCF by design
 	dec := bcf.NewDecoder(src)

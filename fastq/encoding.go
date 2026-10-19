@@ -7,9 +7,9 @@ package fastq
 // byte to an error probability:
 //
 //   - Phred:    Q = byte - offset
-//               error = 10^(-Q/10)
+//     error = 10^(-Q/10)
 //   - Solexa:   Q = 10 * log10(1 + 10^((byte - offset) / -10))
-//               error = 10^(-Q/10) / (1 + 10^(-Q/10))
+//     error = 10^(-Q/10) / (1 + 10^(-Q/10))
 //
 // The library never applies either formula on the caller's
 // behalf; PhredEncoding is recorded on each Record so that

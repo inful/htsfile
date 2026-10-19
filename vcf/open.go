@@ -92,7 +92,7 @@ func (p *peekReader) Peek(n int) ([]byte, error) {
 			return p.buf[p.off:], err
 		}
 	}
-	return p.buf[p.off:p.off+n], nil
+	return p.buf[p.off : p.off+n], nil
 }
 
 func (p *peekReader) Read(dst []byte) (int, error) {

@@ -74,16 +74,16 @@ type Reference struct {
 	cursorCh        string
 	cursorOffset    int64
 	cursorBasesSeen int64
-	loaded bool
+	loaded          bool
 }
 
 // faiEntry is one row of a samtools faidx .fai file.
 type faiEntry struct {
-	Length        int64 // total bases
-	Offset        int64 // byte offset of first base (past '>' line)
-	LineBases     int   // bases per line (used by .fai path)
-	LineWidth     int   // bytes per line including terminator (used by .fai path)
-	lineBasesSeen int   // running tally used while building the in-memory index
+	Length        int64   // total bases
+	Offset        int64   // byte offset of first base (past '>' line)
+	LineBases     int     // bases per line (used by .fai path)
+	LineWidth     int     // bytes per line including terminator (used by .fai path)
+	lineBasesSeen int     // running tally used while building the in-memory index
 	lineOffsets   []int64 // byte offset of each sequence line (scanned path only)
 }
 

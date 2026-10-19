@@ -410,16 +410,16 @@ func TestReference_BaseRange(t *testing.T) {
 	}
 	defer func() { _ = ref.Close() }()
 	cases := []struct {
-		chrom    string
-		start    int
-		end      int
-		wantStr  string
+		chrom   string
+		start   int
+		end     int
+		wantStr string
 	}{
-		{"chr1", 1, 5, "ACGT"},   // positions 1-4
-		{"chr1", 5, 9, "ACGT"},   // cross-line, positions 5-8
+		{"chr1", 1, 5, "ACGT"},              // positions 1-4
+		{"chr1", 5, 9, "ACGT"},              // cross-line, positions 5-8
 		{"chr1", 1, 17, "ACGTACGTACGTACGT"}, // whole chr1
-		{"chr2", 1, 8, "GATTACA"}, // first line, 7 bases
-		{"chr2", 7, 15, "AGATTACA"}, // cross-line, positions 7-14
+		{"chr2", 1, 8, "GATTACA"},           // first line, 7 bases
+		{"chr2", 7, 15, "AGATTACA"},         // cross-line, positions 7-14
 	}
 	for _, c := range cases {
 		got, err := ref.BaseRange(c.chrom, c.start, c.end)
