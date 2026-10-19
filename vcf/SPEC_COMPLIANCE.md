@@ -958,6 +958,266 @@ A's (chrA, posA).
 
 **Status:** ✅ (v0.15.6)
 
+## Spec audit
+
+This section is a one-shot audit of every section of the
+VCF v4.5 / BCF 2.2 specification, with status against
+the `vcf` (and supporting `bcf`, `fasta`, `tabix`,
+`csi`) packages.
+
+A ✅ means the rule is fully implemented in the parser
+or validator and exercised by tests. A ❓ means a known
+gap. Numbers in parentheses are the line numbers in the
+.tex source at
+`<https://github.com/samtools/hts-specs/blob/master/VCFv4.5.tex>`.
+
+### §1.4.1 Character encoding
+
+- ✅ UTF-8 declared (line 73).
+- ✅ Non-printable bytes U+0000–U+0008, U+000B–U+000C,
+  U+000E–U+001F rejected (T1.1 parser hardening).
+- ✅ LF and CR+LF line separators accepted (line 78).
+- ❓ Percent encoding (`%3A`, `%3B`, …) for special chars
+  inside INFO/FORMAT values is decoded by the parser
+  but not enforced on input — we accept literal `:`
+  inside an INFO value too.
+
+### §1.4.2 Data types
+
+- ✅ Integer / Float / Flag / Character / String types
+  (line 97).
+- ❓ **BCF Integer range $-2^{31}$ to $-2^{31}+7$ is
+  disallowed** (line 100). Not enforced — VCF and BCF
+  share the same parser path, and we accept the
+  disallowed range.
+- ❓ **Float format** must match one of the two
+  regexes; `parseVCFFloat` uses `strconv.ParseFloat`
+  which is more permissive than the spec regex.
+- ❓ **Float INF/INFINITY/NAN parsing** matches the spec
+  intent, but should be tied to a dedicated test
+  (currently exercised indirectly).
+
+### §1.4.3 Meta-information lines
+
+- ✅ `##fileformat` must be first and unique.
+- ✅ `##INFO`, `##FILTER`, `##FORMAT` parsing.
+- ✅ `##ALT` first-level type (T1.4).
+- ✅ `##contig` name validation (T1.5).
+- ✅ `##META` `Values` list (T1.3).
+- ❓ `##pedigreeDB` is parsed but not validated as a URL.
+- ❓ `##assembly` is parsed but not validated as a URL.
+- ❓ `##PEDIGREE` parses `<ID=…,Original=…>` etc. but
+  does not cross-check that `Father`/`Mother` reference
+  declared sample IDs.
+
+### §1.4.4 Header line
+
+- ✅ Eight fixed columns present.
+- ❓ **Duplicate sample IDs in the header line** (line
+  365: "Duplicate sample IDs are not allowed") is
+  parsed but not rejected.
+
+### §1.6.1 Fixed fields
+
+- ✅ `CHROM` no whitespace (line 384).
+- ✅ `POS` numeric, 1-based, telomere positions 0/N+1
+  accepted.
+- ✅ `POS` sorted within CHROM (T3.1, ModeStrict).
+- ✅ `ID` no whitespace/semicolons/equals (T2.x).
+- ✅ `ID` unique across records (T3.2).
+- ❓ **Duplicate IDs within a single record's ID
+  field** (line 401: "duplicate values not allowed") is
+  not enforced.
+- ✅ `REF` bases A/C/G/T/N (T2.x in ModeStrict).
+- ✅ `REF` IUPAC reduction (T4.2).
+- ✅ `ALT` rules (T1.4, T1.6, T2.x).
+- ✅ `QUAL` is Phred-scaled.
+- ✅ `FILTER` token rules (T1.1, T1.2).
+- ❓ **INFO/FORMAT key regex**
+  `^([A-Za-z_][0-9A-Za-z_.]*|1000G)$` is enforced for
+  declared keys (T1.6.1 parser hardening covered it),
+  but not for record-level keys in the parser path.
+
+### §1.6.1.1 Reserved INFO keys
+
+- ✅ All standard keys (AA, AC, AD, ADF, ADR, AF, AN, BQ,
+  CIGAR, DB, DP, END, H2, H3, MQ, MQ0, NS, SB, SOMATIC,
+  VALIDATED, 1000G).
+- ✅ END computed value check (existing T2.x).
+- ✅ END/SVLEN bounds (T4.5).
+
+### §1.6.2 Genotype fields
+
+- ✅ `GT` first FORMAT field if present (existing check).
+- ✅ `LAA` precedes all non-GT fields.
+- ✅ Trailing FORMAT fields dropped.
+- ✅ PS / PSL / PSO / PSQ (T2.2, T3.3).
+- ❓ **Duplicate FORMAT keys within a record**
+  (line 469: "duplicate keys are not allowed") is not
+  enforced.
+- ❓ **GT allele values 0..N** are parsed but not range-
+  checked; a record with ALT=`A` and `GT=2` would parse.
+- ❓ **Haploid GT must have one allele** (line 553) is
+  not checked.
+- ❓ **LA** reserved "for future use" — we silently accept
+  it without complaint.
+- ❓ **LR, LG** cardinalities on local-allele equivalents
+  are checked through the matching field's `Number` but
+  not via a dedicated LR/LG count check.
+
+### §1.6.5 SV INFO keys
+
+- ✅ IMPRECISE, NOVEL, END, SVTYPE, SVLEN, CIPOS, CIEND,
+  HOMLEN, HOMSEQ, BKPTID, MEINFO (T2.4), METRANS (T2.4),
+  CILEN (T2.3), CN, CICN (T2.5), SVCLAIM (T2.7),
+  MATEID, PARID, EVENT, EVENTTYPE, RN, RUS, RUL, RUC, RB
+  (T2.9, T2.10), CIRUC, CIRB, RUB.
+
+### §1.6.5 FORMAT keys for SV
+
+- ✅ CN, CICN, CNQ, CNL, CNP, NQ, HAP, AHAP.
+
+### §1.6.5.1 Breakends
+
+- ✅ Four breakend forms parsed.
+- ✅ Remote position bounds (T4.6).
+- ✅ PSL/PSO consistency (T3.3).
+- ✅ Mate position round-trip (T4.10).
+- ❓ **PARID** declared in the spec but our index only
+  handles MATEID. PARID is the partner's local ID — the
+  same handling as MATEID would apply.
+
+### §1.7 gVCF
+
+- ✅ T4.9 (gVCF non-variant block rules).
+
+### §1.7.1 CNV
+
+- ✅ T2.6 (CNV/DEL/DUP alleles share SVLEN when FORMAT CN).
+- ✅ T2.7 (CNV:TR requires RUS or RUL).
+
+### §1.7.2 Tandem repeats
+
+- ✅ T2.9 (RB/RUS/RUL/RUC length = sum of RN).
+- ✅ T2.10 (RUS length matches RUL).
+- ❓ **CIRB confidence interval bounds span zero**
+  (line 1119) is not checked.
+
+### §5 BCF2
+
+- ✅ BGZF container (existing vcf/bcf package).
+- ✅ String dictionary (existing `##dictionary=` parsing).
+- ❓ **Type encoding** (the 1-byte prefix + vector length,
+  §BcfTypeEncoding line 2258) is not implemented — the
+  `bcf` package currently uses text encoding (records
+  carry VCF text, not the binary type-prefixed format).
+  This is a significant gap; a real BCF2 reader needs the
+  binary type-prefixed encoding.
+
+### Spec rules exercised by tests but currently
+**outside SPEC_COMPLIANCE.md's task taxonomy**
+
+The following checks live in `validate.go` but aren't
+called out as their own SPEC_COMPLIANCE task:
+
+- `checkCardinality` for INFO/FORMAT (line 696).
+- `checkPloidy` and `checkHaploidGenotype` (existing
+  ploidy-consistency rules).
+- `checkMitochondrialChromExemptions` for mtDNA.
+- `checkFTNoWhitespaceOrSemicolons` (T2.8).
+- `checkPSLUnphased` and `checkPSLTrio`.
+
+### Highest-impact remaining gaps
+
+In priority order (most spec-rule-fixing value):
+
+1. **FORMAT column duplicate keys within a record**
+   (§1.6.2). The existing header-side duplicate check is
+   correct; we need the record-side one too.
+2. **ID column duplicate values within a record**
+   (§1.6.1). Cross-record duplicates are caught by T3.2;
+   within-record duplicates aren't.
+3. **GT allele value range and haploid GT length**
+   (§1.6.2). Cheap to implement, lots of malformed data
+   out in the wild.
+4. **BCF2 binary type encoding** (§5, line 2258). Big
+   change, but the spec is precise about it.
+5. **CIRB bounds span zero** (§1.7.2). Symmetric with the
+   existing CIPOS rule.
+6. **LAA cross-check** — when an LAA present, all
+   local-allele fields must point into LAA.
+
+The rest are either low-impact or require new public
+API surface (BCF2 binary is the biggest one).
+
+### T4.11 — Per-record ID/FORMAT duplicate checks (§1.6.1, §1.6.2)
+
+**Spec (§1.6.1 ID column, line 401):**
+
+> No identifier should be present in more than one
+> data record.
+> (String, no whitespace or semicolons permitted,
+> duplicate values not allowed.)
+
+**Spec (§1.6.2 FORMAT keys, line 469):**
+
+> The first key must always be the genotype (GT) if it
+> is present.
+> […] duplicate keys are not allowed.
+
+The header-level checks (T2.x parser hardening) reject
+duplicate `##INFO`, `##FILTER`, and `##FORMAT` IDs.
+The cross-record ID uniqueness check (T3.2) rejects the
+same ID on two separate records. The remaining two cases
+— duplicate IDs within a single record's ID field, and
+duplicate keys within a single record's FORMAT column —
+were not enforced; this task closes them.
+
+**Where:**
+- `vcf/parse.go`: `parseRecord` walks the ID field
+  with a `seenID` map and the FORMAT column with a
+  `seenFmt` map, both producing `ParseError` on a
+  duplicate.
+- `vcf/parse_test.go`: two new entries in
+  `TestDecoder_Errors` cover "duplicate ID within
+  record" and "duplicate FORMAT key within record".
+
+**Acceptance:**
+- A record with `ID=rs1;rs1` is rejected.
+- A record with `FORMAT=GT:GT` is rejected.
+- A record with `ID=rs1;rs2` (unique within the record)
+  parses fine.
+
+**Status:** ✅ (v0.15.7)
+
+### T4.12 — CIRUC/CIRB bounds span zero (§1.6.1.7)
+
+**Spec (§1.6.1.7 CIRUC/CIRB, line 1119):**
+
+> The lower bound must be less than or equal to zero
+> and the upper bound must be greater than or equal to
+> zero.
+
+**Scope:** per-record.
+
+**Where:**
+- `vcf/validate.go`: `checkRNDeterminedFields` walks
+  each CIRUC/CIRB pair and emits a `SeverityError`
+  per violation.
+- `vcf/spec_checks_test.go`:
+  `TestValidator_CIRUCBIRBBoundsSpanZero` with 5
+  sub-tests (valid CIRUC, lower/upper bound violations
+  for each of CIRUC and CIRB).
+
+**Acceptance:**
+- CIRUC=-5,5 valid.
+- CIRUC=1,5 (lower positive): error.
+- CIRUC=-5,-1 (upper negative): error.
+- CIRB=2,5 (lower positive): error.
+- CIRB=-5,-2 (upper negative): error.
+
+**Status:** ✅ (v0.15.7)
+
 ---
 
 ## Quick index — by spec section

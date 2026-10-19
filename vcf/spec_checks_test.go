@@ -2494,6 +2494,92 @@ func TestValidator_GTMustBeFirstFormatField(t *testing.T) {
 	}
 }
 
+// TestValidator_CIRUCBIRBBoundsSpanZero covers
+// VCFv4.5 §1.6.1.7: "The lower bound must be less
+// than or equal to zero and the upper bound must be
+// greater than or equal to zero." Fires for both
+// CIRUC (paired with RUC) and CIRB (paired with RB).
+func TestValidator_CIRUCBIRBBoundsSpanZero(t *testing.T) {
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##ALT=<ID=CNV:TR,Description=\"tr\">\n" +
+		"##INFO=<ID=END,Number=1,Type=Integer,Description=\"e\">\n" +
+		"##INFO=<ID=SVLEN,Number=A,Type=Integer,Description=\"s\">\n" +
+		"##INFO=<ID=CN,Number=A,Type=Float,Description=\"c\">\n" +
+		"##INFO=<ID=RN,Number=A,Type=Integer,Description=\"r\">\n" +
+		"##INFO=<ID=RUS,Number=.,Type=String,Description=\"us\">\n" +
+		"##INFO=<ID=RUL,Number=.,Type=Integer,Description=\"ul\">\n" +
+		"##INFO=<ID=RUC,Number=.,Type=Float,Description=\"uc\">\n" +
+		"##INFO=<ID=RB,Number=.,Type=Integer,Description=\"rb\">\n" +
+		"##INFO=<ID=CIRUC,Number=.,Type=Float,Description=\"ciruc\">\n" +
+		"##INFO=<ID=CIRB,Number=.,Type=Integer,Description=\"cirb\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+
+	cases := []struct {
+		name, line string
+		want       bool // true = expect an issue
+	}{
+		{
+			// RUC=10, CIRUC lower=-5, upper=5: spans 0,
+			// valid.
+			name: "valid CIRUC",
+			line: "chr1\t100\t.\tA\t<CNV:TR>\t.\t.\tSVLEN=1;RN=1;RUS=CAG;RUL=3;RUC=10;CIRUC=-5,5\n",
+			want: false,
+		},
+		{
+			// CIRUC lower=+1 (must be ≤ 0): error.
+			name: "CIRUC lower bound positive",
+			line: "chr1\t100\t.\tA\t<CNV:TR>\t.\t.\tSVLEN=1;RN=1;RUS=CAG;RUL=3;RUC=10;CIRUC=1,5\n",
+			want: true,
+		},
+		{
+			// CIRUC upper=-1 (must be ≥ 0): error.
+			name: "CIRUC upper bound negative",
+			line: "chr1\t100\t.\tA\t<CNV:TR>\t.\t.\tSVLEN=1;RN=1;RUS=CAG;RUL=3;RUC=10;CIRUC=-5,-1\n",
+			want: true,
+		},
+		{
+			// CIRB lower=+2: error.
+			name: "CIRB lower bound positive",
+			line: "chr1\t100\t.\tA\t<CNV:TR>\t.\t.\tSVLEN=1;RN=1;RUS=CAG;RUL=3;RB=30;CIRB=2,5\n",
+			want: true,
+		},
+		{
+			// CIRB upper=-2: error.
+			name: "CIRB upper bound negative",
+			line: "chr1\t100\t.\tA\t<CNV:TR>\t.\t.\tSVLEN=1;RN=1;RUS=CAG;RUL=3;RB=30;CIRB=-5,-2\n",
+			want: true,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			// Other checks (RN cardinality, CIRUC
+			// missingness) may also fire; we want the
+			// bounds-span issue specifically.
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "must be ≤ 0") ||
+					strings.Contains(iss.Msg, "must be ≥ 0") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("found=%v, want %v; issues=%+v", found, c.want, issues)
+			}
+		})
+	}
+}
+
 // TestValidator_GVCFBlockRules covers §1.7 gVCF
 // non-variant block validation. The four rules are:
 //

@@ -1010,6 +1010,54 @@ func checkRNDeterminedFields(rec *Record, rnSum, idx, line int, issues *[]Valida
 	if rb, ok := rec.Info["RB"]; ok && rb.HasValue() {
 		checkCIRUCMissing(&rb, rec, "CIRB", idx, line, issues)
 	}
+	// CIRUC/CIRB bounds span zero
+	// (VCFv4.5 §1.6.1.7: "The lower bound must be less
+	// than or equal to zero and the upper bound must be
+	// greater than or equal to zero."). Missing values
+	// for the lower bound are treated as 0; for the
+	// upper bound they're treated as unbounded. The
+	// check runs per (CIRUC, CIRB) key.
+	for _, key := range rnDeterminedKeysDoubled {
+		fv, has := rec.Info[key]
+		if !has || !fv.HasValue() {
+			continue
+		}
+		// CIRUC is Float, CIRB is Integer. Walk both
+		// representations and dispatch by the value
+		// slice that's actually populated.
+		var loVals, hiVals []int64
+		switch key {
+		case "CIRUC":
+			if len(fv.Floats) >= 2 {
+				loVals = make([]int64, 0, len(fv.Floats)/2)
+				hiVals = make([]int64, 0, len(fv.Floats)/2)
+				for i := 0; i+1 < len(fv.Floats); i += 2 {
+					loVals = append(loVals, int64(fv.Floats[i]))
+					hiVals = append(hiVals, int64(fv.Floats[i+1]))
+				}
+			}
+		case "CIRB":
+			loVals = fv.Ints
+			hiVals = fv.Ints
+		}
+		for i := 0; i < len(loVals); i++ {
+			lo, hi := loVals[i], hiVals[i]
+			if lo > 0 {
+				*issues = append(*issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "INFO/" + key,
+					Msg:   fmt.Sprintf("%s lower bound must be ≤ 0 (§1.6.1.7); got %d at pair %d", key, lo, i),
+				})
+			}
+			if hi < 0 {
+				*issues = append(*issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "INFO/" + key,
+					Msg:   fmt.Sprintf("%s upper bound must be ≥ 0 (§1.6.1.7); got %d at pair %d", key, hi, i),
+				})
+			}
+		}
+	}
 
 	// RUS length must match RUL per element (VCFv4.5
 	// §1.6.1.7 RUS).

@@ -796,11 +796,19 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 	// downstream parsing).
 	idStr := string(fields[2])
 	if idStr != "." {
+		seenID := make(map[string]struct{})
 		for _, id := range strings.Split(idStr, ";") {
 			if strings.ContainsAny(id, " \t,;=") {
 				return nil, &ParseError{Line: lineNo, Field: "ID",
 					Msg: "identifier contains whitespace, ',', ';', or '=': " + id}
 			}
+			// Per VCFv4.5 §1.6.1 the ID column values
+			// within a single record must be unique.
+			if _, dup := seenID[id]; dup {
+				return nil, &ParseError{Line: lineNo, Field: "ID",
+					Msg: "duplicate identifier within record: " + id}
+			}
+			seenID[id] = struct{}{}
 			rec.ID = append(rec.ID, id)
 		}
 	}
@@ -901,6 +909,16 @@ func parseRecord(raw []byte, lineNo int, h *Header) (*Record, error) {
 				Msg: "empty FORMAT column"}
 		}
 		rec.Format = strings.Split(formatStr, ":")
+		// Per VCFv4.5 §1.6.2 the FORMAT column keys must be
+		// unique within a record.
+		seenFmt := make(map[string]struct{}, len(rec.Format))
+		for _, k := range rec.Format {
+			if _, dup := seenFmt[k]; dup {
+				return nil, &ParseError{Line: lineNo, Field: "FORMAT",
+					Msg: "duplicate FORMAT key: " + k}
+			}
+			seenFmt[k] = struct{}{}
+		}
 		// GT-first is enforced by the validator, not here, so the parser
 		// remains useful for inspecting malformed files.
 		// We require exactly len(SampleNames) sample columns.

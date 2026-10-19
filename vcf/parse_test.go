@@ -644,6 +644,24 @@ func TestDecoder_Errors(t *testing.T) {
 			"unstructured line value starting with <",
 			"##fileformat=VCFv4.5\n##file=<x\n#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n",
 		},
+		{
+			// VCFv4.5 §1.6.1: duplicate IDs within a single
+			// record's ID field are not allowed.
+			"duplicate ID within record",
+			"##fileformat=VCFv4.5\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n" +
+				"1\t100\trs1;rs1\tA\tC\t.\t.\t.\n",
+		},
+		{
+			// VCFv4.5 §1.6.2: duplicate FORMAT keys within a
+			// record's FORMAT column are not allowed.
+			"duplicate FORMAT key within record",
+			"##fileformat=VCFv4.5\n" +
+				"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+				"##FORMAT=<ID=GQ,Number=1,Type=Integer,Description=\"q\">\n" +
+				"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\n" +
+				"1\t100\t.\tA\tC\t.\t.\t.\tGT:GT\t0/1\n",
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
