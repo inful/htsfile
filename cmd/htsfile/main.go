@@ -9,6 +9,7 @@
 //	htsfile bam2sam < file.bam > file.sam    # convert BAM to SAM
 //	htsfile vcf2bcf < file.vcf > file.bcf    # convert VCF to BCF
 //	htsfile bcf2vcf < file.bcf > file.vcf    # convert BCF to VCF
+//	htsfile vcf query [--index=auto|tabix|csi] file.vcf.gz chr:start-end
 //	htsfile summary file.vcf | file.bed | file.sam | file.bam | file.gff[3] | file.fa[sta] | file.fq | file.bcf | file.[vcf|bcf|gff].tbi | file.[vcf|bcf|gff].csi
 //	htsfile version
 //
@@ -52,6 +53,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/inful/htsfile/bam"
@@ -145,6 +147,8 @@ func main() {
 		err = runTranslate(args, runBCFToVCF, "bcf2vcf", ".bcf")
 	case "summary":
 		err = runSummary(args)
+	case "vcf":
+		err = runVCF(args)
 	case "version":
 		fmt.Printf("htsfile %s (commit %s, built %s)\n", version, commit, date)
 		return
@@ -176,6 +180,8 @@ Commands:
   vcf2bcf     Convert VCF text to BCF binary (stdout).
   bcf2vcf     Convert BCF binary to VCF text (stdout).
   summary     Print a summary of the file (header / column count / records).
+  vcf query    Query an indexed .vcf.gz by region (chrom:start-end).
+               --index=auto|tabix|csi   index type (default: auto)
 
 Format is auto-detected from the extension (.vcf, .bed, .sam, .bam, .gff, .gff3, .fa, .fasta, .fq, .bcf, .tbi, .csi). For
 stdin ("-") or unknown extensions, the first non-empty line is sniffed.
@@ -1809,4 +1815,172 @@ func runSummaryCSI(f io.Reader, path string) error {
 	fmt.Printf("  chunks:     %d\n", totalChunks)
 	fmt.Printf("  intervals:  %d\n", totalIntv)
 	return nil
+}
+
+// openVCFHeader opens the VCF via the chosen index type
+// and returns the parsed header. The returned reader is
+// closed before this function returns; callers should
+// re-open the index for the main query.
+func openVCFHeader(path, indexType string) (*vcf.Header, error) {
+	switch indexType {
+	case "auto", "tabix":
+		r, err := vcf.OpenTabix(path)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = r.Close() }()
+		return r.Header()
+	case "csi":
+		r, err := vcf.OpenCSI(path)
+		if err != nil {
+			return nil, err
+		}
+		defer func() { _ = r.Close() }()
+		return r.Header()
+	default:
+		return nil, fmt.Errorf("vcf query: unknown index type %q", indexType)
+	}
+}
+
+// parseVCFRegion parses a samtools-style "chrom:start-end"
+// region string into its parts. Both start and end are
+// 1-based inclusive (samtools convention); the caller
+// converts end to half-open by adding 1.
+func parseVCFRegion(s string) (chrom string, start, end int64, err error) {
+	idx := strings.LastIndex(s, ":")
+	if idx < 0 {
+		// Whole-contig query: no range.
+		return s, 0, 0, nil
+	}
+	chrom = s[:idx]
+	rangeStr := s[idx+1:]
+	parts := strings.SplitN(rangeStr, "-", 2)
+	if len(parts) != 2 {
+		return "", 0, 0, fmt.Errorf("vcf query: malformed region %q (expected chrom:start-end)", s)
+	}
+	start, err = strconv.ParseInt(parts[0], 10, 64)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("vcf query: bad start in %q: %w", s, err)
+	}
+	end, err = strconv.ParseInt(parts[1], 10, 64)
+	if err != nil {
+		return "", 0, 0, fmt.Errorf("vcf query: bad end in %q: %w", s, err)
+	}
+	if end < start {
+		return "", 0, 0, fmt.Errorf("vcf query: end < start in %q", s)
+	}
+	return chrom, start, end, nil
+}
+
+// runVCF dispatches the "vcf" subcommand. The only
+// current subcommand is "query" for indexed region
+// queries. Future subcommands (e.g. "vcf index" to
+// write a tabix/CSI index) go here.
+func runVCF(args []string) error {
+	if len(args) == 0 {
+		return errors.New("vcf: expected subcommand (e.g. \"query\")")
+	}
+	switch args[0] {
+	case "query":
+		return runVCFQuery(args[1:])
+	default:
+		return fmt.Errorf("vcf: unknown subcommand %q", args[0])
+	}
+}
+
+// runVCFQuery is the dispatcher for "htsfile vcf query".
+// It opens the VCF via either tabix or CSI, runs the
+// region query, and writes the matching records to
+// stdout in VCF text format.
+func runVCFQuery(args []string) error {
+	fs := flag.NewFlagSet("vcf query", flag.ExitOnError)
+	indexType := fs.String("index", "auto", "index type: auto, tabix, or csi")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 2 {
+		return errors.New("vcf query: expected two arguments: <file.vcf.gz> <region>")
+	}
+	path := fs.Arg(0)
+	regionStr := fs.Arg(1)
+
+	chrom, start, end, err := parseVCFRegion(regionStr)
+	if err != nil {
+		return err
+	}
+	// If no range was given, fall back to the whole
+	// contig. We need to open the reader just to peek at
+	// the header and find the contig length.
+	if end == 0 {
+		hdr, err := openVCFHeader(path, *indexType)
+		if err != nil {
+			return err
+		}
+		var found bool
+		for _, c := range hdr.Contigs {
+			if c.ID == chrom && c.Length > 0 {
+				start = 1
+				end = c.Length + 1 // half-open
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("vcf query: contig %q not declared in header (or length unknown)", chrom)
+		}
+	} else {
+		// The Query API uses half-open [start, end). Convert
+		// from samtools-style inclusive end to half-open.
+		end++
+	}
+
+	// Open the right index. "auto" prefers tabix (the
+	// more common format in practice); CSI is used when
+	// only .csi exists.
+	var recs []*vcf.Record
+	switch *indexType {
+	case "auto":
+		if _, err := os.Stat(path + ".tbi"); err == nil {
+			r, err := vcf.OpenTabix(path)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = r.Close() }()
+			recs, _ = r.Query(chrom, start, end)
+		} else if _, err := os.Stat(path + ".csi"); err == nil {
+			r, err := vcf.OpenCSI(path)
+			if err != nil {
+				return err
+			}
+			defer func() { _ = r.Close() }()
+			recs, _ = r.Query(chrom, start, end)
+		} else {
+			return fmt.Errorf("vcf query: no index found for %s (expected .tbi or .csi)", path)
+		}
+	case "tabix":
+		r, err := vcf.OpenTabix(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = r.Close() }()
+		recs, _ = r.Query(chrom, start, end)
+	case "csi":
+		r, err := vcf.OpenCSI(path)
+		if err != nil {
+			return err
+		}
+		defer func() { _ = r.Close() }()
+		recs, _ = r.Query(chrom, start, end)
+	default:
+		return fmt.Errorf("vcf query: unknown index type %q", *indexType)
+	}
+
+	// Emit the matching records in VCF text form.
+	enc := vcf.NewEncoder(os.Stdout)
+	for _, rec := range recs {
+		if err := enc.EncodeRecord(rec); err != nil {
+			return err
+		}
+	}
+	return enc.Flush()
 }

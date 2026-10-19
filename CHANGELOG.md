@@ -11,6 +11,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.1] — 2026-10-19
+
+Patch release adding the `htsfile vcf query` CLI
+subcommand on top of v0.15.0.
+
+### Added — cmd/htsfile
+
+- **`htsfile vcf query`** (`b8f4c91`). Reads a
+  tabix- or CSI-indexed BGZF-compressed VCF and writes
+  the records overlapping a region to stdout in VCF
+  text form. Region is samtools-style `chrom:start-end`
+  (1-based inclusive). Whole-contig query (`chrom` with
+  no `:start-end`) reads the contig length from the
+  header. `--index=auto|tabix|csi` chooses the index
+  type; the default prefers `.tbi` and falls back to
+  `.csi`. 5 new tests cover region match, whole
+  contig, malformed region, missing index, and the
+  region parser.
+
 ## [0.15.0] — 2026-10-19
 
 This release adds tabix- and CSI-indexed random access
