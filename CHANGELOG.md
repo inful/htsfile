@@ -11,6 +11,47 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.6] — 2026-10-19
+
+Patch release adding breakend mate position round-trip
+validation.
+
+### Added — vcf
+
+- **`Validator.checkBreakendMatePositions`** (`599f6f0`,
+  SPEC_COMPLIANCE T4.10). The two records in a
+  breakend pair must round-trip — each mate's breakend
+  remote position must equal the partner's local
+  (Chrom, POS). Fires only when both mates carry
+  breakend ALTs (paired SNVs sharing a MATEID are
+  skipped). Both directions (A→B and B→A) are
+  checked.
+
+### Changed — vcf
+
+- **`mateSnapshot`** gained a `chrom`, `pos`, and
+  `breakends` field so the round-trip check has the
+  data it needs from the first mate seen.
+
+### Fixed — vcf
+
+- `testdata/sv_example.vcf`: the `delbp1`/`delbp2`
+  breakend pair had a real round-trip error (record
+  1's breakend pointed to chrA:5 but the partner was
+  at chrA:2). Fixed to a proper round-trip
+  (`T[chrA:2[` + `]chrA:2]A`).
+
+### Tests — vcf
+
+- `TestValidator_BreakendMatePositionRoundTrip` with
+  6 sub-tests: balanced round-trip, wrong partner
+  POS, wrong partner remote, wrong remote contig,
+  missing MATEID, non-breakend ALT.
+
+`go test -race -count=1 ./...` is green; `golangci-lint run ./...` reports 0 issues; `make fmt-check` is clean.
+
+## [0.15.5] — 2026-10-19
+
 ## [0.15.5] — 2026-10-19
 
 Patch release adding §1.7 gVCF non-variant block
