@@ -4,11 +4,15 @@ GO    ?= go
 PACKAGES := ./...
 
 .PHONY: all
-all: fmt vet test lint ## fmt, vet, test, lint
+all: fmt-check vet test lint ## fmt-check, vet, test, lint
 
 .PHONY: fmt
-fmt: ## run gofmt
-	$(GO) fmt $(PACKAGES)
+fmt: ## rewrite Go files in place with gofmt
+	gofmt -w .
+
+.PHONY: fmt-check
+fmt-check: ## fail if any Go file needs gofmt (mirrors CI)
+	@test -z "$$(gofmt -l .)" || { echo "Files need gofmt:"; gofmt -l .; exit 1; }
 
 .PHONY: vet
 vet: ## run go vet
@@ -40,9 +44,16 @@ lint: ## run golangci-lint
 	@command -v golangci-lint >/dev/null 2>&1 || { echo "golangci-lint not installed"; exit 1; }
 	golangci-lint run $(PACKAGES)
 
+.PHONY: ci
+ci: fmt-check vet test lint ## full local pre-push check (mirrors CI)
+
 .PHONY: tidy
 tidy: ## go mod tidy
 	$(GO) mod tidy
+
+.PHONY: install-hooks
+install-hooks: ## install the repo's git hooks (one-time per clone)
+	git config core.hooksPath .githooks
 
 .PHONY: help
 help: ## show this help

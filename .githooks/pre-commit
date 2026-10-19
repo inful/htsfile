@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Pre-commit hook: refuse the commit if any Go file
+# needs gofmt. Mirrors the CI gofmt check in
+# .github/workflows/ci.yml so we catch formatting drift
+# locally instead of via a failed PR.
+set -e
+
+# Resolve to repo root so the hook works regardless
+# of where it is invoked from.
+ROOT="$(git rev-parse --show-toplevel)"
+cd "$ROOT"
+
+if [ -n "$(gofmt -l .)" ]; then
+    echo "gofmt: the following files need formatting:"
+    gofmt -l .
+    echo
+    echo "Run \`make fmt\` (or \`gofmt -w .\`) and re-commit."
+    exit 1
+fi
