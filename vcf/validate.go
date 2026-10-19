@@ -59,11 +59,17 @@ type Validator struct {
 
 	// Streaming state (used by Next / Finish). Zero value is
 	// fine; the validator initialises lazily.
-	recordIdx  int    // 0-based index of the most recently fed record
-	prevChrom  string // CHROM of the most recently fed record
-	prevPos    int64  // POS of the most recently fed record; -1 means "no previous"
-	headerDone bool   // true once HeaderChecks has been called
-	finished   bool   // true once Finish has been called
+	recordIdx int    // 0-based index of the most recently fed record
+	prevChrom string // CHROM of the most recently fed record
+	prevPos   int64  // POS of the most recently fed record; -1 means "no previous"
+	// prevEnd is the END of the previous record if it
+	// was a gVCF non-variant block, else 0. Combined
+	// with prevPos it lets the gVCF overlap check fire
+	// when the next record's POS would land inside a
+	// previous block.
+	prevEnd    int64
+	headerDone bool // true once HeaderChecks has been called
+	finished   bool // true once Finish has been called
 
 	// phaseStyle tracks the phasing separator ("|" or "/")
 	// observed in each (sample, PS) pair so far. The key is
@@ -152,6 +158,7 @@ func (v *Validator) Reset() {
 	v.recordIdx = 0
 	v.prevChrom = ""
 	v.prevPos = -1
+	v.prevEnd = 0
 	v.headerDone = false
 	v.finished = false
 	v.phaseStyle = nil
@@ -305,6 +312,22 @@ func (v *Validator) Next(h *Header, rec *Record) []ValidationError {
 	if rec.Chrom != v.prevChrom {
 		v.prevChrom = rec.Chrom
 		v.prevPos = -1
+		v.prevEnd = 0
+	}
+	// gVCF non-variant block overlap (§1.7): if the
+	// previous record was a block, the new record's
+	// POS must be > previous block's END. This is a
+	// tighter check than the per-contig POS monotonic
+	// rule, which only ensures POS > prevPos.
+	if v.prevEnd > 0 && rec.Pos <= v.prevEnd {
+		if v.Mode == ModeStrict {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+				Field: "POS",
+				Msg: fmt.Sprintf("POS %d overlaps previous non-variant block ending at %d within CHROM %s",
+					rec.Pos, v.prevEnd, rec.Chrom),
+			})
+		}
 	}
 	if v.Mode == ModeStrict && v.prevPos >= 0 && rec.Pos < v.prevPos {
 		issues = append(issues, ValidationError{
@@ -314,8 +337,22 @@ func (v *Validator) Next(h *Header, rec *Record) []ValidationError {
 				rec.Pos, v.prevPos, rec.Chrom),
 		})
 	}
-	if rec.Pos > v.prevPos {
-		v.prevPos = rec.Pos
+	// For non-variant blocks, advance prevPos to the
+	// END (the effective "next free position" on this
+	// chromosome) and set prevEnd so subsequent
+	// records can be checked against the block. For
+	// other records, just advance prevPos to POS.
+	if isNonVariantBlock(rec) {
+		endVal := infoEnd(rec)
+		if endVal > v.prevPos {
+			v.prevPos = endVal
+		}
+		v.prevEnd = endVal
+	} else {
+		if rec.Pos > v.prevPos {
+			v.prevPos = rec.Pos
+		}
+		v.prevEnd = 0
 	}
 
 	// Per-sample PS phasing consistency. The spec says all
@@ -601,6 +638,16 @@ func (v *Validator) checkRecord(h *Header, rec *Record, idx int) []ValidationErr
 	// END is a computed field per VCFv4.5 §1.6.1.6. When
 	// declared it must match the computed value.
 	issues = append(issues, v.checkEND(rec, idx)...)
+
+	// gVCF non-variant block rules (§1.7): <*>
+	// requires END ≥ POS, and the block must not
+	// overlap the previous record. Cross-record
+	// overlap is checked here (in the per-record
+	// path) using prevPos / prevEnd.
+	issues = append(issues, v.checkGVCFBlock(rec, idx)...)
+	if v.Reference != nil {
+		issues = append(issues, v.checkGVCFBlockRef(rec, idx, line)...)
+	}
 
 	// Reference-aware bounds: with a FASTA reference
 	// attached, verify END and SVLEN stay inside the
@@ -1317,6 +1364,150 @@ func (v *Validator) checkENDBounds(rec *Record, idx, line int) []ValidationError
 		}}
 	}
 	return nil
+}
+
+// isNonVariantBlock reports whether rec is a gVCF
+// non-variant block per §1.7: ALT is exactly the
+// "<*>" symbolic allele (which is what the parser
+// normalises "<NON_REF>" to) AND the record carries
+// an END value.
+//
+// ALT containing "<*>" alongside real ALTs is NOT a
+// non-variant block — that's a normal variant record
+// that lists the unspecified allele as one of its
+// alternatives.
+func isNonVariantBlock(rec *Record) bool {
+	if len(rec.Alt) != 1 || rec.Alt[0] != "<*>" {
+		return false
+	}
+	raw, ok := rec.Info["END"]
+	if !ok || raw.Missing || len(raw.Ints) == 0 {
+		return false
+	}
+	return true
+}
+
+// infoEnd returns the END value of rec, or 0 if
+// END is missing or non-integer. Callers should gate
+// on isNonVariantBlock first.
+func infoEnd(rec *Record) int64 {
+	raw, ok := rec.Info["END"]
+	if !ok || raw.Missing || len(raw.Ints) == 0 {
+		return 0
+	}
+	return raw.Ints[0]
+}
+
+// checkGVCFBlock enforces the per-record gVCF rules:
+//
+//   - ALT is "<*>" but no END declared.
+//   - END < POS.
+//
+// Cross-record overlap (next record's POS inside the
+// previous block) is checked in the Next() state
+// machine using prevEnd.
+func (v *Validator) checkGVCFBlock(rec *Record, idx int) []ValidationError {
+	if len(rec.Alt) != 1 || rec.Alt[0] != "<*>" {
+		return nil
+	}
+	// Single-element "<*>" ALT — check that END is
+	// declared. Without END the record is just a
+	// poorly-formed gVCF block.
+	raw, hasEND := rec.Info["END"]
+	if !hasEND || raw.Missing || len(raw.Ints) == 0 {
+		if v.Mode == ModeStrict {
+			return []ValidationError{{
+				Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+				Field: "ALT",
+				Msg:   `ALT="<*>" (gVCF non-variant block) requires an INFO END field`,
+			}}
+		}
+		// ModeDefault: surface as a warning so
+		// callers can see the issue without
+		// changing the default-mode behaviour.
+		return []ValidationError{{
+			Severity: SeverityWarning, Record: idx + 1, Line: rec.Line,
+			Field: "ALT",
+			Msg:   `ALT="<*>" (gVCF non-variant block) requires an INFO END field`,
+		}}
+	}
+	if raw.Ints[0] < rec.Pos {
+		return []ValidationError{{
+			Severity: SeverityError, Record: idx + 1, Line: rec.Line,
+			Field: "INFO/END",
+			Msg:   fmt.Sprintf("END %d is before POS %d (non-variant block cannot go backwards)", raw.Ints[0], rec.Pos),
+		}}
+	}
+	return nil
+}
+
+// checkGVCFBlockRef fires when a FASTA reference is
+// attached and rec is a gVCF non-variant block. The
+// REF column must match the reference sequence over
+// the entire [POS, END] block — every position in the
+// block is reference-matching by definition.
+func (v *Validator) checkGVCFBlockRef(rec *Record, idx, line int) []ValidationError {
+	if !isNonVariantBlock(rec) {
+		return nil
+	}
+	end := infoEnd(rec)
+	if end <= rec.Pos {
+		// Already flagged by checkGVCFBlock.
+		return nil
+	}
+	pos := int(rec.Pos)
+	bases, err := v.Reference.BaseRange(rec.Chrom, pos, int(end)+1)
+	if err != nil {
+		// Defer to checkRefMatchesReference-style
+		// behaviour: warn (or error in strict)
+		// and skip.
+		sev := SeverityWarning
+		if v.Mode == ModeStrict {
+			sev = SeverityError
+		}
+		return []ValidationError{{
+			Severity: sev, Record: idx + 1, Line: line,
+			Field: "REF",
+			Msg:   fmt.Sprintf("reference lookup for %s:%d-%d failed: %v; skipping gVCF block-REF check", rec.Chrom, pos, end, err),
+		}}
+	}
+	wantLen := int(end) - pos + 1
+	if len(bases) != wantLen {
+		sev := SeverityWarning
+		if v.Mode == ModeStrict {
+			sev = SeverityError
+		}
+		return []ValidationError{{
+			Severity: sev, Record: idx + 1, Line: line,
+			Field: "REF",
+			Msg:   fmt.Sprintf("reference lookup for %s:%d-%d returned %d bases, want %d; skipping gVCF block-REF check", rec.Chrom, pos, end, len(bases), wantLen),
+		}}
+	}
+	var issues []ValidationError
+	for i, refBase := range bases {
+		if i >= len(rec.Ref) {
+			// REF is shorter than the block — that
+			// would imply a deletion within the
+			// block, which a gVCF block cannot
+			// carry.
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "REF",
+				Msg:   fmt.Sprintf("gVCF block REF has length %d, but block range [%d,%d] requires %d bases", len(rec.Ref), pos, end, wantLen),
+			})
+			break
+		}
+		want := strings.ToUpper(string(rec.Ref[i]))
+		got := strings.ToUpper(string(refBase))
+		if want != got {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field: "REF",
+				Msg:   fmt.Sprintf("REF[%d]=%q does not match reference base %q at %s:%d (gVCF block must be reference-matching)", i, string(rec.Ref[i]), string(refBase), rec.Chrom, pos+i),
+			})
+		}
+	}
+	return issues
 }
 
 // checkSVLENBounds fires when a FASTA reference is attached

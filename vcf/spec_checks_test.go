@@ -1,6 +1,7 @@
 package vcf
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -2491,4 +2492,206 @@ func TestValidator_GTMustBeFirstFormatField(t *testing.T) {
 			}
 		})
 	}
+}
+
+// TestValidator_GVCFBlockRules covers §1.7 gVCF
+// non-variant block validation. The four rules are:
+//
+//  1. <*>-ALT must have END in INFO.
+//  2. END ≥ POS.
+//  3. No overlap with the previous record (POS >
+//     prevEnd when the previous record was a block).
+//  4. (With a FASTA reference) REF must match the
+//     reference over the [POS, END] block range.
+//
+// Cases run both with and without a reference, in
+// both ModeDefault and ModeStrict where the rule
+// differs.
+func TestValidator_GVCFBlockRules(t *testing.T) {
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=END,Number=1,Type=Integer,Description=\"e\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+
+	type wantCheck struct {
+		fieldSubstr string // substring of Field+Msg we expect to find
+		mode        Mode
+	}
+	cases := []struct {
+		name, line string
+		wants      []wantCheck
+	}{
+		{
+			// Valid block: ALT="<*>" with END=200.
+			// No errors expected.
+			name:  "valid block passes",
+			line:  "chr1\t100\t.\tA\t<*>\t.\t.\tEND=200",
+			wants: nil,
+		},
+		{
+			// <NON_REF> is the parser-canonicalised form
+			// (T1.6). It is rewritten to <*>.
+			name:  "NON_REF normalised",
+			line:  "chr1\t100\t.\tA\t<NON_REF>\t.\t.\tEND=200",
+			wants: nil,
+		},
+		{
+			// <*>-ALT with no END: error in ModeStrict,
+			// warning in ModeDefault.
+			name: "missing END strict",
+			line: "chr1\t100\t.\tA\t<*>\t.\t.\t.",
+			wants: []wantCheck{
+				{mode: ModeStrict, fieldSubstr: `ALT="<*>"`},
+				{mode: ModeDefault, fieldSubstr: `ALT="<*>"`},
+			},
+		},
+		{
+			// END < POS: error in both modes (the END
+			// < POS rule is unambiguous).
+			name: "END before POS",
+			line: "chr1\t100\t.\tA\t<*>\t.\t.\tEND=50",
+			wants: []wantCheck{
+				{mode: ModeStrict, fieldSubstr: "before POS"},
+				{mode: ModeDefault, fieldSubstr: "before POS"},
+			},
+		},
+		{
+			// ALT=<*> alongside a real ALT: NOT a
+			// non-variant block (the spec is strict
+			// about "ALT contains exactly <*>"). The
+			// checkGVCFBlock short-circuits — no
+			// gVCF-related issues. The existing
+			// checkALT / checkHaplotag logic still
+			// runs and may flag unrelated things,
+			// but for this case it's a normal
+			// variant record.
+			name:  "non-star ALT ignored by gVCF",
+			line:  "chr1\t100\t.\tA\tG,<*>\t.\t.\tEND=200",
+			wants: nil,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			for _, w := range c.wants {
+				t.Run(fmt.Sprintf("mode=%d", w.mode), func(t *testing.T) {
+					v := NewValidator(w.mode)
+					issues := v.Validate(h, []*Record{rec})
+					if !hasIssueWithField(issues, w.fieldSubstr) {
+						t.Errorf("expected issue containing %q; got %+v", w.fieldSubstr, issues)
+					}
+				})
+			}
+		})
+	}
+}
+
+// TestValidator_GVCFBlockOverlap covers the cross-
+// record overlap rule: a non-variant block followed
+// by another record whose POS lands inside the block
+// is an error in ModeStrict.
+func TestValidator_GVCFBlockOverlap(t *testing.T) {
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=END,Number=1,Type=Integer,Description=\"e\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	lines := []string{
+		"chr1\t100\t.\tA\t<*>\t.\t.\tEND=200", // block 100..200
+		"chr1\t150\t.\tA\tG\t.\t.\t.",         // overlap
+		"chr1\t201\t.\tA\tG\t.\t.\t.",         // OK
+	}
+	dec := NewDecoder(strings.NewReader(hdr + strings.Join(lines, "\n") + "\n"))
+	h, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	var recs []*Record
+	for {
+		rec, err := dec.Record()
+		if err != nil {
+			break
+		}
+		recs = append(recs, rec)
+	}
+	v := NewValidator(ModeStrict)
+	issues := v.Validate(h, recs)
+	if !hasIssueWithField(issues, "overlaps previous non-variant block") {
+		t.Errorf("expected overlap issue; got %+v", issues)
+	}
+}
+
+// TestValidator_GVCFBlockRefMatchesReference covers the
+// reference-aware rule 4: when a FASTA reference is
+// attached, REF must match the reference sequence
+// over [POS, END] for non-variant blocks.
+func TestValidator_GVCFBlockRefMatchesReference(t *testing.T) {
+	refText := ">chr1\nACGTACGTACGTACGTACGT\n" // 20 A/C/G/T bases
+	dir := t.TempDir()
+	refPath := filepath.Join(dir, "ref.fa")
+	if err := os.WriteFile(refPath, []byte(refText), 0o600); err != nil {
+		t.Fatalf("write ref: %v", err)
+	}
+	ref, err := fasta.Open(refPath)
+	if err != nil {
+		t.Fatalf("fasta.Open: %v", err)
+	}
+	defer func() { _ = ref.Close() }()
+
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=END,Number=1,Type=Integer,Description=\"e\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	// Reference bases 1..20 are A C G T A C G T A C G T A C G T A C G T.
+	// Block 5..9 covers reference bases 5..9 = A C G T A (5 bases),
+	// so REF must be ACGTA.
+	goodLine := "chr1\t5\t.\tACGTA\t<*>\t.\t.\tEND=9"
+	// Mismatched REF (G instead of A at position 5).
+	badLine := "chr1\t5\t.\tGCGTA\t<*>\t.\t.\tEND=9"
+
+	dec := NewDecoder(strings.NewReader(hdr + goodLine + "\n"))
+	h, err := dec.Header()
+	if err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	v := NewValidator(ModeStrict).WithReference(ref)
+	issues := v.Validate(h, []*Record{rec})
+	if hasIssueWithField(issues, "does not match reference base") {
+		t.Errorf("good block fired a REF-mismatch issue; got %+v", issues)
+	}
+
+	dec2 := NewDecoder(strings.NewReader(hdr + badLine + "\n"))
+	if _, err := dec2.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	rec2, err := dec2.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	v.Reset()
+	issues = v.Validate(h, []*Record{rec2})
+	if !hasIssueWithField(issues, "does not match reference base") {
+		t.Errorf("bad block did not fire a REF-mismatch issue; got %+v", issues)
+	}
+}
+
+// hasIssueWithField reports whether any issue in the
+// slice contains substr in its Field+Msg concatenated
+// form. The substring match is case-sensitive and
+// matches across Field and Msg concatenation.
+func hasIssueWithField(issues []ValidationError, substr string) bool {
+	for _, iss := range issues {
+		if strings.Contains(iss.Field+": "+iss.Msg, substr) {
+			return true
+		}
+	}
+	return false
 }

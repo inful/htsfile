@@ -853,6 +853,67 @@ reads use the new BGZF `SeekReader`; plain
 
 **Status:** ✅ (v0.15.0)
 
+### T4.9 — gVCF non-variant block rules (§1.7)
+
+**Spec (§1.7 gVCF, "Genomic Variant Call Format"):**
+
+> A VCF file may be provided in a gVCF format... a
+> block record uses the <NON_REF> symbolic allele (which is
+> an alias for <*>) to represent a stretch of
+> reference-matching positions from POS through END.
+
+Per the spec a "non-variant block" record is identified by:
+
+- ALT contains exactly `<*>` (or its `<NON_REF>` alias,
+  which the parser already normalises to `<*>` per T1.6).
+- The header declares `##INFO=<ID=END,...>`, and the
+  record carries an END value.
+
+Rules to enforce:
+
+- ALT is `<*>` (single-element ALT) ⇒ END must be
+  declared in INFO. Without END the block is
+  malformed.
+- END must be ≥ POS (the block cannot go
+  backwards).
+- A non-variant block must not overlap with the
+  previous record on the same CHROM. That is, the
+  next record's POS must be > previous record's
+  effective "last position" — `END` for a previous
+  block, `POS` for a previous variant record.
+- (Reference-attached only) The REF column of a
+  non-variant block must match the reference
+  sequence over `[POS, END]`.
+
+**Scope:** per-record (single) for rules 1-3;
+reference-aware for rule 4.
+
+**Where:**
+- `vcf/validate.go`: `checkGVCFBlock` per-record
+  checks (rules 1-3) plus the cross-record
+  monotonic-overlap check that uses the existing
+  `prevPos` machinery with a new `prevEnd` field.
+- `vcf/validate.go`: `checkGVCFBlockRef` for rule 4,
+  analogous to the existing `checkRefMatchesReference`
+  but reading `[POS, END]` instead of `[POS, len(REF)]`.
+- `vcf/spec_checks_test.go`: new sub-tests for each
+  rule.
+
+**Acceptance:**
+- `chr1 100 . A <NON_REF> . . END=200`: block from
+  100..200; passes.
+- `chr1 100 . A <NON_REF> . .` (no END): error
+  (ModeStrict) / warning (ModeDefault).
+- `chr1 100 . A <NON_REF> . . END=50`: END < POS;
+  error.
+- Two records on the same contig with
+  `chr1 100 . A <NON_REF> . . END=200` followed by
+  `chr1 150 . A G ...`: overlap; error.
+- With a reference attached, REF column must
+  match over the block range; mismatch error.
+
+**Status:** ✅ (v0.15.5)
+
 ---
 
 ## Quick index — by spec section
@@ -870,7 +931,7 @@ reads use the new BGZF `SeekReader`; plain
 | §1.6.1.7 CNV:TR section | T2.7 |
 | §1.6.2 FORMAT column | T2.1, T2.2, T2.8 |
 | §1.6.2 PSO field | T3.3 |
-| §1.7 gVCF | T1.6 |
+| §1.7 gVCF | T1.6, T4.9 |
 | §1.7 Tandem repeats | T2.9, T2.10 |
 | General file format | T4.1 |
 | §1.4.4 IUPAC | T4.2 |
