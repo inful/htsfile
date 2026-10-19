@@ -11,6 +11,66 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.3] — 2026-10-19
+
+Patch release adding benchmark coverage for the
+indexed-read paths.
+
+### Added — internal/bgzf, vcf
+
+- **Benchmarks** (`fe3a81e`):
+  - `internal/bgzf/BenchmarkReader_Decompress`:
+    raw BGZF block decompression throughput on a
+    single 64 KiB block of incompressible data
+    (~1.3 GB/s on M1 Pro).
+  - `internal/bgzf/BenchmarkSeekReader_RandomSeek`:
+    SeekReader.Seek + Read cost on a two-block
+    stream.
+  - `vcf/BenchmarkTabixQuery_*` /
+    `BenchmarkCSIQuery_*`: cold (open per call,
+    mirrors `htsfile vcf query`) and warm
+    (open once) variants for both small-region
+    and whole-contig queries, plus
+    `BenchmarkBGZFSeekReader_VirtualOffset` for
+    the per-record cost the new decodeChunk
+    check adds.
+  - `vcf/BenchmarkTabixQuery_ChunkEndStop`:
+    A/B between a single-chunk index with
+    End=MaxUint64 and the per-block index
+    samtools emits. The per-block variant is
+    1-2 % faster on the multi-block fixture,
+    confirming the chunk-End stop is doing
+    useful work for records that straddle
+    block boundaries.
+
+`go test -race -count=1 ./...` is green; `golangci-lint run ./...` reports 0 issues.
+
+## [0.15.2] — 2026-10-19
+
+Patch release adding the chunk-End stop
+optimisation on top of v0.15.1.
+
+### Changed — vcf, internal/bgzf
+
+- **`decodeChunk` stops at the chunk's End BGZF
+  virtual offset instead of decoding until EOF**
+  (`2aa03d7`). For wide queries this stops
+  fetching bytes past the last overlapping
+  record. New `bgzf.Reader.VirtualOffset()`
+  tracks the BGZF virtual offset of the next
+  byte to return (high 48 bits = block start in
+  the underlying file; low 16 bits = within-
+  decompressed-block cursor), backed by a
+  `countingReader` that captures the file
+  position at NewReader time. `SeekReader.VirtualOffset`
+  forwards it. `TabixReader.decodeChunk` and
+  `CSIReader.decodeChunk` accept `chunkEndOff`
+  and break the read loop when the BGZF position
+  reaches it. `TestTabixReader_ChunkEndStop`
+  builds a multi-block fixture and rebuilds the
+  index with chunk End at the block-2 boundary
+  to prove the optimisation works.
+
 ## [0.15.1] — 2026-10-19
 
 Patch release adding the `htsfile vcf query` CLI
