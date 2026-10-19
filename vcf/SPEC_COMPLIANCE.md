@@ -914,6 +914,50 @@ reference-aware for rule 4.
 
 **Status:** ✅ (v0.15.5)
 
+### T4.10 — Breakend mate position round-trip (§1.6.5.1)
+
+**Spec (§1.6.5.1, "Specifying complex rearrangements
+with breakends"):**
+
+> The position p of the mate breakend, indicated by
+> a string of the form "chr:pos".
+
+In addition to T4.6's per-record bound check (the
+remote position must lie within the remote contig),
+the **two records in a breakend pair must point to
+each other**. That is, if record A is at (chrA, posA)
+with breakend ALT `t]chrB:posB]`, then record B (its
+MATEID mate) must be at exactly (chrB, posB) — and
+symmetrically B's breakend ALT must point back to
+A's (chrA, posA).
+
+**Scope:** cross-record, requires MATEID.
+
+**Where:**
+- `vcf/validate.go`: extend `mateSnapshot` with
+  the local position and parsed breakend remote
+  positions; new `checkBreakendMatePositions`
+  compares the mate's breakends to the partner's
+  local position.
+- `vcf/spec_checks_test.go`: new
+  `TestValidator_BreakendMatePositionRoundTrip`.
+
+**Acceptance:**
+- A pair `chr1 100 . N ]chr2:200]N . . MATEID=bnd1`
+  followed by `chr2 200 . N ]chr1:100]N . .
+  MATEID=bnd1`: mates point to each other; passes.
+- Same with one mate's POS wrong (`chr2 201 . N
+  ]chr1:100]N ...`): error in both modes.
+- Same with one mate's breakend remote position
+  wrong (`chr2 200 . N ]chr1:999]N ...`): error.
+- Same with the remote contig wrong (`chr2 200 . N
+  ]chr3:100]N ...`): error.
+- Records without breakend ALTs (e.g. SNVs with a
+  MATEID linking paired SNVs) are skipped — the
+  position round-trip only applies to breakends.
+
+**Status:** ✅ (v0.15.6)
+
 ---
 
 ## Quick index — by spec section
@@ -932,6 +976,7 @@ reference-aware for rule 4.
 | §1.6.2 FORMAT column | T2.1, T2.2, T2.8 |
 | §1.6.2 PSO field | T3.3 |
 | §1.7 gVCF | T1.6, T4.9 |
+| §1.6.5.1 Breakend round-trip | T4.10 |
 | §1.7 Tandem repeats | T2.9, T2.10 |
 | General file format | T4.1 |
 | §1.4.4 IUPAC | T4.2 |

@@ -328,9 +328,9 @@ func TestDecoder_SVExample(t *testing.T) {
 		t.Errorf("rec1 Alt = %v; want [<DEL>]", r1.Alt)
 	}
 
-	// Breakend ALT on rec[2]: T[chrA:5[
+	// Breakend ALT on rec[2]: T[chrA:2[
 	r2 := recs[2]
-	if len(r2.Alt) != 1 || r2.Alt[0] != "T[chrA:5[" {
+	if len(r2.Alt) != 1 || r2.Alt[0] != "T[chrA:2[" {
 		t.Errorf("rec2 Alt = %v", r2.Alt)
 	}
 

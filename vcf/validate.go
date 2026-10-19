@@ -98,16 +98,45 @@ type Validator struct {
 	mateRecords map[string]*mateSnapshot
 }
 
-// mateSnapshot captures the PSL and PSO of the first
-// record encountered with a given MATEID. The second
-// record with the same MATEID is checked against this
-// snapshot for the §1.6.2 rule:
-//
-//	"Variants in breakpoint notation must have the
-//	 same PSL and PSO on both records."
+// mateSnapshot captures PSL/PSO plus the local
+// position and parsed breakend remote positions of
+// the first record encountered with a given MATEID.
+// The second record with the same MATEID is checked
+// against this snapshot for the §1.6.2 PSL/PSO rule
+// and the §1.6.5.1 breakend position round-trip
+// rule.
 type mateSnapshot struct {
-	psl []string
-	pso []int64
+	psl       []string
+	pso       []int64
+	chrom     string        // local CHROM of the first mate seen
+	pos       int64         // local POS of the first mate seen
+	breakends []breakendPos // parsed remote positions of the first mate's breakend ALTs
+}
+
+// breakendPos is one parsed "chr:pos" from a
+// breakend replacement string (§1.6.5.1).
+type breakendPos struct {
+	contig string
+	pos    int64
+}
+
+// recordBreakends returns the parsed (contig, pos)
+// for each breakend ALT in rec. ALTs that aren't
+// breakends, or whose position is omitted (a telomere
+// breakpoint), are skipped.
+func recordBreakends(rec *Record) []breakendPos {
+	var out []breakendPos
+	for _, a := range rec.Alt {
+		if !isBreakend(a) {
+			continue
+		}
+		contig, pos, ok := parseBreakendPosition(a)
+		if !ok {
+			continue
+		}
+		out = append(out, breakendPos{contig: contig, pos: pos})
+	}
+	return out
 }
 
 // phaseKey identifies a (sample, PS) pair. PS of "" means
@@ -273,7 +302,13 @@ func (v *Validator) Next(h *Header, rec *Record) []ValidationError {
 		if psoFV.HasValue() {
 			pso = psoFV.Ints
 		}
-		snap := &mateSnapshot{psl: psl, pso: pso}
+		snap := &mateSnapshot{
+			psl:       psl,
+			pso:       pso,
+			chrom:     rec.Chrom,
+			pos:       rec.Pos,
+			breakends: recordBreakends(rec),
+		}
 		// Check against any of the record's own IDs.
 		matched := false
 		for _, id := range rec.ID {
@@ -2472,7 +2507,13 @@ func (v *Validator) checkBreakendPositions(rec *Record, idx, line int) []Validat
 }
 
 // checkMateMatch compares two breakend mate snapshots
-// and appends SeverityErrors on mismatch.
+// and appends SeverityErrors on mismatch. Two checks
+// run:
+//
+//  1. PSL and PSO (per-allele) must be equal (§1.6.2).
+//  2. Each mate's breakend remote positions must
+//     point at the partner's local (Chrom, POS) —
+//     §1.6.5.1 breakend round-trip.
 func checkMateMatch(existing, snap *mateSnapshot, mid string, idx, line int, issues *[]ValidationError) {
 	if !samePSL(existing.psl, snap.psl) {
 		*issues = append(*issues, ValidationError{
@@ -2487,6 +2528,35 @@ func checkMateMatch(existing, snap *mateSnapshot, mid string, idx, line int, iss
 			Field: "INFO/PSO",
 			Msg:   fmt.Sprintf("PSO for MATEID %q does not match the mate record", mid),
 		})
+	}
+	// §1.6.5.1 breakend round-trip: this mate's
+	// breakend remote positions must equal the
+	// partner's local (Chrom, POS). Only fires when
+	// both mates carry breakend ALTs; otherwise one
+	// side might be a paired SNV (MATEID linking two
+	// distinct records), which has no breakend
+	// position to round-trip.
+	if len(existing.breakends) > 0 && len(snap.breakends) > 0 {
+		for _, bp := range snap.breakends {
+			if bp.contig != existing.chrom || bp.pos != existing.pos {
+				*issues = append(*issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "ALT",
+					Msg: fmt.Sprintf("breakend mate %q points to %s:%d but partner is at %s:%d (§1.6.5.1)",
+						mid, bp.contig, bp.pos, existing.chrom, existing.pos),
+				})
+			}
+		}
+		for _, bp := range existing.breakends {
+			if bp.contig != snap.chrom || bp.pos != snap.pos {
+				*issues = append(*issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field: "ALT",
+					Msg: fmt.Sprintf("breakend mate %q (already registered) points to %s:%d but partner is at %s:%d (§1.6.5.1)",
+						mid, bp.contig, bp.pos, snap.chrom, snap.pos),
+				})
+			}
+		}
 	}
 }
 

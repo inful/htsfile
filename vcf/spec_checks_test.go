@@ -2695,3 +2695,104 @@ func hasIssueWithField(issues []ValidationError, substr string) bool {
 	}
 	return false
 }
+
+// TestValidator_BreakendMatePositionRoundTrip
+// covers §1.6.5.1: the two records in a breakend pair
+// must round-trip — each mate's breakend remote
+// position must equal the partner's local (Chrom, POS).
+//
+// Cases:
+//   - Two records forming a balanced mate pair (round-trip).
+//   - One mate's POS wrong (round-trip broken).
+//   - One mate's breakend remote position wrong.
+//   - One mate's breakend pointing to a third contig.
+//   - Records without breakends (e.g. SNV with MATEID) skipped.
+//   - Mate pair missing MATEID: each record evaluated alone.
+func TestValidator_BreakendMatePositionRoundTrip(t *testing.T) {
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=MATEID,Number=A,Type=String,Description=\"ID of mate breakend\">\n" +
+		"##contig=<ID=chrA,length=10000>\n" +
+		"##contig=<ID=chrB,length=10000>\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+
+	// Build a balanced pair: A at chrA:100 with breakend
+	// pointing to chrA:200, B at chrA:200 with breakend
+	// pointing to chrA:100.
+	lines := []struct {
+		name      string
+		aLine     string
+		bLine     string
+		wantIssue string // empty = no issue expected
+	}{
+		{
+			name:      "balanced round-trip",
+			aLine:     "chrA\t100\tbndA\tA\tA]chrA:200]\t.\t.\tMATEID=bndB\n",
+			bLine:     "chrA\t200\tbndB\tA\t]chrA:100]A\t.\t.\tMATEID=bndA\n",
+			wantIssue: "",
+		},
+		{
+			name:      "second mate POS wrong",
+			aLine:     "chrA\t100\tbndA\tA\tA]chrA:200]\t.\t.\tMATEID=bndB\n",
+			bLine:     "chrA\t201\tbndB\tA\t]chrA:100]A\t.\t.\tMATEID=bndA\n",
+			wantIssue: "points to chrA:200 but partner is at chrA:201",
+		},
+		{
+			name:      "second mate breakend remote wrong",
+			aLine:     "chrA\t100\tbndA\tA\tA]chrA:200]\t.\t.\tMATEID=bndB\n",
+			bLine:     "chrA\t200\tbndB\tA\t]chrA:999]A\t.\t.\tMATEID=bndA\n",
+			wantIssue: "points to chrA:999 but partner is at chrA:100",
+		},
+		{
+			name:  "second mate breakend wrong contig",
+			aLine: "chrA\t100\tbndA\tA\tA]chrB:200]\t.\t.\tMATEID=bndB\n",
+			bLine: "chrA\t200\tbndB\tA\t]chrB:100]A\t.\t.\tMATEID=bndA\n",
+			// First mate's remote (chrB:200) doesn't match partner's
+			// local (chrA:200): the partner should round-trip
+			// back to chrA:100. Same for chrB.
+			wantIssue: "partner is at",
+		},
+		{
+			name:  "missing MATEID on first mate is skipped",
+			aLine: "chrA\t100\tbndA\tA\tA]chrA:200]\t.\t.\t.\n",
+			bLine: "chrA\t200\tbndB\tA\t]chrA:100]A\t.\t.\tMATEID=bndA\n",
+			// Without MATEID, no round-trip check fires; both
+			// records validated independently.
+			wantIssue: "",
+		},
+		{
+			name:  "non-breakend ALT with MATEID skipped",
+			aLine: "chrA\t100\tbndA\tA\tG\t.\t.\tMATEID=bndB\n",
+			bLine: "chrA\t200\tbndB\tA\tC\t.\t.\tMATEID=bndA\n",
+			// Records without breakend ALTs are paired SNVs;
+			// no position round-trip applies.
+			wantIssue: "",
+		},
+	}
+	for _, c := range lines {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.aLine + c.bLine))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			var recs []*Record
+			for {
+				rec, err := dec.Record()
+				if err != nil {
+					break
+				}
+				recs = append(recs, rec)
+			}
+			v := NewValidator(ModeStrict)
+			issues := v.Validate(h, recs)
+			got := hasIssueWithField(issues, c.wantIssue)
+			if c.wantIssue == "" {
+				if got {
+					t.Errorf("unexpected issue found; got %+v", issues)
+				}
+			} else if !got {
+				t.Errorf("expected issue containing %q; got %+v", c.wantIssue, issues)
+			}
+		})
+	}
+}

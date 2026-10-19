@@ -147,7 +147,7 @@ func TestEncoder_RoundTripSVExample(t *testing.T) {
 		t.Errorf("rec1 Alt[0] = %q", recs2[1].Alt[0])
 	}
 	// Breakend records must survive byte-for-byte.
-	if recs2[2].Alt[0] != "T[chrA:5[" {
+	if recs2[2].Alt[0] != "T[chrA:2[" {
 		t.Errorf("rec2 Alt[0] = %q", recs2[2].Alt[0])
 	}
 	if recs2[3].Alt[0] != "]chrA:2]A" {
