@@ -645,6 +645,9 @@ func (v *Validator) checkInfo(h *Header, rec *Record, idx int) []ValidationError
 	altCount := len(rec.Alt)
 	line := rec.Line
 
+	// CIGAR consistency with REF and ALT (§1.6.1.1).
+	issues = append(issues, checkCIGAR(rec, idx, line)...)
+
 	// IMPRECISE + precise ALT requires CIPOS (§1.6.1.7):
 	// "If a precise ALT allele is present in a record
 	// with the IMPRECISE flag, CIPOS must be explicitly
@@ -2432,6 +2435,97 @@ func svlenPresent(rec *Record, i int) bool {
 	}
 	v := iv.Ints[i]
 	return !isMissing(v)
+}
+
+// checkCIGAR enforces VCFv4.5 §1.6.1.1: the sum of REF-
+// consuming op lengths in a CIGAR string must equal
+// len(REF), and the sum of ALT-consuming op lengths
+// must equal len(ALT) for the corresponding ALT.
+// Extracted from checkInfo to keep the per-record
+// check under the cognitive-complexity lint cap.
+func checkCIGAR(rec *Record, idx, line int) []ValidationError {
+	cigar, ok := rec.Info["CIGAR"]
+	if !ok || cigar.Missing || cigar.Type != TypeString {
+		return nil
+	}
+	var issues []ValidationError
+	for i, c := range cigar.Strs {
+		refLen, altLen, perr := parseCIGAR(c)
+		if perr != nil {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field:    "INFO/CIGAR",
+				Msg:      fmt.Sprintf("CIGAR[%d]=%q is malformed: %v", i, c, perr),
+			})
+			continue
+		}
+		if refLen != len(rec.Ref) {
+			issues = append(issues, ValidationError{
+				Severity: SeverityError, Record: idx + 1, Line: line,
+				Field:    "INFO/CIGAR",
+				Msg:      fmt.Sprintf("CIGAR[%d] consumes %d reference bases but REF has length %d", i, refLen, len(rec.Ref)),
+			})
+		}
+		if i < len(rec.Alt) {
+			want := len(rec.Alt[i])
+			if altLen != want {
+				issues = append(issues, ValidationError{
+					Severity: SeverityError, Record: idx + 1, Line: line,
+					Field:    "INFO/CIGAR",
+					Msg:      fmt.Sprintf("CIGAR[%d] consumes %d query bases but ALT[%d] has length %d", i, altLen, i, want),
+				})
+			}
+		}
+	}
+	return issues
+}
+
+// parseCIGAR parses a SAM/BAM-style CIGAR string and
+// returns the number of reference bases and query
+// (ALT) bases it consumes, plus an error if the string
+// is malformed. SAM CIGAR ops:
+//
+//	M, =, X: consume 1 ref + 1 query
+//	I, S, H: consume 0 ref + N query
+//	D, N    : consume N ref + 0 query
+//	P       : consume 0 ref + 0 query (padding)
+func parseCIGAR(cigar string) (refBases, altBases int, err error) {
+	i := 0
+	for i < len(cigar) {
+		// Read the run length (decimal digits).
+		n := 0
+		hadDigit := false
+		for i < len(cigar) && cigar[i] >= '0' && cigar[i] <= '9' {
+			hadDigit = true
+			n = n*10 + int(cigar[i]-'0')
+			if n > 1<<24 {
+				return 0, 0, fmt.Errorf("run length overflow")
+			}
+			i++
+		}
+		if !hadDigit {
+			return 0, 0, fmt.Errorf("expected digit at offset %d", i)
+		}
+		if i >= len(cigar) {
+			return 0, 0, fmt.Errorf("missing op at end of CIGAR")
+		}
+		op := cigar[i]
+		i++
+		switch op {
+		case 'M', '=', 'X':
+			refBases += n
+			altBases += n
+		case 'I', 'S', 'H':
+			altBases += n
+		case 'D', 'N':
+			refBases += n
+		case 'P':
+			// Padding consumes nothing.
+		default:
+			return 0, 0, fmt.Errorf("unknown CIGAR op %q at offset %d", op, i-1)
+		}
+	}
+	return refBases, altBases, nil
 }
 
 // checkRefMatchesReference compares every byte of REF

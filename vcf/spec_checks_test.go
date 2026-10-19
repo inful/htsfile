@@ -1070,6 +1070,59 @@ func TestValidator_SVLENBoundsWithReference(t *testing.T) {
 	}
 }
 
+func TestValidator_CIGARConsistency(t *testing.T) {
+	// Per VCFv4.5 §1.6.1.1: CIGAR describes the
+	// alignment between REF and ALT; the sum of REF-
+	// consuming op lengths must equal len(REF) and the
+	// sum of ALT-consuming op lengths must equal len(ALT).
+	hdr := "##fileformat=VCFv4.2\n" +
+		"##INFO=<ID=CIGAR,Number=A,Type=String,Description=\"c\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\n"
+	cases := []struct {
+		name, line string
+		want       bool
+	}{
+		// SNV: REF=A, ALT=T, CIGAR=1M. refLen=1, altLen=1.
+		{"SNV ok", "chr1\t3\t.\tA\tT\t.\t.\tCIGAR=1M", false},
+		// SNV with wrong REF length.
+		{"SNV wrong REF length", "chr1\t3\t.\tA\tT\t.\t.\tCIGAR=2M", true},
+		// Deletion: REF=ACGT, ALT=A. CIGAR=1M3D.
+		{"Deletion ok", "chr1\t4\t.\tACGT\tA\t.\t.\tCIGAR=1M3D", false},
+		// Insertion: REF=A, ALT=ACGT. CIGAR=1M3I.
+		{"Insertion ok", "chr1\t3\t.\tA\tACGT\t.\t.\tCIGAR=1M3I", false},
+		// Insertion wrong ALT length.
+		{"Insertion wrong ALT", "chr1\t3\t.\tA\tACGT\t.\t.\tCIGAR=1M2I", true},
+		// Malformed CIGAR (missing op).
+		{"Malformed CIGAR", "chr1\t3\t.\tA\tT\t.\t.\tCIGAR=1", true},
+		// Malformed CIGAR (unknown op).
+		{"Unknown CIGAR op", "chr1\t3\t.\tA\tT\t.\t.\tCIGAR=1Z", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			dec := NewDecoder(strings.NewReader(hdr + c.line + "\n"))
+			h, err := dec.Header()
+			if err != nil {
+				t.Fatalf("Header: %v", err)
+			}
+			rec, err := dec.Record()
+			if err != nil {
+				t.Fatalf("Record: %v", err)
+			}
+			issues := NewValidator(ModeStrict).Validate(h, []*Record{rec})
+			found := false
+			for _, iss := range issues {
+				if strings.Contains(iss.Msg, "CIGAR") {
+					found = true
+					break
+				}
+			}
+			if found != c.want {
+				t.Errorf("%s: found=%v, want %v; issues=%+v", c.name, found, c.want, issues)
+			}
+		})
+	}
+}
+
 func TestValidator_CIRUCMissingMatchesRUC(t *testing.T) {
 	// Per VCFv4.5 §1.6.1.7: "CIRUC/CIRB must not be
 	// non-missing for any alleles with no corresponding

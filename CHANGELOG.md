@@ -11,6 +11,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.0] — 2026-10-19
+
+This release adds tabix- and CSI-indexed random access
+to BGZF-compressed VCF, plus CIGAR consistency
+validation. It is the single largest user-facing
+feature since v0.10.0.
+
+### Added — internal/bgzf
+
+- **`SeekReader`** (`a3f1c08`). Random-access read of a
+  BGZF-compressed stream backed by `*os.File` via
+  virtual offsets (block << 16 | byte-within-block).
+  Each `Seek` closes the previous decompressor and
+  creates a new one positioned at the right block
+  boundary; the caller can then `Read` from there.
+  Used by the indexed VCF readers.
+
+### Added — vcf
+
+- **`vcf.OpenTabix(path)`** (`a3f1c08`). Opens a
+  tabix-indexed BGZF-compressed VCF and returns a
+  `*TabixReader`. The sibling `.tbi` must exist.
+  - `Header()` returns the parsed header (cached).
+  - `Query(chrom, start, end)` returns records
+    overlapping the half-open 1-based region
+    `[start, end)` in O(n) per overlap, not per
+    file. Unknown contigs return `nil, nil`.
+- **`vcf.OpenCSI(path)`** (`a3f1c08`). CSI sibling of
+  `OpenTabix` for `.csi` indexes. Same `Header` and
+  `Query` surface.
+- **CIGAR consistency check** (`a3f1c08`). When
+  `INFO/CIGAR` is present, the validator verifies
+  the sum of REF-consuming op lengths equals
+  `len(REF)` and the sum of ALT-consuming op
+  lengths equals `len(ALT)`. Malformed CIGAR
+  strings (missing op, unknown op) are rejected.
+  7 new sub-tests cover SNV, indel, insertion,
+  malformed and unknown-op cases.
+
+9 new tests for `TabixReader` and `CSIReader` cover
+open, header, region query, unknown contig, invalid
+region, missing index, and BGZF-stream sanity.
+
 ## [0.14.0] — 2026-10-18
 
 This release makes the `fasta` package substantially

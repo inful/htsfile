@@ -810,6 +810,49 @@ reduction is inconsistent with the reference.
 
 **Status:** ✅ (v0.14.0)
 
+### T4.8 — Tabix/CSI indexed VCF reads + CIGAR validation (v0.15.0)
+
+**Spec (§1.6.1.1, "CIGAR" in INFO):**
+
+> a cigar string used in the original alignment
+
+The CIGAR string describes how to align each ALT to
+the reference. The sum of REF-consuming op lengths
+(M, =, X, D, N) must equal `len(REF)`, and the sum of
+ALT-consuming op lengths (M, =, X, I, S, H) must
+equal `len(ALT)`. Padding (P) consumes nothing.
+
+**Scope:** per-record, always fires (no reference
+required). CIGAR is checked independently of
+reference attachment.
+
+**Where:**
+- `vcf/validate.go`: `checkCIGAR` extracted from
+  `checkInfo` (cognitive-complexity). `parseCIGAR`
+  helper.
+- `internal/bgzf/seek.go`: `SeekReader` for random
+  access via virtual offsets.
+- `vcf/tabix.go` + `vcf/csi.go`: `OpenTabix`,
+  `OpenCSI`, `Query`.
+- `vcf/tabix_test.go` + `vcf/csi_test.go`: 9 tests.
+
+**Acceptance:**
+- `REF=ACGT ALT=A CIGAR=1M3D`: 4 reference bases
+  consumed, 1 query; passes.
+- `REF=A ALT=ACGT CIGAR=1M3I`: 1 reference, 4 query;
+  passes.
+- `REF=A ALT=T CIGAR=2M`: 2 reference but REF has
+  length 1; error.
+- `CIGAR=1` (missing op): malformed; error.
+- `CIGAR=1Z` (unknown op): malformed; error.
+
+**Notes:** for v0.15.0 there is no CLI wrapper; the
+package-level API is the only surface. Indexed VCF
+reads use the new BGZF `SeekReader`; plain
+(non-indexed) reads are unchanged.
+
+**Status:** ✅ (v0.15.0)
+
 ---
 
 ## Quick index — by spec section
