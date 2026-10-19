@@ -11,6 +11,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.7] — 2026-10-19
+
+Patch release closing two record-level spec gaps
+surfaced by a fresh VCF v4.5 / BCF 2.2 audit, plus the
+audit itself in `SPEC_COMPLIANCE.md`.
+
+### Added — vcf
+
+- **`Validator.CIRUC/CIRB bounds-span-zero`** (T4.12).
+  The new check rejects records where a CIRUC or CIRB
+  lower bound is positive or upper bound is negative,
+  per `§1.6.1.7`.
+- **`SPEC_COMPLIANCE.md` "Spec audit" section**:
+  full section-by-section status against VCF v4.5 / BCF
+  2.2, with ✅ / ❓ markers and line numbers in the
+  .tex source, and a prioritised list of remaining
+  gaps.
+
+### Changed — vcf
+
+- **`parseRecord`** now rejects duplicate IDs within a
+  single record's ID column and duplicate keys within a
+  single record's FORMAT column (T4.11, §1.6.1 line
+  401 and §1.6.2 line 469).
+
+### Tests
+
+- `TestDecoder_Errors` gained two entries: "duplicate
+  ID within record" and "duplicate FORMAT key within
+  record".
+- New `TestValidator_CIRUCBIRBBoundsSpanZero` with 5
+  sub-tests (valid CIRUC, lower/upper-bound violations
+  for each of CIRUC and CIRB).
+
+`go test -race -count=1 ./...` is green; `golangci-lint run ./...` reports 0 issues; `make fmt-check` is clean.
+
 ## [0.15.6] — 2026-10-19
 
 Patch release adding breakend mate position round-trip
