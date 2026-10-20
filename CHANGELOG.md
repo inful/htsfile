@@ -11,6 +11,54 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.18.0] — 2026-10-20
+
+Refactor release closing the architecture review's
+item #1: split `vcf/validate.go` from a single
+3,172-line god module into four domain-keyed files.
+
+### Changed — vcf
+
+- **`validate.go` (752 LoC).** Orchestrator only: the
+  `Validator` struct, `Mode`/`Severity`/`ValidationError`
+  types, supporting types (`mateSnapshot`, `breakendPos`,
+  `phaseKey`, `recordBreakends`), and the lifecycle
+  surface — `NewValidator`, `WithReference`, `Validate`,
+  `Reset`, `HeaderChecks`, `Next`, `Finish`,
+  `checkHeader`, `checkRecord`. The largest function is
+  now `checkRecord` at 196 lines (down from being
+  embedded in a 3,172-line file).
+- **`validate_record.go` (571 LoC).** Record-level rules:
+  `checkEventType`, `checkPhaseStyle`, `checkPloidy`,
+  `checkEND`, `checkENDBounds`, `checkGVCFBlock`,
+  `checkGVCFBlockRef`, `checkSVLENBounds`, `checkSVClaim`,
+  `checkFilter`, `checkBreakendPositions`,
+  `checkRefMatchesReference`. Largest function:
+  `checkGVCFBlockRef` at 70 lines.
+- **`validate_info.go` (530 LoC).** INFO-level rules:
+  `checkInfo`, `checkRNDeterminedFields`, `checkCIRUCMissing`,
+  `computeRNSum`, `valueLen`, `intToSVClaim`,
+  `svClaimAllowed`, `svClaimInSet`,
+  `checkCNVAllelesShareSVLEN`, `isCNVAllele`,
+  `isCNVTRAllelesPresent`. Largest function:
+  `checkInfo` at 247 lines (was the dominant single
+  load-bearing function in the old god file).
+- **`validate_samples.go` (1,347 LoC).** Per-sample/FORMAT
+  block: `checkSamples` and the helper layer that drives
+  GT/ploidy/LAA/PSL/PSO/MATEID/END_OF_VECTOR checks.
+  Largest function: `checkSamples` at 242 lines.
+
+The split is mechanical — no behaviour change. The
+package remains a single Go package; the four files
+just group rules by domain so future audits have a
+smaller surface to land into (every SPEC_COMPLIANCE.md
+task numbered T-number touches at most one of the four
+files instead of always growing the god module).
+
+`go test -race -count=1 ./...` is green;
+`golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean.
+
 ## [0.17.0] — 2026-10-20
 
 Architecture cleanup release closing the architecture

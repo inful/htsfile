@@ -1,52 +1,66 @@
-refactor(cmd/htsfile): split CLI by subcommand + per-subcommand tests (v0.17.0)
+refactor(vcf): split validate.go into four domain-keyed files (v0.18.0)
 
-Closes the architecture review's item #2: bring the CLI
-from a 0.21× test ratio to its own per-subcommand files
-with their own _test.go.
+Closes the architecture review's item #1. The old
+vcf/validate.go was a 3,172-line god module — 100
+exported symbols, 49 of 162 commits (~30% of the repo's
+history) touched it, and every SPEC_COMPLIANCE.md
+task numbered T-number added more code to the same
+file. The split is mechanical (no behaviour change)
+and groups rules by domain:
 
-Before:
-  main.go                       2046 lines,  64 funcs
-  cmd/htsfile test ratio         0.21×
+  validate.go           752 LoC  orchestrator (Validator
+                                  struct + lifecycle:
+                                  New, WithReference,
+                                  Validate, Reset,
+                                  HeaderChecks, Next,
+                                  Finish; checkHeader,
+                                  checkRecord)
+  validate_record.go    571 LoC  record-level rules
+                                  (checkEventType,
+                                  checkPhaseStyle,
+                                  checkPloidy, checkEND,
+                                  checkENDBounds,
+                                  checkGVCFBlock,
+                                  checkGVCFBlockRef,
+                                  checkSVLENBounds,
+                                  checkSVClaim,
+                                  checkFilter,
+                                  checkBreakendPositions,
+                                  checkRefMatchesReference)
+  validate_info.go      530 LoC  INFO-level rules
+                                  (checkInfo plus its
+                                  helpers, including
+                                  the rn-determined-keys
+                                  machinery and the
+                                  SV-CLAIM helpers)
+  validate_samples.go  1,347 LoC  per-sample/FORMAT block
+                                  (checkSamples plus
+                                  the GT/ploidy/LAA/PSL/
+                                  PSO/MATEID layer)
 
-After:
-  main.go                        796 lines,  36 funcs
-  cmd/htsfile test ratio         0.35×
-  (climbing toward the >= 0.6× target of the review)
+Largest functions are now in their right-sized files:
+  checkInfo        247 LoC (validate_info.go)
+  checkSamples     242 LoC (validate_samples.go)
+  checkRecord      196 LoC (validate.go)
+  Next             181 LoC (validate.go)
+  checkRNDet.      118 LoC (validate_info.go)
 
-The per-format runCheck* / runRoundtrip* / runSummary*
-families move into dedicated files:
-  - check.go      (366 lines)  — runCheck + 11 helpers
-  - roundtrip.go   (353)       — runRoundtrip + 11 helpers
-  - summary.go     (439)       — runSummary + 11 helpers
-                                  + bedTypeFromColumns
-  - report.go      (260)       — reportSeverity / reportIssue
-                                  + runIssueReport + 8 adapters
+Each new file gets a minimal `package vcf` +
+imports header that matches what its contents actually
+reference (fmt, strings, regexp, strconv, math as
+needed). The orchestrator's `Validator` struct,
+helper types, and lifecycle methods are the only
+file-level state; everything else is reachable
+through regular package-internal function calls.
 
-main.go stays the orchestrator: main, usage,
-format-detection, sniffing, dispatch, and the
-translate / vcfquery / vcfindex paths. The 43 functions
-moved out preserve their signatures byte-for-byte; the
-wire output is unchanged.
+The split also opens room for consolidating duplicated
+helpers (Next/Validate share ~180 lines of header
+loading, record loop, validation entry, and footer).
 
-New file cmd/htsfile/cli_test.go (458 lines) with three
-test families:
-  - runCheck* / runRoundtrip* / runSummary* per format
-    (clean records);
-  - runCheckVCF strict-mode rejection;
-  - dispatch tests that exercise runCheck / runRoundtrip
-    / runSummary through tempfile format detection;
-  - a coverage-shim test that forces the build to fail if
-    any of the eight reportFrom* adapters is removed.
-
-The split also opened room for consolidation: each
-per-format helper now lives next to its own future tests
-(rather than buried inside a 2 kLoC god file).
+go test -race -count=1 ./... is green; golangci-lint run
+./... reports 0 issues; make fmt-check is clean.
 
 Remaining from the review:
-  - split vcf/validate.go (item #1)
   - document Validator streaming-state footgun (item #3)
   - consolidate translate.go symmetric pairs (item #4)
   - add CLI pipeline integration test (item #5)
-
-go test -race -count=1 ./... is green; golangci-lint
-run ./... reports 0 issues; make fmt-check is clean.
