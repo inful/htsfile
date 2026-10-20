@@ -1,64 +1,42 @@
-feat(bcf): per-field FORMAT encoding + END_OF_VECTOR (T4.23, v0.16.0)
+chore(bcf): per-type MISSING sentinels for Integer/Float FORMAT (T4.24, v0.16.1)
 
-Closes the meaningful remaining §5 BCF2 gap. The
-spec's wire shape (line 2208–2255) is per-FIELD, not
-per-sample:
+Closes the last §5 BCF2 gap. Per §BcfTypeEncoding
+line 2304 / 2333:
 
-  for each FORMAT key i in record.Format:
-    uint16 key index
-    type byte  (vector size in high nibble, type in low)
-    N typed values, padded with END_OF_VECTOR for
-    shorter entries in mixed-ploidy / mixed-length
-    vectors
+  - Integer MISSING = 0x80000000 (the first of the
+    eight reserved values just above math.MinInt32).
+  - Float MISSING = 0x7F800001 (signaling NaN,
+    distinguished from END_OF_VECTOR 0x7F800002).
 
-This release restructures the FORMAT block to that
-shape. The encoder emits exactly one type byte per
-key followed by N typed values; shorter entries get
-padded with END_OF_VECTOR sentinels:
+The previous writer (v0.16.0) encoded missing Float /
+Integer slots via the size-0 `typeMissing` byte
+(spec-compliant but not the per-type form). Some
+external tools emit the per-type sentinel; this
+release adds symmetric handling on the read path and
+moves the write path to the per-type form so files
+round-trip cleanly with htslib / pysam.
 
-  0x81       — int8 / GT entries (line 2304)
-  0x80000001 — int32 entries
-  0x7F800002 — float32 entries
+Changes:
 
-GT encoding moves to the spec's int-vector form
-(line 2463):
+- bcf/end_of_vector.go: new constants
+  bcfFloatMissing (0x7F800001) and bcfIntMissingInt32
+  (0x80000000) keep the spec's reserved sentinels
+  alongside the existing END_OF_VECTOR constants.
 
-  allele → (allele+1) << 1
-  phased → low bit
+- bcf/format.go:
+  * writer: per-type MISSING for Integer / Float
+    missing slots;
+  * reader: detects either size-0 typeMissing
+    (whole-field) or per-type MISSING
+    (per-sample slot) and surfaces Missing=true on
+    the corresponding sample.
 
-The phasing rule attaches the phased bit to the
-trailing allele of each pair: it produces all of the
-spec's worked examples at line 2474 ("0/1" = 0x02
-0x04, "0|1" = 0x03 0x05, "./." = 0x00 0x00, "0" =
-0x03 haploid, "0/1/2" = 0x02 0x04 0x06, "0/1|2" =
-0x02 0x04 0x07).
+- bcf/format_test.go: TestFormatFloatMissingSignalingNaN
+  and TestFormatIntMissingSentinel cover mixed
+  missing/present slots.
 
-New files:
-
-- bcf/gt.go                — encodeGT / decodeGT.
-- bcf/end_of_vector.go     — sentinel constants.
-- bcf/gt_test.go           — spec's wire forms.
-
-Plus tests in format_test.go:
-
-- TestFormatPerFieldMixedPloidy  — S1="0" + S2="0/1".
-- TestFormatPerFieldAllMissing  — field collapses to
-  typeMissing.
-
-The formatTest.TestFormatRoundTrip / VariableCardinality /
-Missing tests (per-field readers of self-written files) all
-still pass after the restructure.
-
-Migration note: v0.15.x test fixtures self-roundtripped
-through the per-sample block; v0.16.0 fixes that — the
-encoder now matches the spec, and external BCF files
-written by htslib (which always used per-field) now
-decode correctly instead of being misaligned.
-
-§5 BCF2 of SPEC_COMPLIANCE.md is now substantially
-closed. The only remaining gap is a small float
-MISSING encoding refinement (signaling NaN per
-type-byte), which is a one-line writer change.
+§5 BCF2 of vcf/SPEC_COMPLIANCE.md is now
+spec-compliant.
 
 All 18 packages pass go test -race -count=1;
 golangci-lint run ./... reports 0 issues;

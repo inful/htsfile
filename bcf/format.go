@@ -138,8 +138,15 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 		// Per-sample int32 values, with END_OF_VECTOR
 		// marker dropped. For GT-as-int the size is
 		// the field's max ploidy across samples.
+		//
+		// The spec's per-type MISSING sentinel for int32
+		// is `0x80000000` (line 2304) — the first of the
+		// eight reserved values just above MinInt32
+		// (T4.22). When all values for a sample slot read
+		// the sentinel, the slot is treated as Missing.
 		for s := 0; s < nSamples; s++ {
 			ints := make([]int32, 0, size)
+			missing := true
 			for i := 0; i < size; i++ {
 				var b [4]byte
 				if _, err := io.ReadFull(d.br, b[:]); err != nil {
@@ -149,13 +156,27 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 				if u == bcfEndOfVectorInt32 && size > 0 {
 					continue
 				}
+				if u == bcfIntMissingInt32 {
+					continue
+				}
+				missing = false
 				ints = append(ints, int32(u)) //nolint:gosec // wire-format reinterpret
 			}
-			out[s] = SampleValue{Type: "Integer", Ints: ints}
+			if missing && size > 0 {
+				out[s] = SampleValue{Type: "Integer", Missing: true}
+			} else {
+				out[s] = SampleValue{Type: "Integer", Ints: ints}
+			}
 		}
 	case "Float":
+		// Per-type MISSING is signaling NaN `0x7F800001`
+		// (T4.24, line 2333). END_OF_VECTOR is the
+		// related `0x7F800002` (line 2325). When all size
+		// values for a sample read the MISSING sentinel,
+		// the slot is treated as Missing.
 		for s := 0; s < nSamples; s++ {
 			floats := make([]float32, 0, size)
+			missing := true
 			for i := 0; i < size; i++ {
 				var b [4]byte
 				if _, err := io.ReadFull(d.br, b[:]); err != nil {
@@ -165,9 +186,17 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 				if bits == bcfEndOfVectorFloat32 && size > 0 {
 					continue
 				}
+				if bits == bcfFloatMissing && size > 0 {
+					continue
+				}
+				missing = false
 				floats = append(floats, math.Float32frombits(bits))
 			}
-			out[s] = SampleValue{Type: "Float", Floats: floats}
+			if missing && size > 0 {
+				out[s] = SampleValue{Type: "Float", Missing: true}
+			} else {
+				out[s] = SampleValue{Type: "Float", Floats: floats}
+			}
 		}
 	case "Character":
 		// Character is a single byte per sample, with
@@ -374,16 +403,23 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, ver
 	if !present || v.Missing {
 		switch def.Type {
 		case "Integer":
+			// Per-type MISSING: emit the int32 sentinel
+			// 0x80000000 (T4.24 / line 2304). Matches the
+			// size declared by the field type byte so
+			// the reader's value loop stays aligned.
 			for i := 0; i < fieldSize; i++ {
-				w.WriteByte(typeMissing)
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], bcfIntMissingInt32)
+				w.Write(b[:])
 			}
-			// typeMissing is a valid wire form; the
-			// reader interprets it as Missing=true on the
-			// matching sample.
 			return nil
 		case "Float":
+			// Per-type MISSING: emit the float32 signaling
+			// NaN 0x7F800001 (T4.24 / line 2333).
 			for i := 0; i < fieldSize; i++ {
-				w.WriteByte(typeMissing)
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], bcfFloatMissing)
+				w.Write(b[:])
 			}
 			return nil
 		case "Character":

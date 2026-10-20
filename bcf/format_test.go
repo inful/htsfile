@@ -283,3 +283,110 @@ func TestFormatPerFieldAllMissing(t *testing.T) {
 		}
 	}
 }
+
+// TestFormatFloatMissingSignalingNaN verifies T4.24 /
+// §BcfTypeEncoding line 2333: per-type MISSING for a
+// Float FORMAT slot is the signaling NaN 0x7F800001.
+// When only some samples are missing, the writer emits
+// signaling NaN for those slots and the reader detects
+// it. END_OF_VECTOR (0x7F800002) is the related sentinel
+// for shorter entries in mixed-length vectors (line 2325).
+func TestFormatFloatMissingSignalingNaN(t *testing.T) {
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##FORMAT=<ID=GL,Number=G,Type=Float,Description=\"g\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+	rec := &Record{
+		CHROM: "chr1", Pos: 100, Ref: "A", Alt: []string{"C"},
+		Info:   map[string]InfoValue{},
+		Format: []uint16{0},
+		Samples: []Sample{
+			// S1: missing GL.
+			{Fields: map[uint16]SampleValue{0: {Missing: true}}},
+			// S2: GL with 2 floats.
+			{Fields: map[uint16]SampleValue{
+				0: {Type: "Float", Floats: []float32{0.1, 0.2}},
+			}},
+		},
+	}
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	if err := enc.WriteHeader(ParseHeader(hdrText)); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if err := enc.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	dec := NewDecoder(&buf)
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	got, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if len(got.Samples) != 2 {
+		t.Fatalf("Samples: got %d, want 2", len(got.Samples))
+	}
+	if !got.Samples[0].Fields[0].Missing {
+		t.Errorf("S1 not Missing: %+v", got.Samples[0].Fields[0])
+	}
+	floats := got.Samples[1].Fields[0].Floats
+	if len(floats) != 2 || floats[0] != 0.1 || floats[1] != 0.2 {
+		t.Errorf("S2 GL: got %v, want [0.1 0.2]", floats)
+	}
+}
+
+// TestFormatIntMissingSentinel verifies T4.24 / line 2304:
+// per-type MISSING for an Integer FORMAT slot is the
+// int32 sentinel 0x80000000 (the first of the eight
+// reserved values just above math.MinInt32). T4.22
+// already forbids emitting forbidden values; this
+// constant is the spec's per-type MISSING form.
+func TestFormatIntMissingSentinel(t *testing.T) {
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"d\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+	rec := &Record{
+		CHROM: "chr1", Pos: 100, Ref: "A",
+		Info:   map[string]InfoValue{},
+		Format: []uint16{0},
+		Samples: []Sample{
+			{Fields: map[uint16]SampleValue{0: {Missing: true}}},
+			{Fields: map[uint16]SampleValue{0: {Type: "Integer", Ints: []int32{42}}}},
+		},
+	}
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	if err := enc.WriteHeader(ParseHeader(hdrText)); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if err := enc.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	dec := NewDecoder(&buf)
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	got, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if len(got.Samples) != 2 {
+		t.Fatalf("Samples: got %d, want 2", len(got.Samples))
+	}
+	if !got.Samples[0].Fields[0].Missing {
+		t.Errorf("S1 not Missing: %+v", got.Samples[0].Fields[0])
+	}
+	ints := got.Samples[1].Fields[0].Ints
+	if len(ints) != 1 || ints[0] != 42 {
+		t.Errorf("S2 DP: got %v, want [42]", ints)
+	}
+}

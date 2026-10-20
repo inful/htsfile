@@ -11,6 +11,37 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.16.1] — 2026-10-20
+
+Patch release closing the last §5 BCF2 gap: per-type
+MISSING sentinels for Integer and Float FORMAT slots
+(§BcfTypeEncoding line 2304, 2333).
+
+### Added — bcf
+
+- **T4.24 — Per-type MISSING sentinels.** The BCF2
+  encoding defines MISSING as the reserved value
+  `0x7F800001` (signaling NaN) for float32 and
+  `0x80000000` for int32. The writer now emits these
+  sentinels for missing slots inside a per-field
+  FORMAT block, and the reader detects them and
+  surfaces Missing=true on the per-sample slot.
+  Whole-field missingness still collapses to a single
+  size-0 typeMissing byte (the v0.16.0 form).
+
+### Tests
+
+- `TestFormatFloatMissingSignalingNaN` — mixed
+  missing + present Float slots round-trip.
+- `TestFormatIntMissingSentinel` — same for Integer.
+
+§5 BCF2 of `vcf/SPEC_COMPLIANCE.md` is now
+spec-compliant.
+
+`go test -race -count=1 ./...` is green;
+`golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean.
+
 ## [0.16.0] — 2026-10-20
 
 Minor release closing the meaningful §5 BCF2 gap:

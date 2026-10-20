@@ -1132,12 +1132,13 @@ Remaining spec-conformance gaps:
    Closed by T4.21, v0.15.11. The writer now emits
    `(1<<4) | type` for atomic Integer/Float; the
    reader masks the high nibble to accept both forms.
-2. ❓ **Float MISSING encoding** (line 2333). The spec
-   defines float MISSING as signaling NaN `0x7F800001`
-   and END_OF_VECTOR as `0x7F800002`. The current writer
-   encodes "missing" via the `typeMissing` byte (size 0),
-   which is the simpler form accepted by the spec but
-   not its only representation.
+2. ✅ **Float MISSING encoding** (line 2333). Closed
+   by T4.24, v0.16.1. Per-type MISSING for a Float
+   slot is the signaling NaN `0x7F800001`; for an
+   Integer slot it is `0x80000000`. The writer
+   emits these sentinels when a sample's value is
+   Missing; the reader detects them and surfaces
+   Missing=true on the per-sample slot.
 3. ✅ **END_OF_VECTOR** (line 2304–2305, 2325–2326).
    Closed by T4.23, v0.16.0. The encoder pads shorter
    entries with `0x81` (int8) or `0x80000001` (int32)
@@ -1148,8 +1149,7 @@ Remaining spec-conformance gaps:
 5. ✅ **Integer reserved range on writer side** (line
    2306). Closed by T4.22, v0.15.11.
 
-Item 2 is small enough to close in a focused commit
-(the per-type MISSING form is one writer-side change).
+§5 BCF2 is now spec-compliant.
 
 ### Spec rules exercised by tests but currently
 **outside SPEC_COMPLIANCE.md's task taxonomy**
@@ -1204,7 +1204,49 @@ Remaining:
 
 §5 BCF2 is now substantially spec-compliant.
 
-### T4.23 — Per-field FORMAT encoding + END_OF_VECTOR (§5 line 2208–2255, 2304, 2325)
+### T4.24 — Per-type MISSING sentinels (§BcfTypeEncoding, line 2304, 2333)
+
+**Spec (§BcfTypeEncoding, line 2304):**
+
+> For integer types, `0x80000000` is interpreted as a
+> MISSING value (line 2304).
+
+**Spec (line 2333):**
+
+> MISSING & 0x7F800001
+
+The previous writer (v0.16.0) encoded "missing" floats
+or integers via a size-0 byte (`typeMissing`) — spec-
+compliant but not the per-type MISSING form. Some
+external tools emit the per-type MISSING sentinel and
+expect readers to recognise it.
+
+**Where:**
+- `bcf/end_of_vector.go`: new constants
+  `bcfFloatMissing = 0x7F800001` and
+  `bcfIntMissingInt32 = 0x80000000` keep the spec's
+  reserved sentinels next to the existing
+  END_OF_VECTOR constants.
+- `bcf/format.go`:
+  - the writer emits per-type MISSING sentinels for
+    Integer/Float slots, keeping the field's value
+    count uniform across samples;
+  - the reader detects either size-0 typeMissing
+    (whole-field collapse) or per-type MISSING
+    (one sample slot only) and surfaces Missing=true
+    on the corresponding sample.
+- Tests: `TestFormatFloatMissingSignalingNaN`,
+  `TestFormatIntMissingSentinel`.
+
+**Acceptance:**
+- Mixed missing/present Float field (one sample is
+  Missing, one has floats): the missing sample's slot
+  reads back as Missing=true with no Floats; the
+  present sample's slot reads back as Floats=[0.1,
+  0.2].
+- Mixed missing/present Integer field: same.
+
+**Status:** ✅ (v0.16.1) (§5 line 2208–2255, 2304, 2325)
 
 **Spec (§5, line 2208–2255):**
 
