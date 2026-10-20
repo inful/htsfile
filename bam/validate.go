@@ -126,8 +126,42 @@ func (v *Validator) checkOne(hdr *Header, r *Record) []Issue {
 				Msg:      fmt.Sprintf("next_refID %d out of bounds (n_ref=%d)", r.NextRefID, len(hdr.SQs)),
 			})
 		}
+		// CIGAR/SEQ length consistency: for a mapped read the
+		// reference length implied by the CIGAR (sum of
+		// M/D/N/=/X op lengths) must equal |SEQ|. *, the missing-
+		// value placeholder, and '*' SEQ are skipped.
+		if r.Flag&FlagUnmap == 0 && r.Seq != "" && r.Seq != "*" {
+			expected := cigarRefLen(r.Cigar)
+			if expected != int64(len(r.Seq)) {
+				issues = append(issues, Issue{
+					Line:     r.Line,
+					Field:    "CIGAR/SEQ",
+					Severity: SeverityError,
+					Msg:      fmt.Sprintf("CIGAR reference length %d != SEQ length %d", expected, len(r.Seq)),
+				})
+			}
+		}
 	}
 	return issues
+}
+
+// cigarRefLen returns the reference span covered by c
+// (sum of M/D/N/=/X op lengths). The SAM spec says a
+// well-formed CIGAR's reference length matches |SEQ| for
+// mapped reads; insertion (I), soft-clip (S), hard-clip
+// (H), and padding (P) ops do not consume the reference
+// and are not counted.
+func cigarRefLen(c []uint32) int64 {
+	var n int64
+	for _, p := range c {
+		op := byte(p & 0xF)
+		opLen := int64(p >> 4)
+		switch op {
+		case byte(CigarM), byte(CigarD), byte(CigarN), byte(CigarEq), byte(CigarX):
+			n += opLen
+		}
+	}
+	return n
 }
 
 // Flag bit values from the SAM/BAM spec § 1.4. Identical to the

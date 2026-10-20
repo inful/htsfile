@@ -164,6 +164,12 @@ type Track struct {
 	// Description is the value of the description= attribute.
 	Description string
 
+	// Type is the value of the type= attribute. The UCSC
+	// track spec defines this as one of bedGraph, bed12,
+	// bed12WithBlocks, etc.; this package preserves whatever
+	// was declared without interpreting it.
+	Type string
+
 	// UseScore is true when the track declares useScore=1.
 	UseScore bool
 

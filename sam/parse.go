@@ -258,7 +258,8 @@ func (d *Decoder) parseHeader(raw []byte, lineNo int) error {
 			VN:    pairs["VN"],
 			SO:    pairs["SO"],
 			GO:    pairs["GO"],
-			Other: pairs.otherExcept("VN", "SO", "GO"),
+			SS:    pairs["SS"],
+			Other: pairs.otherExcept("VN", "SO", "GO", "SS"),
 			Raw:   string(raw),
 		}
 		d.hdr = hdr
@@ -277,10 +278,12 @@ func (d *Decoder) parseHeader(raw []byte, lineNo int) error {
 			AH:    pairs["AH"],
 			AN:    pairs["AN"],
 			AS:    pairs["AS"],
+			DS:    pairs["DS"],
 			M5:    pairs["M5"],
+			TP:    pairs["TP"],
 			UR:    pairs["UR"],
 			SP:    pairs["SP"],
-			Other: pairs.otherExcept("SN", "LN", "AH", "AN", "AS", "M5", "UR", "SP"),
+			Other: pairs.otherExcept("SN", "LN", "AH", "AN", "AS", "DS", "M5", "TP", "UR", "SP"),
 			Raw:   string(raw),
 		})
 		d.hdr = hdr

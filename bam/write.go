@@ -184,9 +184,21 @@ func encodeRecord(r *Record) ([]byte, error) {
 		pos0 = 0xFFFFFFFF // -1 in int32 (unmapped)
 	}
 	binary.LittleEndian.PutUint32(core[4:8], pos0)
+	// QNAME: spec range [1, 254] including NUL. Refuse to
+	// silently truncate; callers that have a longer name
+	// should use a truncated convention like htslib does.
+	if len(r.QName) > 254-1 {
+		return nil, fmt.Errorf("QNAME length %d exceeds BAM max (254-1)", len(r.QName))
+	}
 	core[8] = uint8(len(r.QName)) + 1 // l_read_name includes NUL
 	core[9] = r.MapQ
 	binary.LittleEndian.PutUint16(core[10:12], r.Bin)
+	// nCigarOp: spec max 65535. Longer CIGARs must be
+	// stored in a CG:B,I tag (htslib behaviour). Refusing
+	// here matches that, instead of silent truncation.
+	if len(r.Cigar) > 0xFFFF {
+		return nil, fmt.Errorf("n_cigar_op %d exceeds BAM max (65535); use a CG:B,I tag", len(r.Cigar))
+	}
 	binary.LittleEndian.PutUint16(core[12:14], uint16(len(r.Cigar)))
 	binary.LittleEndian.PutUint16(core[14:16], r.Flag)
 	binary.LittleEndian.PutUint32(core[16:20], uint32(lSeq))
@@ -373,10 +385,15 @@ func encodeTagValue(t Tag) ([]byte, error) {
 		buf.WriteByte(0)
 	case TagB:
 		// B array: 1-byte sub-type + 4-byte count + elements.
-		// The sub-type is taken from the tag's Type field; the
-		// SAM-style value is a comma-separated list of typed
-		// scalars.
-		sub := t.Type
+		// The sub-type lives in Tag.Sub, not Tag.Type (Tag.Type
+		// stays TagB for the wire). The reader refuses unknown
+		// sub-types, so we refuse them here too: emitting a
+		// B array whose Sub is not one of c, C, s, S, i, I, f
+		// would round-trip as a parse error.
+		sub := t.Sub
+		if !isValidBSubType(sub) {
+			return nil, fmt.Errorf("bam: tag %q: B array sub-type %q invalid (must be one of c, C, s, S, i, I, f)", t.Key, byte(sub))
+		}
 		buf.WriteByte(byte(sub))
 		parts := splitComma(t.Value)
 		var c [4]byte
@@ -459,4 +476,12 @@ func splitComma(s string) []string {
 		}
 	}
 	return out
+}
+
+func isValidBSubType(b TagType) bool {
+	switch b {
+	case Tagc, TagC, Tags, TagS, Tagi, TagI, Tagf:
+		return true
+	}
+	return false
 }

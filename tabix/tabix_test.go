@@ -16,6 +16,29 @@ func makeIndex(refs []*Reference, withNoCoor bool) []byte {
 	var nRef [4]byte
 	binary.LittleEndian.PutUint32(nRef[:], uint32(len(refs)))
 	buf.Write(nRef[:])
+	// 8 header fields.
+	var i32 [4]byte
+	binary.LittleEndian.PutUint32(i32[:], uint32(FormatVCF))
+	buf.Write(i32[:])
+	binary.LittleEndian.PutUint32(i32[:], 1)
+	buf.Write(i32[:]) // col_seq
+	binary.LittleEndian.PutUint32(i32[:], 2)
+	buf.Write(i32[:]) // col_beg
+	binary.LittleEndian.PutUint32(i32[:], 0)
+	buf.Write(i32[:]) // col_end
+	binary.LittleEndian.PutUint32(i32[:], uint32('#'))
+	buf.Write(i32[:]) // meta
+	binary.LittleEndian.PutUint32(i32[:], 0)
+	buf.Write(i32[:]) // skip
+	// Concatenated NUL-terminated name table (one name per ref).
+	var nameBuf []byte
+	for _, ref := range refs {
+		nameBuf = append(nameBuf, []byte(ref.Name)...)
+		nameBuf = append(nameBuf, 0)
+	}
+	binary.LittleEndian.PutUint32(i32[:], uint32(len(nameBuf)))
+	buf.Write(i32[:])
+	buf.Write(nameBuf)
 	for _, ref := range refs {
 		var nBin [4]byte
 		binary.LittleEndian.PutUint32(nBin[:], uint32(len(ref.Bins)))
@@ -144,28 +167,43 @@ func TestRead_EmptyStream(t *testing.T) {
 func TestReg2Bins(t *testing.T) {
 	// Single base: reg2bins returns one bin per level
 	// (5 bins for a 1-bp region in samtools 5-level scheme).
-	bins := reg2bins(100, 101)
-	if len(bins) != 5 {
-		t.Errorf("reg2bins(100, 101): got %d bins, want 5", len(bins))
+	bins := BinFromRange(100, 101)
+	// samtools 6-level scheme: one bin per level, 6 bins for a 1-bp
+	// region.
+	if len(bins) != 6 {
+		t.Errorf("BinFromRange(100, 101): got %d bins, want 6", len(bins))
 	}
 	// Always includes bin 0 (covers the entire reference).
 	if bins[0] != 0 {
-		t.Errorf("reg2bins(100, 101): first bin %d, want 0", bins[0])
+		t.Errorf("BinFromRange(100, 101): first bin %d, want 0", bins[0])
 	}
 	// Empty range: no bins.
-	if bins := reg2bins(100, 100); len(bins) != 0 {
-		t.Errorf("reg2bins(100, 100): got %v, want empty", bins)
+	if bins := BinFromRange(100, 100); len(bins) != 0 {
+		t.Errorf("BinFromRange(100, 100): got %v, want empty", bins)
 	}
 	// Wide range: many bins across multiple levels.
-	bins = reg2bins(0, 100_000)
+	bins = BinFromRange(0, 100_000)
 	if len(bins) == 0 {
-		t.Error("reg2bins(0, 100000): got empty")
+		t.Error("BinFromRange(0, 100000): got empty")
 	}
-	// All bins should be in 0..4680 (samtools 5-level scheme).
+	// The samtools scheme is 6 levels; the smallest (16 KiB) bin
+	// for a 100 Kb region lives at 4681+. We require bin 0 and
+	// at least one 16 Kb-level bin, but do NOT require
+	// every bin to fit in 0..4680 (the 5-level subset).
+	var saw0, saw16K bool
 	for _, b := range bins {
-		if b > 4680 {
-			t.Errorf("reg2bins(0, 100000): bin %d > 4680", b)
+		if b == 0 {
+			saw0 = true
 		}
+		if b >= 4681 {
+			saw16K = true
+		}
+	}
+	if !saw0 {
+		t.Error("BinFromRange(0, 100000): no bin 0 (level 0)")
+	}
+	if !saw16K {
+		t.Errorf("BinFromRange(0, 100000): no 16 Kb-level bin (>= 4681)")
 	}
 }
 
@@ -215,12 +253,13 @@ func TestReference_LookupChunks(t *testing.T) {
 }
 
 func TestReadError_Error(t *testing.T) {
-	e := &ReadError{Err: "bad"}
+	cause := errors.New("bad")
+	e := &ReadError{Err: cause}
 	if msg := e.Error(); !contains(msg, "tabix") || !contains(msg, "bad") {
 		t.Errorf("Error: %q", msg)
 	}
-	if e.Unwrap() != nil {
-		t.Errorf("Unwrap: %v", e.Unwrap())
+	if e.Unwrap() != cause { //nolint:errorlint
+		t.Errorf("Unwrap: %v, want %v", e.Unwrap(), cause)
 	}
 }
 

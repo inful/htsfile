@@ -8,7 +8,7 @@ import (
 )
 
 func TestDecoder_BasicRecord(t *testing.T) {
-	src := "@read1\nACGT\n+\nIIII\n"
+	src := "@read1\nACGT\n+\n!!!!\n"
 	dec := NewDecoder(strings.NewReader(src))
 	rec, err := dec.Record()
 	if err != nil {
@@ -23,8 +23,8 @@ func TestDecoder_BasicRecord(t *testing.T) {
 	if rec.PlusLine != "" {
 		t.Errorf("PlusLine: got %q want empty", rec.PlusLine)
 	}
-	if string(rec.Qual) != "IIII" {
-		t.Errorf("Qual: got %q want %q", rec.Qual, "IIII")
+	if string(rec.Qual) != "!!!!" {
+		t.Errorf("Qual: got %q want %q", rec.Qual, "!!!!")
 	}
 	if rec.PhredOffset != 33 {
 		t.Errorf("PhredOffset: got %d want 33", rec.PhredOffset)
@@ -35,7 +35,7 @@ func TestDecoder_BasicRecord(t *testing.T) {
 }
 
 func TestDecoder_TwoRecords(t *testing.T) {
-	src := "@r1\nACGT\n+\nIIII\n@r2 description here\nGGGG\n+ r2 description here\nJJJJ\n"
+	src := "@r1\nACGT\n+\n!!!!\n@r2 description here\nGGGG\n+ r2 description here\nJJJJ\n"
 	dec := NewDecoder(strings.NewReader(src))
 	r1, err := dec.Record()
 	if err != nil {
@@ -106,7 +106,7 @@ func TestDecoder_AutoDetectPhred64(t *testing.T) {
 func TestDecoder_SetPhredOffsetOverride(t *testing.T) {
 	// Caller forces Phred+64 even though the data looks like
 	// Phred+33 — SetPhredOffset disables auto-detect.
-	src := "@r\nACGT\n+\nIIII\n"
+	src := "@r\nACGT\n+\n!!!!\n"
 	dec := NewDecoder(strings.NewReader(src))
 	dec.SetPhredOffset(64)
 	rec, err := dec.Record()
@@ -140,7 +140,7 @@ func TestDecoder_LineTracking(t *testing.T) {
 
 func TestDecoder_CRLFLineEndings(t *testing.T) {
 	// CR+LF input should parse identically to LF.
-	src := "@r1\r\nACGT\r\n+\r\nIIII\r\n"
+	src := "@r1\r\nACGT\r\n+\r\n!!!!\r\n"
 	dec := NewDecoder(strings.NewReader(src))
 	rec, err := dec.Record()
 	if err != nil {
@@ -149,14 +149,14 @@ func TestDecoder_CRLFLineEndings(t *testing.T) {
 	if string(rec.Seq) != "ACGT" {
 		t.Errorf("Seq: got %q", rec.Seq)
 	}
-	if string(rec.Qual) != "IIII" {
+	if string(rec.Qual) != "!!!!" {
 		t.Errorf("Qual: got %q", rec.Qual)
 	}
 }
 
 func TestDecoder_MalformedHeader(t *testing.T) {
 	// First non-empty line doesn't start with '@'.
-	src := "ACGT\n+\nIIII\n"
+	src := "ACGT\n+\n!!!!\n"
 	dec := NewDecoder(strings.NewReader(src))
 	_, err := dec.Record()
 	if !IsParseError(err) {
@@ -166,7 +166,7 @@ func TestDecoder_MalformedHeader(t *testing.T) {
 
 func TestDecoder_MalformedPlus(t *testing.T) {
 	// Third line doesn't start with '+'.
-	src := "@r\nACGT\nnotaplus\nIIII\n"
+	src := "@r\nACGT\nnotaplus\n!!!!\n"
 	dec := NewDecoder(strings.NewReader(src))
 	_, err := dec.Record()
 	if !IsParseError(err) {

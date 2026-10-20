@@ -237,11 +237,17 @@ func (b *builder) finish() []byte {
 	return b.buf.Bytes()
 }
 
-// cigar packs a BAM CIGAR op as (op << 28) | length. The op is
-// in the high 4 bits and the length is in the low 28 bits per
-// the BAM spec § 1.4.6.
+// cigar packs a BAM CIGAR op per the spec layout op_len<<4 | op:
+// the op code occupies the LOW 4 bits and the operation length
+// the high 28. A 5M is therefore 0x50.
+//
+// This helper used to be (op << 28) | length, which cited the
+// spec while inverting it — so every assertion built on it
+// round-tripped consistently inside a wrong world and the
+// inversion survived. TestCigarPackingFollowsSpecLayout now
+// pins the real layout independently of this helper.
 func cigar(op, length uint32) uint32 {
-	return (op << 28) | length
+	return PackCigarOp(op, length)
 }
 
 // readAll reads all records from a BAM byte slice.

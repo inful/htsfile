@@ -25,7 +25,7 @@ func TestCLI_CheckSummaryRoundTrip(t *testing.T) {
 		t.Fatalf("go build: %v\n%s", err, out)
 	}
 
-	src := "@r1\nACGT\n+\nIIII\n@r2\nGGGG\n+\nJJJJ\n"
+	src := "@r1\nACGT\n+\n!!!!\n@r2\nGGGG\n+\nJJJJ\n"
 	fqPath := filepath.Join(dir, "smoke.fq")
 	if err := os.WriteFile(fqPath, []byte(src), 0o600); err != nil {
 		t.Fatal(err)

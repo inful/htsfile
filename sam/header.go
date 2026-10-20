@@ -41,9 +41,13 @@ type Header struct {
 // ("unknown", "unsorted", "queryname", or "coordinate"); GO is
 // the grouping ("none", "query", or "reference").
 type HD struct {
-	VN    string
-	SO    string
+	VN string
+	SO string
+	// GO is the grouping ("none", "query", or "reference").
+	// SS is the sub-sort order (SAMv1 §1.3): zero or more
+	// ":"-separated keys describing a secondary sort.
 	GO    string
+	SS    string
 	Other map[string]string
 	// Raw is the original line text (with the leading "@HD\t"
 	// and trailing newline removed). The Encoder emits Raw
@@ -56,12 +60,17 @@ type HD struct {
 // dictionary. SN is the sequence name (required); LN is the
 // sequence length (required). All other fields are optional.
 type SQ struct {
-	SN    string
-	LN    int64
-	AH    string
-	AN    string
-	AS    string
-	M5    string
+	SN string
+	LN int64
+	AH string
+	AN string
+	AS string
+	DS string
+	// M5 is the MD5 checksum of the sequence, lowercase hex.
+	M5 string
+	// TP is the molecule topology: "linear" or "circular".
+	// UCSC's recommended-practice rules key off this.
+	TP    string
 	UR    string
 	SP    string
 	Other map[string]string
@@ -71,16 +80,25 @@ type SQ struct {
 // RG is the @RG line — a read group. ID is the read group
 // identifier (required). All other fields are optional.
 type RG struct {
-	ID    string
-	SM    string
+	ID string
+	SM string
+	// LB is the library; PI is the predicted median insert size;
+	// PU is the platform unit; CN is the sequencing center;
+	// DT is the run date; PL is the platform; PG is the
+	// programs group; BC/FO/KS/PM are the barcode-specific
+	// fields (SAMv1 §1.3).
 	LB    string
+	BC    string
 	DS    string
+	FO    string
+	KS    string
 	PU    string
 	PI    string
 	CN    string
 	DT    string
 	PL    string
 	PG    string
+	PM    string
 	Other map[string]string
 	Raw   string
 }
@@ -92,6 +110,7 @@ type PG struct {
 	ID    string
 	PN    string
 	CL    string
+	DS    string
 	PP    string
 	VN    string
 	Other map[string]string

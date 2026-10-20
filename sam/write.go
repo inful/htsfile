@@ -48,7 +48,7 @@ func (e *Encoder) EncodeHeader(h *Header) error {
 	}
 	if h.HD != nil {
 		if err := e.writeRawOrSynth(h.HD.Raw, "@HD", h.HD.Other, map[string]string{
-			"VN": h.HD.VN, "SO": h.HD.SO, "GO": h.HD.GO,
+			"VN": h.HD.VN, "SO": h.HD.SO, "GO": h.HD.GO, "SS": h.HD.SS,
 		}); err != nil {
 			return err
 		}
@@ -57,24 +57,24 @@ func (e *Encoder) EncodeHeader(h *Header) error {
 		if err := e.writeRawOrSynth(sq.Raw, "@SQ", sq.Other, map[string]string{
 			"SN": sq.SN,
 			"LN": strconv.FormatInt(sq.LN, 10),
-			"AH": sq.AH, "AN": sq.AN, "AS": sq.AS,
-			"M5": sq.M5, "UR": sq.UR, "SP": sq.SP,
+			"AH": sq.AH, "AN": sq.AN, "AS": sq.AS, "DS": sq.DS,
+			"M5": sq.M5, "TP": sq.TP, "UR": sq.UR, "SP": sq.SP,
 		}); err != nil {
 			return err
 		}
 	}
 	for _, rg := range h.RGs {
 		if err := e.writeRawOrSynth(rg.Raw, "@RG", rg.Other, map[string]string{
-			"ID": rg.ID, "SM": rg.SM, "LB": rg.LB, "DS": rg.DS,
-			"PU": rg.PU, "PI": rg.PI, "CN": rg.CN, "DT": rg.DT,
-			"PL": rg.PL, "PG": rg.PG,
+			"ID": rg.ID, "SM": rg.SM, "LB": rg.LB, "BC": rg.BC, "DS": rg.DS,
+			"FO": rg.FO, "KS": rg.KS, "PU": rg.PU, "PI": rg.PI, "CN": rg.CN, "DT": rg.DT,
+			"PL": rg.PL, "PG": rg.PG, "PM": rg.PM,
 		}); err != nil {
 			return err
 		}
 	}
 	for _, pg := range h.PGs {
 		if err := e.writeRawOrSynth(pg.Raw, "@PG", pg.Other, map[string]string{
-			"ID": pg.ID, "PN": pg.PN, "CL": pg.CL, "PP": pg.PP, "VN": pg.VN,
+			"ID": pg.ID, "PN": pg.PN, "CL": pg.CL, "DS": pg.DS, "PP": pg.PP, "VN": pg.VN,
 		}); err != nil {
 			return err
 		}

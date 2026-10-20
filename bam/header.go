@@ -46,9 +46,11 @@ type Header struct {
 // format version (e.g. "1.6"); SO is the sort order; GO is the
 // grouping.
 type HD struct {
-	VN    string
-	SO    string
+	VN string
+	SO string
+	// GO is the grouping; SS is the sub-sort order (SAMv1 §1.3).
 	GO    string
+	SS    string
 	Other map[string]string
 	Raw   string
 }
@@ -59,6 +61,12 @@ type HD struct {
 type SQ struct {
 	Name string
 	Len  int64
+	// The remaining fields are populated from the binary
+	// reference dictionary when present. DS is the
+	// description; TP is the topology ("linear" or
+	// "circular").
+	DS string
+	TP string
 }
 
 // RG is the @RG line — a read group. ID is the read group
@@ -67,13 +75,17 @@ type RG struct {
 	ID    string
 	SM    string
 	LB    string
+	BC    string
 	DS    string
+	FO    string
+	KS    string
 	PU    string
 	PI    string
 	CN    string
 	DT    string
 	PL    string
 	PG    string
+	PM    string
 	Other map[string]string
 	Raw   string
 }
@@ -84,6 +96,7 @@ type PG struct {
 	ID    string
 	PN    string
 	CL    string
+	DS    string
 	PP    string
 	VN    string
 	Other map[string]string

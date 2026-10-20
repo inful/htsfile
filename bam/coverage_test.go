@@ -247,7 +247,10 @@ func TestCigarOpChar_EdgeCases(t *testing.T) {
 		{cigar(CigarS, 50), 'S'},
 		{cigar(CigarEq, 10), '='},
 		{cigar(CigarX, 25), 'X'},
-		{uint32(15) << 28, '?'}, // unknown op
+		// Unknown op: op code 15 is not one of the spec's 0-9.
+		// Per the BAM layout op_len<<4 | op the op code is the LOW
+		// 4 bits, so this is a zero-length op 15 rather than a huge M.
+		{uint32(15), '?'},
 	}
 	for _, tc := range tests {
 		if got := CigarOpChar(tc.p); got != tc.want {

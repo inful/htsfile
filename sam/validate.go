@@ -136,6 +136,17 @@ func (v *Validator) checkOne(hdr *Header, r *Record) []Issue {
 			}
 			seen[t.Key] = true
 		}
+		// FLAG-bit consistency (SAMv1 §1.4). The SAM spec
+		// requires a few invariants across the paired-read
+		// bits that this check enforces.
+		if r.Flag&FlagPaired == 0 && (r.Flag&(FlagMateUnmap|FlagMateReverse|FlagFirst|FlagSecondary)) != 0 {
+			issues = append(issues, Issue{
+				Line:     r.Line,
+				Field:    "FLAG",
+				Severity: SeverityError,
+				Msg:      fmt.Sprintf("FLAG 0x%x sets a mate-related bit without FLAG_PAIRED", r.Flag),
+			})
+		}
 	}
 	return issues
 }

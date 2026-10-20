@@ -64,10 +64,14 @@ type Record struct {
 	Phase int
 
 	// Attributes is the parsed 9th column as a multi-value
-	// map. Single-value tags (e.g. ID, Name) have a
-	// one-element slice; multi-value tags (Parent, Dbxref,
-	// Alias, Ontology_term, Note, Target, Gap, Derives_from)
-	// have an n-element slice with one entry per value.
+	// map. Single-value tags (e.g. ID, Name, Is_circular) have
+	// a one-element slice; multi-value tags (Parent, Dbxref,
+	// Alias, Ontology_term, Note, Target, Gap) have an
+	// n-element slice with one entry per value. Derives_from
+	// is a single-value tag per the GFF3 spec (one feature
+	// this feature derives from); the parser stores it as a
+	// one-element slice here, matching the convention for
+	// other single-value tags.
 	// Use [Record.Attribute] for the first value and
 	// [Record.AttributeList] for the full slice.
 	Attributes map[string][]string

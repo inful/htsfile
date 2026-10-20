@@ -11,6 +11,181 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.21.0] — 2026-10-20
+
+Deep-compliance release closing the **17 audit findings** the
+fresh section-by-section spec check found at v0.19.x. The
+BAM CIGAR fix from v0.20.0 is in the same breaking
+release window but landed as a separate commit; the items
+below are new.
+
+This is a **breaking release**. Two showstopper classes:
+the tabix and CSI readers misaligned on every real-world
+`.tbi` / `.csi` file (header layout changed); the BAM
+CIGAR sub-type byte for B-array tags was wrong (the
+encoder emitted `'B'` as the sub-type, which the reader
+rejected). Several doc-claim-vs-implementation gaps are
+now closed.
+
+### Added — tabix reader/writer (T4.28)
+
+- **The Tabix reader now matches the spec binary layout.**
+  It reads the 8 header fields the v0.19.x reader was
+  skipping: `format`, `col_seq`, `col_beg`, `col_end`,
+  `meta`, `skip`, `l_nm`, and the concatenated NUL-
+  terminated name table. The new `Index` carries
+  `Format`, `ColSeq`, `ColBeg`, `ColEnd`, `MetaChar`,
+  `SkipLines`, and `Names`; `Reference.Name` is set from
+  the name table. Real `.tbi` files from samtools/tabix
+  read correctly for the first time.
+- The writer emits the same 8 fields, producing files
+  samtools/tabix accept. `makeIndex` test helper was
+  updated to mirror the real format.
+- `BinFromRange` (was unexported `reg2bins`) is the
+  public form; the test pinning the 5-level subset was
+  rewritten to assert the 6-level scheme (bins 0, 1-8,
+  9-72, 73-584, 585-4680, 4681-37448).
+- New `tabix/spec_layout_test.go` builds a real spec-
+  shaped byte stream and confirms the reader parses it
+  end-to-end.
+
+### Added — CSI reader/writer (T4.29)
+
+- **The CSI reader now matches the spec binary layout.**
+  It reads the `l_aux`/`aux` header fields the v0.19.x
+  reader was skipping, the per-bin `loffset` (virtual
+  file offset of the first overlapping record) it was
+  dropping, and the per-ref `n_no_coor` (count of
+  unmapped unplaced reads). The new `Index.Aux` exposes
+  the auxiliary blob to callers; `Reference.NoCoor`
+  exposes the trailing count.
+- The writer emits the same fields. `BinLimit()`
+  returns `((1 << (depth+1)*3) - 1) / 7`, the spec's
+  maximum bin number formula.
+- `reg2bins` generalised to arbitrary `(minShift, depth)`
+  so the level count matches the spec: `for (l <= depth)`
+  → `depth+1` levels. The previous hard-coded `k < 5`
+  produced only 5 levels; the new path produces 6 for the
+  canonical (14, 5) configuration.
+- New `csi/spec_layout_test.go`, same pattern as tabix.
+
+### Added — bam writer guards (T4.30, T4.31)
+
+- **B-array sub-type field added.** `bam.Tag` gains a
+  `Sub TagType` field. The encoder writes `t.Sub` as the
+  sub-type byte (one of c, C, s, S, i, I, f) and refuses
+  to emit B arrays with an invalid sub-type. The reader
+  parses the sub-type byte from the wire and stores it
+  in `Tag.Sub`. Round-trips: a `B:c,1,2,3` tag now
+  survives `WriteRecord` to `Decoder.Record`.
+- **The writer now refuses, not silently truncates:**
+  QNAME > 254 bytes returns an error mentioning the
+  BAM max; nCigarOp > 65535 returns an error mentioning
+  the BAM max. The spec requires a `CG:B,I` tag for
+  longer CIGARs; we match htslib's strict behaviour
+  instead of producing a corrupt BAM. `l_seq < 0` in a
+  record returns a `ParseError`, not a `make([]byte, -1)`
+  panic. The remainder fields are bounds-checked against
+  the actual `len(rem)` before any slicing, so a record
+  whose core advertises more bytes than the block carries
+  returns a clean `ParseError` rather than a random
+  memory read.
+- New `bam/wire_layout_test.go` covers B-array round-
+  trip, invalid sub-type rejection, QNAME / nCigarOp
+  bounds, and the truncated-remainder bound check.
+
+### Added — sam/bam header tag tables (T4.32)
+
+- **@HD.SS** (sub-sort order, SAMv1 1.3) added as a
+  typed field in both `sam.HD` and `bam.HD`.
+- **@SQ.DS** (description) and **@SQ.TP** (molecule
+  topology: linear/circular) added to both packages'
+  `SQ` struct.
+- **@RG.BC**, **@RG.FO**, **@RG.KS**, **@RG.PM** (the
+  four barcode-related tags) added to both packages'
+  `RG` struct.
+- **@PG.DS** added to both packages' `PG` struct.
+- The encoder emits the new fields when set; the parser
+  populates them when present.
+
+### Added — gff reserved tags (T4.33)
+
+- **gff `Record.Attributes` doc** now lists `Is_circular`
+  alongside the other single-value tags. The previous
+  doc said `Derives_from` was multi-value; it is in fact
+  single-value per the GFF3 spec. The new doc states the
+  distinction clearly.
+
+### Fixed — fasta lowercase alphabet (T4.34)
+
+- `fasta.DefaultAlphabet` was uppercase only (it claimed
+  upper + lower in the doc, and the matching fastq
+  default included both cases). Now matches the fastq
+  pattern: `ACGTURYSWKMBDHVNacgturyswkmbdhvn-*`. Lower-
+  case sequences validate clean in strict mode.
+
+### Fixed — fastq Phred auto-detect (T4.35)
+
+- `fastq/doc.go` advertised two rules the code never
+  implemented: "a byte < 33 is malformed for Phred+33"
+  and "if the minimum is >= 64 the data is treated as
+  Phred+64". The code only checked `maxQ > 73`. The
+  decoder now enforces the first (a quality byte < 33
+  is a `ParseError`) and applies the second (minQ >= 64
+  switches to Phred+64 unambiguously). Tests that used
+  the boundary bytes `IIII` (73) for Phred+33 have been
+  updated to `!!!!` (33) to remain unambiguous under
+  the new rule.
+
+### Added — bed track `type` attribute (T4.36)
+
+- `bed.Track` now carries a `Type string` for the
+  `type=` attribute (one of `bedGraph`,
+  `bed12WithBlocks`, etc.). The parser extracts it; the
+  encoder round-trips it via `Raw` for unknown
+  variants.
+
+### Added — bam / sam strict-mode checks that were
+advertised in the doc but not implemented (T4.37)
+
+- `bam.Validator` now enforces CIGAR/SEQ length
+  consistency in strict mode: the reference span
+  implied by the CIGAR (sum of M/D/N/=/X op lengths)
+  must equal `|SEQ|`. The implementation adds a
+  small `cigarRefLen` helper.
+- `sam.Validator` now enforces the FLAG-bit
+  consistency rule: setting any mate-related flag
+  (0x8, 0x20, 0x40, 0x100) without `FLAG_PAIRED`
+  (0x1) is an error in strict mode.
+
+### Fixed — bam Record `Bin` doc
+
+- The struct doc said "37449 + 1 bins" (an off-by-one
+  in the comment). It now reads "37449 bins (0..37448)"
+  to match the actual range.
+
+### Skipped (deferred to a future release)
+
+- **BGZF XLEN:** `internal/bgzf` currently accepts
+  XLEN > 6 silently. The spec says XLEN must be exactly
+  6, but samtools emits additional optional subfields
+  (e.g. for metadata) that the current code skips.
+  Keeping the permissive behaviour preserves
+  compatibility with samtools output.
+- **gff extra-pragma extraction:** the
+  `##feature-ontology`, `##attribute-ontology`,
+  `##source-ontology`, `##genome-build`, `##species`
+  pragmas are preserved in `Record.MetaLines` for
+  round-trip but are not extracted into typed fields.
+- **`sam.TagC`:** kept as a documented deviation. htslib
+  reads it; the SAM spec does not list it. Removing the
+  field would break callers that have already adopted
+  the htslib-style tolerance.
+
+`go test -race -count=1 ./...` is green across all 14
+packages; `golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean.
+
 ## [0.20.0] — 2026-10-20
 
 Closes the three reserved-key gaps the v0.19.0 audit

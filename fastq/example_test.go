@@ -22,7 +22,7 @@ func ExampleNewDecoder() {
 		"@read2\n" +
 		"GGGG\n" +
 		"+\n" +
-		"IIII\n" // Looks like Phred+33, but read1's offset sticks.
+		"!!!!\n" // Looks like Phred+33, but read1's offset sticks.
 
 	dec := fastq.NewDecoder(strings.NewReader(src))
 	for {
@@ -48,7 +48,7 @@ func ExampleNewEncoder() {
 	var buf strings.Builder
 	enc := fastq.NewEncoder(&buf)
 	for _, r := range []*fastq.Record{
-		{Header: "r1", Seq: []byte("ACGT"), Qual: []byte("IIII"), PhredOffset: 33},
+		{Header: "r1", Seq: []byte("ACGT"), Qual: []byte("!!!!"), PhredOffset: 33},
 		{Header: "r2", Seq: []byte("GGGG"), Qual: []byte("JJJJ"), PhredOffset: 33},
 	} {
 		if err := enc.EncodeRecord(r); err != nil {
@@ -65,7 +65,7 @@ func ExampleNewEncoder() {
 	// @r1
 	// ACGT
 	// +
-	// IIII
+	// !!!!
 	// @r2
 	// GGGG
 	// +
@@ -77,7 +77,7 @@ func ExampleNewEncoder() {
 // Illumina run that the auto-detect heuristic should not
 // override).
 func ExampleDecoder_SetPhredOffset() {
-	src := "@r\nACGT\n+\nIIII\n" // quality bytes look like Phred+33
+	src := "@r\nACGT\n+\n!!!!\n" // quality bytes look like Phred+33
 
 	dec := fastq.NewDecoder(strings.NewReader(src))
 	dec.SetPhredOffset(64) // force Phred+64 anyway
@@ -95,8 +95,8 @@ func ExampleDecoder_SetPhredOffset() {
 // This example shows how the strict-mode validator surfaces
 // non-IUPAC sequence bytes.
 func ExampleValidator() {
-	src := "@r1\nACGTACGT\n+\nIIIIIIII\n" +
-		"@r2\nACGZACGT\n+\nIIIIIIII\n" // Z is not IUPAC.
+	src := "@r1\nACGTACGT\n+\n!!!!!!!!\n" +
+		"@r2\nACGZACGT\n+\n!!!!!!!!\n" // Z is not IUPAC.
 
 	dec := fastq.NewDecoder(strings.NewReader(src))
 	var recs []*fastq.Record

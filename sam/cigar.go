@@ -10,8 +10,8 @@ import (
 // The nine values defined by SAM v1 §1.4.6 are exposed as named
 // constants below. Numeric values match the BAM packed op-code
 // convention (M=0, I=1, D=2, N=3, S=4, H=5, P=6, ==7, X=8) so a
-// BAM cigar word (op<<28 | len) can be inspected by isolating
-// op>>28 and casting to CigarOp.
+// BAM cigar word (op_len<<4 | op, spec 4.2) can be inspected
+// by isolating the low 4 bits and casting to CigarOp.
 //
 // CigarOp is a single byte; the SAM file format uses the matching
 // ASCII character (see Char below).

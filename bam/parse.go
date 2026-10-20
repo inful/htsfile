@@ -202,6 +202,10 @@ func (d *Decoder) Record() (*Record, error) {
 	nCigarOp := binary.LittleEndian.Uint16(core[12:14])
 	flag := binary.LittleEndian.Uint16(core[14:16])
 	lSeq := int32(binary.LittleEndian.Uint32(core[16:20]))
+	if lSeq < 0 {
+		return nil, &ParseError{Line: d.recordLine, Field: "l_seq",
+			Msg: fmt.Sprintf("negative l_seq %d", lSeq)}
+	}
 	nextRefID := int32(binary.LittleEndian.Uint32(core[20:24]))
 	nextPos0 := int32(binary.LittleEndian.Uint32(core[24:28]))
 	tlen := int32(binary.LittleEndian.Uint32(core[28:32]))
@@ -217,6 +221,19 @@ func (d *Decoder) Record() (*Record, error) {
 			Msg: "failed to read record remainder: " + err.Error()}
 	}
 	off := 0
+	// Bound the variable-length fields against the actual
+	// remainder. htslib checks (nCigarOp*4) + lReadName +
+	// ((lSeq+1)>>1) + lSeq <= new_l_data; we add a few
+	// additional sanity checks (negative or absurd values
+	// would otherwise lead to negative seqBytesLen and a
+	// make([]byte, -1) panic).
+	seqBytesLen := (int(lSeq) + 1) / 2
+	want := int(lReadName) + 4*int(nCigarOp) + seqBytesLen + int(lSeq)
+	if want < 0 || want > len(rem) {
+		return nil, &ParseError{Line: d.recordLine, Field: "remainder",
+			Msg: fmt.Sprintf("l_read_name %d + nCigarOp*4 %d + seq %d + qual %d = %d > remainder %d",
+				lReadName, 4*nCigarOp, seqBytesLen, lSeq, want, len(rem))}
+	}
 	// read_name (NUL-terminated but the length is exact).
 	readName := string(rem[off : off+int(lReadName)])
 	off += int(lReadName)
@@ -231,7 +248,7 @@ func (d *Decoder) Record() (*Record, error) {
 	}
 	// seq: (l_seq+1)/2 bytes, 4-bit packed.
 	seqLen := int(lSeq)
-	seqBytesLen := (seqLen + 1) / 2
+	seqBytesLen = (seqLen + 1) / 2
 	seq := make([]byte, seqBytesLen)
 	copy(seq, rem[off:off+seqBytesLen])
 	off += seqBytesLen
@@ -367,11 +384,11 @@ func parseAuxTags(b []byte, line int) ([]Tag, error) {
 			return nil, &ParseError{Line: line, Field: "tag", Msg: err.Error()}
 		}
 		b = b[3:]
-		val, consumed, err := readTagValue(b, tt, line)
+		val, sub, consumed, err := readTagValue(b, tt, line)
 		if err != nil {
 			return nil, err
 		}
-		tags = append(tags, Tag{Key: key, Type: tt, Value: val})
+		tags = append(tags, Tag{Key: key, Type: tt, Sub: sub, Value: val})
 		b = b[consumed:]
 	}
 	return tags, nil
@@ -379,94 +396,94 @@ func parseAuxTags(b []byte, line int) ([]Tag, error) {
 
 // readTagValue reads one tag value from b and returns its string
 // representation plus the number of bytes consumed from b.
-func readTagValue(b []byte, tt TagType, line int) (val string, consumed int, err error) {
+func readTagValue(b []byte, tt TagType, line int) (val string, sub TagType, consumed int, err error) {
 	switch tt {
 	case TagA:
 		if len(b) < 1 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "A: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "A: missing value"}
 		}
-		return string(b[0:1]), 1, nil
+		return string(b[0:1]), 0, 1, nil
 	case Tagc:
 		if len(b) < 1 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "c: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "c: missing value"}
 		}
-		return strconv.FormatInt(int64(int8(b[0])), 10), 1, nil
+		return strconv.FormatInt(int64(int8(b[0])), 10), 0, 1, nil
 	case TagC:
 		if len(b) < 1 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "C: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "C: missing value"}
 		}
-		return strconv.FormatUint(uint64(b[0]), 10), 1, nil
+		return strconv.FormatUint(uint64(b[0]), 10), 0, 1, nil
 	case Tags:
 		if len(b) < 2 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "s: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "s: missing value"}
 		}
-		return strconv.FormatInt(int64(int16(binary.LittleEndian.Uint16(b[0:2]))), 10), 2, nil
+		return strconv.FormatInt(int64(int16(binary.LittleEndian.Uint16(b[0:2]))), 10), 0, 2, nil
 	case TagS:
 		if len(b) < 2 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "S: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "S: missing value"}
 		}
-		return strconv.FormatUint(uint64(binary.LittleEndian.Uint16(b[0:2])), 10), 2, nil
+		return strconv.FormatUint(uint64(binary.LittleEndian.Uint16(b[0:2])), 10), 0, 2, nil
 	case Tagi:
 		if len(b) < 4 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "i: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "i: missing value"}
 		}
-		return strconv.FormatInt(int64(int32(binary.LittleEndian.Uint32(b[0:4]))), 10), 4, nil
+		return strconv.FormatInt(int64(int32(binary.LittleEndian.Uint32(b[0:4]))), 10), 0, 4, nil
 	case TagI:
 		if len(b) < 4 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "I: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "I: missing value"}
 		}
-		return strconv.FormatUint(uint64(binary.LittleEndian.Uint32(b[0:4])), 10), 4, nil
+		return strconv.FormatUint(uint64(binary.LittleEndian.Uint32(b[0:4])), 10), 0, 4, nil
 	case Tagf:
 		if len(b) < 4 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "f: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "f: missing value"}
 		}
 		bits := binary.LittleEndian.Uint32(b[0:4])
-		return strconv.FormatFloat(float64(math.Float32frombits(bits)), 'g', -1, 32), 4, nil
+		return strconv.FormatFloat(float64(math.Float32frombits(bits)), 'g', -1, 32), 0, 4, nil
 	case Tagd:
 		if len(b) < 8 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "d: missing value"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "d: missing value"}
 		}
 		bits := binary.LittleEndian.Uint64(b[0:8])
-		return strconv.FormatFloat(math.Float64frombits(bits), 'g', -1, 64), 8, nil
+		return strconv.FormatFloat(math.Float64frombits(bits), 'g', -1, 64), 0, 8, nil
 	case TagZ:
 		end := bytes.IndexByte(b, 0)
 		if end < 0 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "Z: missing null terminator"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "Z: missing null terminator"}
 		}
-		return string(b[:end]), end + 1, nil
+		return string(b[:end]), 0, end + 1, nil
 	case TagH:
 		end := bytes.IndexByte(b, 0)
 		if end < 0 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "H: missing null terminator"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "H: missing null terminator"}
 		}
-		return string(b[:end]), end + 1, nil
+		return string(b[:end]), 0, end + 1, nil
 	case TagB:
 		// B array: 1-byte sub_type, uint32 LE count, then elements.
 		if len(b) < 5 {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: "B: missing sub_type/count"}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "B: missing sub_type/count"}
 		}
 		subType := TagType(b[0])
 		if !subType.IsValid() || subType == TagZ || subType == TagH || subType == TagB || subType == TagA || subType == Tagd {
-			return "", 0, &ParseError{Line: line, Field: "tag",
+			return "", 0, 0, &ParseError{Line: line, Field: "tag",
 				Msg: fmt.Sprintf("B: invalid sub_type %q", byte(subType))}
 		}
 		count := binary.LittleEndian.Uint32(b[1:5])
 		eltSize, err := bEltSize(subType)
 		if err != nil {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: err.Error()}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: err.Error()}
 		}
 		dataLen := int(count) * eltSize
 		if len(b) < 5+dataLen {
-			return "", 0, &ParseError{Line: line, Field: "tag",
+			return "", 0, 0, &ParseError{Line: line, Field: "tag",
 				Msg: fmt.Sprintf("B: data truncated (need %d, have %d)", 5+dataLen, len(b))}
 		}
 		val, err := formatBArray(b[5:5+dataLen], subType, count)
 		if err != nil {
-			return "", 0, &ParseError{Line: line, Field: "tag", Msg: err.Error()}
+			return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: err.Error()}
 		}
-		return val, 5 + dataLen, nil
+		return val, subType, 5 + dataLen, nil
 	default:
-		return "", 0, &ParseError{Line: line, Field: "tag", Msg: "unknown tag type"}
+		return "", 0, 0, &ParseError{Line: line, Field: "tag", Msg: "unknown tag type"}
 	}
 }
 
@@ -575,14 +592,18 @@ func parseHeaderText(hdr *Header) {
 				ID:    pairs["ID"],
 				SM:    pairs["SM"],
 				LB:    pairs["LB"],
+				BC:    pairs["BC"],
 				DS:    pairs["DS"],
+				FO:    pairs["FO"],
+				KS:    pairs["KS"],
 				PU:    pairs["PU"],
 				PI:    pairs["PI"],
 				CN:    pairs["CN"],
 				DT:    pairs["DT"],
 				PL:    pairs["PL"],
 				PG:    pairs["PG"],
-				Other: pairs.otherExcept("ID", "SM", "LB", "DS", "PU", "PI", "CN", "DT", "PL", "PG"),
+				PM:    pairs["PM"],
+				Other: pairs.otherExcept("ID", "SM", "LB", "BC", "DS", "FO", "KS", "PU", "PI", "CN", "DT", "PL", "PG", "PM"),
 				Raw:   line,
 			})
 		case "PG":
@@ -590,9 +611,10 @@ func parseHeaderText(hdr *Header) {
 				ID:    pairs["ID"],
 				PN:    pairs["PN"],
 				CL:    pairs["CL"],
+				DS:    pairs["DS"],
 				PP:    pairs["PP"],
 				VN:    pairs["VN"],
-				Other: pairs.otherExcept("ID", "PN", "CL", "PP", "VN"),
+				Other: pairs.otherExcept("ID", "PN", "CL", "DS", "PP", "VN"),
 				Raw:   line,
 			})
 		case "CO":

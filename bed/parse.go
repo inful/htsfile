@@ -287,6 +287,8 @@ func parseTrack(raw []byte) (*Track, error) {
 			t.UseScore = p.v == "1"
 		case "itemRgb":
 			t.ItemRgbOn = strings.EqualFold(p.v, "On")
+		case "type":
+			t.Type = p.v
 		case "visibility":
 			t.Visibility = p.v
 		}

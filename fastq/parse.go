@@ -201,8 +201,21 @@ func (d *Decoder) Record() (*Record, error) {
 		// Min byte < 33 is an error either way (Q values < 0
 		// don't exist in either encoding).
 		if len(qual) > 0 {
-			_, maxQ := qualRange(qual)
+			minQ, maxQ := qualRange(qual)
+			// Doc-promised rules: a byte < 33 is invalid for
+			// Phred+33 (Q-1 doesn't exist) and a byte < 64
+			// in the 64..73 range can still be valid Phred+64
+			// with Q0. The lowest valid byte across the two
+			// encodings is 33 (Phred+33 Q0).
+			if minQ < 33 {
+				return nil, &ParseError{Line: qualLineNo, Field: "qualities",
+					Msg: fmt.Sprintf("quality byte %d below Phred minimum 33", minQ)}
+			}
 			if maxQ > 73 {
+				d.phredOffset = Illumina13PhredOffset
+			} else if minQ >= 64 {
+				// Documented rule: min >= 64 unambiguously
+				// indicates Phred+64.
 				d.phredOffset = Illumina13PhredOffset
 			}
 		}

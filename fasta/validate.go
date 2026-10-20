@@ -57,7 +57,7 @@ const (
 // plus the '-' gap character and '*' translation stop, which
 // appear in protein sequences. Any byte not in this set
 // surfaces as a strict-mode validation error.
-const DefaultAlphabet = "ACGTURYSWKMBDHVNACGTURYSWKMBDHVN-*"
+const DefaultAlphabet = "ACGTURYSWKMBDHVNacgturyswkmbdhvn-*"
 
 // Validator runs semantic checks against a parsed FASTA
 // document.

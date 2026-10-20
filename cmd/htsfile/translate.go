@@ -348,10 +348,10 @@ func parseCigarString(s string) ([]uint32, error) {
 		if op > 9 {
 			return nil, fmt.Errorf("cigar: unknown op %q at position %d", s[j], j)
 		}
-		// BAM CIGAR packing: op in the high 4 bits, length in
-		// the low 28. (See bam.CigarOpChar — it reads op with
-		// p >> 28.)
-		out = append(out, op<<28|uint32(length))
+		// BAM CIGAR packing per spec 4.2: op_len<<4 | op, so
+		// the op code is in the LOW 4 bits and the length in
+		// the high 28. A 5M is 0x50.
+		out = append(out, bam.PackCigarOp(op, uint32(length)))
 		i = j + 1
 	}
 	return out, nil

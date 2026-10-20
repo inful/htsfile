@@ -15,10 +15,10 @@ import (
 //	if err := csi.NewWriter(&buf).Write(idx); err != nil { ... }
 //	idx, err := csi.NewReader(&buf).Read()
 //
-// The Writer is the symmetric counterpart of [Reader]. CSI has
-// an explicit version byte (the "CSI\x01" magic) so there is
-// no ambiguity in the format — bytes produced by this Writer
-// always round-trip through Reader.Read.
+// The Writer is the symmetric counterpart of [Reader]: it
+// emits the full CSI v1 format with l_aux, per-bin loffset,
+// and per-ref n_no_coor. Bytes always round-trip through
+// Reader.Read.
 //
 // A Writer is not safe for concurrent use.
 type Writer struct {
@@ -30,14 +30,13 @@ func NewWriter(w io.Writer) *Writer {
 	return &Writer{w: w}
 }
 
-// Write serializes idx to the underlying writer: magic +
-// min_shift + depth + n_ref + per-reference bin index + linear
-// index. CSI does not have an n_no_coor field (it uses the
-// version byte to disambiguate format variants, so EOF is the
-// sole end-of-stream signal). Bin numbers are emitted in
-// ascending order and chunks within each bin are sorted by Beg
-// to produce deterministic output matching the Reader's
-// post-sort behavior.
+// Write serializes idx to the underlying writer: magic,
+// min_shift, depth, l_aux, aux, n_ref, then per-reference
+// bin index (with per-bin loffset), linear index, and
+// n_no_coor. Bin numbers are emitted in ascending order and
+// chunks within each bin are sorted by Beg to produce
+// deterministic output matching the Reader's post-sort
+// behavior.
 func (wr *Writer) Write(idx *Index) error {
 	if idx == nil {
 		return fmt.Errorf("csi: Write: nil index")
@@ -45,20 +44,26 @@ func (wr *Writer) Write(idx *Index) error {
 	if _, err := wr.w.Write(Magic[:]); err != nil {
 		return fmt.Errorf("writing magic: %w", err)
 	}
-	// min_shift and depth are int32 LE per the CSI spec.
-	var minShiftBytes [4]byte
-	binary.LittleEndian.PutUint32(minShiftBytes[:], uint32(idx.MinShift))
-	if _, err := wr.w.Write(minShiftBytes[:]); err != nil {
+	var i32 [4]byte
+	binary.LittleEndian.PutUint32(i32[:], uint32(idx.MinShift))
+	if _, err := wr.w.Write(i32[:]); err != nil {
 		return fmt.Errorf("writing min_shift: %w", err)
 	}
-	var depthBytes [4]byte
-	binary.LittleEndian.PutUint32(depthBytes[:], uint32(idx.Depth))
-	if _, err := wr.w.Write(depthBytes[:]); err != nil {
+	binary.LittleEndian.PutUint32(i32[:], uint32(idx.Depth))
+	if _, err := wr.w.Write(i32[:]); err != nil {
 		return fmt.Errorf("writing depth: %w", err)
 	}
-	var nRef [4]byte
-	binary.LittleEndian.PutUint32(nRef[:], uint32(len(idx.References)))
-	if _, err := wr.w.Write(nRef[:]); err != nil {
+	binary.LittleEndian.PutUint32(i32[:], uint32(len(idx.Aux)))
+	if _, err := wr.w.Write(i32[:]); err != nil {
+		return fmt.Errorf("writing l_aux: %w", err)
+	}
+	if len(idx.Aux) > 0 {
+		if _, err := wr.w.Write(idx.Aux); err != nil {
+			return fmt.Errorf("writing aux: %w", err)
+		}
+	}
+	binary.LittleEndian.PutUint32(i32[:], uint32(len(idx.References)))
+	if _, err := wr.w.Write(i32[:]); err != nil {
 		return fmt.Errorf("writing n_ref: %w", err)
 	}
 	for i, ref := range idx.References {
@@ -70,7 +75,6 @@ func (wr *Writer) Write(idx *Index) error {
 }
 
 func (wr *Writer) writeReference(ref *Reference) error {
-	// Bin index.
 	binNumbers := make([]uint32, 0, len(ref.Bins))
 	for bin := range ref.Bins {
 		binNumbers = append(binNumbers, bin)
@@ -78,9 +82,9 @@ func (wr *Writer) writeReference(ref *Reference) error {
 	sort.Slice(binNumbers, func(i, j int) bool {
 		return binNumbers[i] < binNumbers[j]
 	})
-	var nBin [4]byte
-	binary.LittleEndian.PutUint32(nBin[:], uint32(len(binNumbers)))
-	if _, err := wr.w.Write(nBin[:]); err != nil {
+	var i32 [4]byte
+	binary.LittleEndian.PutUint32(i32[:], uint32(len(binNumbers)))
+	if _, err := wr.w.Write(i32[:]); err != nil {
 		return fmt.Errorf("writing n_bin: %w", err)
 	}
 	for _, bin := range binNumbers {
@@ -90,41 +94,52 @@ func (wr *Writer) writeReference(ref *Reference) error {
 		sort.Slice(sorted, func(i, j int) bool {
 			return sorted[i].Beg < sorted[j].Beg
 		})
-		var binBytes [4]byte
-		binary.LittleEndian.PutUint32(binBytes[:], bin)
-		if _, err := wr.w.Write(binBytes[:]); err != nil {
+		binary.LittleEndian.PutUint32(i32[:], bin)
+		if _, err := wr.w.Write(i32[:]); err != nil {
 			return fmt.Errorf("writing bin %d number: %w", bin, err)
 		}
-		var nChunk [4]byte
-		binary.LittleEndian.PutUint32(nChunk[:], uint32(len(sorted)))
-		if _, err := wr.w.Write(nChunk[:]); err != nil {
+		// Per-bin loffset: virtual file offset of the first
+		// overlapping record. The Reader discards this; we
+		// emit zero, which is the value samtools uses when
+		// the linear index covers the lookup path.
+		var u64 [8]byte
+		binary.LittleEndian.PutUint64(u64[:], 0)
+		if _, err := wr.w.Write(u64[:]); err != nil {
+			return fmt.Errorf("writing bin %d loffset: %w", bin, err)
+		}
+		binary.LittleEndian.PutUint32(i32[:], uint32(len(sorted)))
+		if _, err := wr.w.Write(i32[:]); err != nil {
 			return fmt.Errorf("writing bin %d n_chunk: %w", bin, err)
 		}
 		for _, c := range sorted {
-			var begBytes [8]byte
-			binary.LittleEndian.PutUint64(begBytes[:], c.Beg)
-			if _, err := wr.w.Write(begBytes[:]); err != nil {
+			binary.LittleEndian.PutUint64(u64[:], c.Beg)
+			if _, err := wr.w.Write(u64[:]); err != nil {
 				return fmt.Errorf("writing chunk beg: %w", err)
 			}
-			var endBytes [8]byte
-			binary.LittleEndian.PutUint64(endBytes[:], c.End)
-			if _, err := wr.w.Write(endBytes[:]); err != nil {
+			binary.LittleEndian.PutUint64(u64[:], c.End)
+			if _, err := wr.w.Write(u64[:]); err != nil {
 				return fmt.Errorf("writing chunk end: %w", err)
 			}
 		}
 	}
-	// Linear (interval) index.
-	var nIntv [4]byte
-	binary.LittleEndian.PutUint32(nIntv[:], uint32(len(ref.Intervals)))
-	if _, err := wr.w.Write(nIntv[:]); err != nil {
+	binary.LittleEndian.PutUint32(i32[:], uint32(len(ref.Intervals)))
+	if _, err := wr.w.Write(i32[:]); err != nil {
 		return fmt.Errorf("writing n_intv: %w", err)
 	}
 	for i, iv := range ref.Intervals {
-		var ivBytes [8]byte
-		binary.LittleEndian.PutUint64(ivBytes[:], iv)
-		if _, err := wr.w.Write(ivBytes[:]); err != nil {
+		var u64 [8]byte
+		binary.LittleEndian.PutUint64(u64[:], iv)
+		if _, err := wr.w.Write(u64[:]); err != nil {
 			return fmt.Errorf("writing interval[%d]: %w", i, err)
 		}
+	}
+	// n_no_coor: per-spec, optional. The reader tolerates
+	// absence (treats as zero); we always emit for forward
+	// compatibility.
+	var u64 [8]byte
+	binary.LittleEndian.PutUint64(u64[:], ref.NoCoor)
+	if _, err := wr.w.Write(u64[:]); err != nil {
+		return fmt.Errorf("writing n_no_coor: %w", err)
 	}
 	return nil
 }

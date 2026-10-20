@@ -40,7 +40,7 @@ func TestDecoder_SetSolexaEncoding(t *testing.T) {
 	// Solexa+64 has the same byte range as Phred+64; the
 	// test verifies the flag propagates from Decoder to
 	// each parsed Record.
-	src := "@r1\nACGT\n+\nIIII\n"
+	src := "@r1\nACGT\n+\n!!!!\n"
 	dec := NewDecoder(strings.NewReader(src))
 	dec.SetPhredOffset(64)
 	dec.SetPhredEncoding(PhredEncodingSolexa)
@@ -57,7 +57,7 @@ func TestDecoder_SetSolexaEncoding(t *testing.T) {
 }
 
 func TestRecord_EncodingDefaultIsPhred(t *testing.T) {
-	src := "@r1\nACGT\n+\nIIII\n"
+	src := "@r1\nACGT\n+\n!!!!\n"
 	rec, err := NewDecoder(strings.NewReader(src)).Record()
 	if err != nil {
 		t.Fatalf("Record: %v", err)

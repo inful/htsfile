@@ -13,7 +13,7 @@ func TestEncoder_BasicRecord(t *testing.T) {
 		Header:      "read1",
 		Seq:         []byte("ACGT"),
 		PlusLine:    "",
-		Qual:        []byte("IIII"),
+		Qual:        []byte("!!!!"),
 		PhredOffset: 33,
 	}
 	if err := enc.EncodeRecord(rec); err != nil {
@@ -22,7 +22,7 @@ func TestEncoder_BasicRecord(t *testing.T) {
 	if err := enc.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	want := "@read1\nACGT\n+\nIIII\n"
+	want := "@read1\nACGT\n+\n!!!!\n"
 	if buf.String() != want {
 		t.Errorf("got %q want %q", buf.String(), want)
 	}
@@ -35,7 +35,7 @@ func TestEncoder_WithPlusLine(t *testing.T) {
 		Header:   "r1 desc",
 		Seq:      []byte("ACGT"),
 		PlusLine: "r1 desc",
-		Qual:     []byte("IIII"),
+		Qual:     []byte("!!!!"),
 	}
 	if err := enc.EncodeRecord(rec); err != nil {
 		t.Fatalf("EncodeRecord: %v", err)
@@ -43,7 +43,7 @@ func TestEncoder_WithPlusLine(t *testing.T) {
 	if err := enc.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	want := "@r1 desc\nACGT\n+r1 desc\nIIII\n"
+	want := "@r1 desc\nACGT\n+r1 desc\n!!!!\n"
 	if buf.String() != want {
 		t.Errorf("got %q want %q", buf.String(), want)
 	}
@@ -102,7 +102,7 @@ func TestEncoder_RoundTrip(t *testing.T) {
 	// never mix offsets; the round-trip is bytes-faithful
 	// but the PhredOffset field is detected once per stream).
 	originals := []*Record{
-		{Header: "r1", Seq: []byte("ACGT"), Qual: []byte("IIII"), PhredOffset: 33},
+		{Header: "r1", Seq: []byte("ACGT"), Qual: []byte("!!!!"), PhredOffset: 33},
 		{Header: "r2 desc", Seq: []byte("GGGG"), PlusLine: "r2 desc",
 			Qual: []byte("JJJJ"), PhredOffset: 33},
 		{Header: "r3", Seq: []byte("ACGTACGT"), Qual: []byte("87654321"), PhredOffset: 33},
@@ -160,7 +160,7 @@ func TestEncoder_MultipleRecords(t *testing.T) {
 		rec := &Record{
 			Header: "r" + string(rune('0'+i)),
 			Seq:    []byte("ACGT"),
-			Qual:   []byte("IIII"),
+			Qual:   []byte("!!!!"),
 		}
 		if err := enc.EncodeRecord(rec); err != nil {
 			t.Fatalf("EncodeRecord: %v", err)
@@ -169,9 +169,9 @@ func TestEncoder_MultipleRecords(t *testing.T) {
 	if err := enc.Flush(); err != nil {
 		t.Fatalf("Flush: %v", err)
 	}
-	want := "@r0\nACGT\n+\nIIII\n" +
-		"@r1\nACGT\n+\nIIII\n" +
-		"@r2\nACGT\n+\nIIII\n"
+	want := "@r0\nACGT\n+\n!!!!\n" +
+		"@r1\nACGT\n+\n!!!!\n" +
+		"@r2\nACGT\n+\n!!!!\n"
 	if buf.String() != want {
 		t.Errorf("got %q want %q", buf.String(), want)
 	}

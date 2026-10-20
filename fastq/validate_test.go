@@ -4,7 +4,7 @@ import "testing"
 
 func TestValidator_Default_EmptyHeader(t *testing.T) {
 	v := NewValidator(ModeDefault)
-	rec := &Record{Header: "", Seq: []byte("ACGT"), Qual: []byte("IIII")}
+	rec := &Record{Header: "", Seq: []byte("ACGT"), Qual: []byte("!!!!")}
 	issues := v.Validate([]*Record{rec})
 	if len(issues) != 1 {
 		t.Fatalf("got %d issues, want 1: %v", len(issues), issues)
@@ -53,7 +53,7 @@ func TestValidator_Default_QualBelowOffset(t *testing.T) {
 
 func TestValidator_Default_Happy(t *testing.T) {
 	v := NewValidator(ModeDefault)
-	rec := &Record{Header: "r1", Seq: []byte("ACGT"), Qual: []byte("IIII"), PhredOffset: 33}
+	rec := &Record{Header: "r1", Seq: []byte("ACGT"), Qual: []byte("!!!!"), PhredOffset: 33}
 	if issues := v.Validate([]*Record{rec}); len(issues) != 0 {
 		t.Errorf("expected no issues, got %v", issues)
 	}
@@ -62,8 +62,8 @@ func TestValidator_Default_Happy(t *testing.T) {
 func TestValidator_Default_MultipleRecords(t *testing.T) {
 	v := NewValidator(ModeDefault)
 	recs := []*Record{
-		{Header: "r1", Seq: []byte("ACGT"), Qual: []byte("IIII"), PhredOffset: 33},
-		{Header: "", Seq: []byte("ACGT"), Qual: []byte("IIII"), PhredOffset: 33},
+		{Header: "r1", Seq: []byte("ACGT"), Qual: []byte("!!!!"), PhredOffset: 33},
+		{Header: "", Seq: []byte("ACGT"), Qual: []byte("!!!!"), PhredOffset: 33},
 		{Header: "r3", Seq: []byte("A"), Qual: []byte("I"), PhredOffset: 33},
 	}
 	issues := v.Validate(recs)
@@ -79,7 +79,7 @@ func TestValidator_Strict_Alphabet(t *testing.T) {
 	// Strict mode rejects bytes not in the IUPAC nucleotide
 	// alphabet (default: ACGTURYSWKMBDHVN, case-insensitive).
 	v := NewValidator(ModeStrict)
-	rec := &Record{Header: "r1", Seq: []byte("ACGTZ"), Qual: []byte("IIIII"), PhredOffset: 33}
+	rec := &Record{Header: "r1", Seq: []byte("ACGTZ"), Qual: []byte("!!!!!"), PhredOffset: 33}
 	issues := v.Validate([]*Record{rec})
 	if len(issues) != 1 {
 		t.Fatalf("got %d issues, want 1: %v", len(issues), issues)
@@ -97,7 +97,7 @@ func TestValidator_Strict_AmbiguityCodes(t *testing.T) {
 	// and 'N' must pass strict mode.
 	v := NewValidator(ModeStrict)
 	seq := "ACGTRYSWKMBDHVN"
-	rec := &Record{Header: "r1", Seq: []byte(seq), Qual: []byte("IIIIIIIIIIIIIII"), PhredOffset: 33}
+	rec := &Record{Header: "r1", Seq: []byte(seq), Qual: []byte("!!!!!!!!!!!!!!!"), PhredOffset: 33}
 	if issues := v.Validate([]*Record{rec}); len(issues) != 0 {
 		t.Errorf("ambiguity codes rejected: %v", issues)
 	}
@@ -105,7 +105,7 @@ func TestValidator_Strict_AmbiguityCodes(t *testing.T) {
 
 func TestValidator_Strict_Lowercase(t *testing.T) {
 	v := NewValidator(ModeStrict)
-	rec := &Record{Header: "r1", Seq: []byte("acgt"), Qual: []byte("IIII"), PhredOffset: 33}
+	rec := &Record{Header: "r1", Seq: []byte("acgt"), Qual: []byte("!!!!"), PhredOffset: 33}
 	if issues := v.Validate([]*Record{rec}); len(issues) != 0 {
 		t.Errorf("lowercase rejected: %v", issues)
 	}
@@ -127,7 +127,7 @@ func TestValidator_Strict_DefaultChecksStillRun(t *testing.T) {
 func TestValidator_CustomAlphabet(t *testing.T) {
 	v := NewValidator(ModeStrict)
 	v.Alphabet = "X" // only X is allowed; everything else errors
-	rec := &Record{Header: "r1", Seq: []byte("XXXX"), Qual: []byte("IIII"), PhredOffset: 33}
+	rec := &Record{Header: "r1", Seq: []byte("XXXX"), Qual: []byte("!!!!"), PhredOffset: 33}
 	if issues := v.Validate([]*Record{rec}); len(issues) != 0 {
 		t.Errorf("custom alphabet: %v", issues)
 	}

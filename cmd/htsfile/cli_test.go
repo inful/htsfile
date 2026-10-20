@@ -87,7 +87,7 @@ const minimalFASTA = ">seq1 short read\n" +
 const minimalFASTQ = "@seq1\n" +
 	"ACGTACGTAC\n" +
 	"+\n" +
-	"IIIIIIIIII\n"
+	"!!!!!!!!!!\n"
 
 // minimalGFF is a single GFF3 record with a header.
 const minimalGFF = "##gff-version 3\n" +

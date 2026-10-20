@@ -76,7 +76,7 @@ func TestRecord_Length(t *testing.T) {
 	}
 	// Make sure Length uses Seq, not Qual.
 	rec.Seq = []byte("AC")
-	rec.Qual = []byte("IIIII")
+	rec.Qual = []byte("!!!!!")
 	if got := rec.Length(); got != 2 {
 		t.Errorf("Length uses Seq: got %d want 2", got)
 	}

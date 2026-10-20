@@ -15,10 +15,13 @@ import (
 //     themselves. The decoder sets NameRName / NameRNext from the
 //     header so callers don't have to look them up manually.
 //   - Cigar is stored as a slice of packed uint32 values, each
-//     encoding (op << 4) | len where op is the CIGAR op code
-//     (0=M, 1=I, 2=D, 3=N, 4=S, 5=H, 6=P, 7==, 9=B) and len is
-//     the operation length. The textual CIGAR string can be
-//     reconstructed by [Record.CigarString].
+//     encoding op_len<<4 | op per the BAM specification: the op
+//     code occupies the LOW 4 bits (0=M, 1=I, 2=D, 3=N, 4=S,
+//     5=H, 6=P, 7==, 8=X, 9=B) and the operation length occupies
+//     the high 28 bits, so a 5M operation is 0x50. Use
+//     [PackCigarOp] rather than writing the expression by hand.
+//     The textual CIGAR string can be reconstructed by
+//     [Record.CigarString].
 //
 // The zero value is not meaningful; obtain Records from
 // [Decoder.Record].
@@ -52,7 +55,7 @@ type Record struct {
 
 	// Bin is the BAM bin index (a uint16 in [0, 65535]) used
 	// by the BAM/BAI indexing scheme to assign a record to one
-	// of 37449 + 1 bins. The decoder computes it if it's wrong
+	// of 37449 bins (0..37448). The decoder computes it if it's wrong
 	// (some encoders write a stale bin index); the validator
 	// checks consistency.
 	Bin uint16
@@ -98,9 +101,9 @@ type Record struct {
 	NameRNext string
 }
 
-// Cigar op codes (the high 4 bits of a packed CIGAR uint32).
-// Same values as the SAM/BAM specification: M=0, I=1, D=2, N=3,
-// S=4, H=5, P=6, ==7, X=8, B=9.
+// Cigar op codes. Per the BAM specification each packed uint32
+// is op_len<<4 | op, so these are the LOW 4 bits. M=0, I=1,
+// D=2, N=3, S=4, H=5, P=6, ==7, X=8, B=9.
 const (
 	CigarM  uint32 = 0
 	CigarI  uint32 = 1
@@ -118,7 +121,7 @@ const (
 // CIGAR uint32. Unknown ops (those not listed in the spec) return
 // '?'.
 func CigarOpChar(p uint32) byte {
-	op := p >> 28
+	op := p & 0xF
 	switch op {
 	case CigarM:
 		return 'M'
@@ -145,11 +148,19 @@ func CigarOpChar(p uint32) byte {
 	}
 }
 
-// CigarOpLen returns the operation length (low 28 bits of the
-// packed CIGAR uint32 — BAM uses the high 4 bits for the op
-// code and the low 28 bits for the length).
+// CigarOpLen returns the operation length (the high 28 bits of
+// the packed CIGAR uint32 — the BAM spec puts the op code in the
+// low 4 bits and the length in the remaining high 28).
 func CigarOpLen(p uint32) uint32 {
-	return p & 0x0FFFFFFF
+	return p >> 4
+}
+
+// PackCigarOp builds one packed BAM CIGAR word from an op code
+// and an operation length, per the spec layout op_len<<4 | op.
+// Prefer this over writing the expression out by hand: getting
+// the layout backwards silently turns a 5M into an 80M.
+func PackCigarOp(op, length uint32) uint32 {
+	return length<<4 | (op & 0xF)
 }
 
 // CigarString returns the SAM text form of the CIGAR ("5M2I3M"
@@ -211,8 +222,14 @@ func strconvAppendInt(buf []byte, n int64) []byte {
 //	H  null-terminated hex string (no terminator stored in Value)
 //	B  typed array, subtyped by c/C/S/SiIf
 type Tag struct {
-	Key   string
-	Type  TagType
+	Key  string
+	Type TagType
+	// Sub carries the B-array sub-type when Type == TagB; it
+	// is the literal byte from the wire (one of c, C, s, S,
+	// i, I, f). Zero otherwise. The encoder refuses to write
+	// a B array whose Sub is not one of the spec-allowed
+	// sub-type bytes; the reader fills it from the wire.
+	Sub   TagType
 	Value string
 }
 
