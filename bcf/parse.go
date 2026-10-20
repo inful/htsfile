@@ -220,14 +220,11 @@ func (d *Decoder) Record() (*Record, error) {
 		}
 		rec.Format = formatKeys
 		sampleNames := d.hdr.SampleNames
-		rec.Samples = make([]Sample, len(sampleNames))
-		for i := range sampleNames {
-			s, err := d.readSample(formatKeys)
-			if err != nil {
-				return nil, err
-			}
-			rec.Samples[i] = *s
+		samples, err := d.readFormatBlock(formatKeys, len(sampleNames))
+		if err != nil {
+			return nil, err
 		}
+		rec.Samples = samples
 	}
 	return rec, nil
 }

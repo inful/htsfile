@@ -182,3 +182,104 @@ func TestFormatNoSamples(t *testing.T) {
 		t.Errorf("Samples: got %d, want 0", len(got.Samples))
 	}
 }
+
+// TestFormatPerFieldMixedPloidy verifies that a record
+// with one haploid (chrY-style) and one diploid sample
+// round-trips: the haploid's GT vector is padded with
+// END_OF_VECTOR to max ploidy, and the decoder strips the
+// padding so each sample sees only its own cardinality.
+func TestFormatPerFieldMixedPloidy(t *testing.T) {
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##FORMAT=<ID=GT,Number=1,Type=String,Description=\"g\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+	rec := &Record{
+		CHROM: "chr1", Pos: 100, Ref: "A", Alt: []string{"C"},
+		Info:   map[string]InfoValue{},
+		Format: []uint16{0},
+		Samples: []Sample{
+			// S1: haploid "0"
+			{Fields: map[uint16]SampleValue{
+				0: {Type: "String", Strs: []string{"0"}},
+			}},
+			// S2: diploid "0/1"
+			{Fields: map[uint16]SampleValue{
+				0: {Type: "String", Strs: []string{"0/1"}},
+			}},
+		},
+	}
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	if err := enc.WriteHeader(ParseHeader(hdrText)); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if err := enc.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	dec := NewDecoder(&buf)
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	got, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if len(got.Samples) != 2 {
+		t.Fatalf("Samples: got %d, want 2", len(got.Samples))
+	}
+	for i, want := range []string{"0", "0/1"} {
+		v := got.Samples[i].Fields[0]
+		if len(v.Strs) != 1 || v.Strs[0] != want {
+			t.Errorf("S%d GT: got %v, want [%q]", i+1, v.Strs, want)
+		}
+	}
+}
+
+// TestFormatPerFieldAllMissing verifies that a field with
+// every sample missing collapses to a single typeMissing
+// byte for the whole field (per §5).
+func TestFormatPerFieldAllMissing(t *testing.T) {
+	hdrText := "##fileformat=VCFv4.2\n" +
+		"##contig=<ID=chr1,length=1000>\n" +
+		"##FORMAT=<ID=DP,Number=1,Type=Integer,Description=\"d\">\n" +
+		"#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO\tFORMAT\tS1\tS2\n"
+	rec := &Record{
+		CHROM: "chr1", Pos: 100, Ref: "A",
+		Info:   map[string]InfoValue{},
+		Format: []uint16{0},
+		Samples: []Sample{
+			{Fields: map[uint16]SampleValue{0: {Missing: true}}},
+			{Fields: map[uint16]SampleValue{0: {Missing: true}}},
+		},
+	}
+	var buf bytes.Buffer
+	enc := NewEncoder(&buf)
+	if err := enc.WriteHeader(ParseHeader(hdrText)); err != nil {
+		t.Fatalf("WriteHeader: %v", err)
+	}
+	if err := enc.WriteRecord(rec); err != nil {
+		t.Fatalf("WriteRecord: %v", err)
+	}
+	if err := enc.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	dec := NewDecoder(&buf)
+	if _, err := dec.Header(); err != nil {
+		t.Fatalf("Header: %v", err)
+	}
+	got, err := dec.Record()
+	if err != nil {
+		t.Fatalf("Record: %v", err)
+	}
+	if len(got.Samples) != 2 {
+		t.Fatalf("Samples: got %d, want 2", len(got.Samples))
+	}
+	for i := range got.Samples {
+		if !got.Samples[i].Fields[0].Missing {
+			t.Errorf("S%d not Missing", i+1)
+		}
+	}
+}

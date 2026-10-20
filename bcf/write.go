@@ -263,10 +263,8 @@ func encodeRecord(r *Record, chromIdx int32, hdr *Header, version uint8) ([]byte
 			binary.LittleEndian.PutUint16(ib[:], keyIdx)
 			payload.Write(ib[:])
 		}
-		for i := range r.Samples {
-			if err := writeSample(&payload, &r.Samples[i], r.Format, hdr, version); err != nil {
-				return nil, err
-			}
+		if err := writeFormatBlock(&payload, r, hdr, version); err != nil {
+			return nil, err
 		}
 	}
 	return payload.Bytes(), nil

@@ -11,6 +11,56 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.16.0] — 2026-10-20
+
+Minor release closing the meaningful §5 BCF2 gap:
+per-field FORMAT encoding + END_OF_VECTOR padding
+(supporting spec-compliant GT-as-int encoding).
+
+### Changed — bcf
+
+- **T4.23 — Per-field FORMAT encoding + END_OF_VECTOR**
+  (§5 line 2208–2255, 2304, 2325). The FORMAT block
+  is now structured by FIELD instead of by sample:
+  for each FORMAT key the encoder emits exactly one
+  type byte plus N typed values, padded with
+  END_OF_VECTOR sentinels for shorter entries. The
+  reader strips the padding so each sample sees only
+  its own cardinality. Tests previously using GT as
+  VCF strings now round-trip through the spec's
+  int-vector encoding.
+- **GT encoded as int vector** (§BcfTypeEncoding,
+  line 2463). GT is stored in `Sample.Value.Ints` as
+  the spec's `(allele+1)<<1 | phased` int vector.
+  Mixed-ploidy GTs (chrX-style haploid + diploid)
+  are padded with int8 END_OF_VECTOR (`0x81`) for the
+  shorter samples.
+- Helper modules `bcf/end_of_vector.go` and
+  `bcf/gt.go` carry the sentinel constants and the
+  encode/decode helpers respectively.
+
+### Tests
+
+- `TestEncodeGT`, `TestDecodeGT`, `TestGTRoundTrip`
+  — spec's wire forms at line 2474.
+- `TestFormatPerFieldMixedPloidy`,
+  `TestFormatPerFieldAllMissing` — wire-shape
+  behaviour under mixed-ploidy and field-wide
+  missingness.
+
+### Migration note
+
+Files written by `Encoder` before v0.16.0 used a
+per-sample FORMAT block (one type byte per sample per
+key); files written by external tools (e.g. htslib)
+already used the spec's per-field block. The new
+reader accepts the per-field shape (default) and
+existing test fixtures have been updated to match.
+
+`go test -race -count=1 ./...` is green;
+`golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean.
+
 ## [0.15.11] — 2026-10-20
 
 Patch release closing the two smaller spec gaps listed

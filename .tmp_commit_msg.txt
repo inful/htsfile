@@ -1,0 +1,65 @@
+feat(bcf): per-field FORMAT encoding + END_OF_VECTOR (T4.23, v0.16.0)
+
+Closes the meaningful remaining §5 BCF2 gap. The
+spec's wire shape (line 2208–2255) is per-FIELD, not
+per-sample:
+
+  for each FORMAT key i in record.Format:
+    uint16 key index
+    type byte  (vector size in high nibble, type in low)
+    N typed values, padded with END_OF_VECTOR for
+    shorter entries in mixed-ploidy / mixed-length
+    vectors
+
+This release restructures the FORMAT block to that
+shape. The encoder emits exactly one type byte per
+key followed by N typed values; shorter entries get
+padded with END_OF_VECTOR sentinels:
+
+  0x81       — int8 / GT entries (line 2304)
+  0x80000001 — int32 entries
+  0x7F800002 — float32 entries
+
+GT encoding moves to the spec's int-vector form
+(line 2463):
+
+  allele → (allele+1) << 1
+  phased → low bit
+
+The phasing rule attaches the phased bit to the
+trailing allele of each pair: it produces all of the
+spec's worked examples at line 2474 ("0/1" = 0x02
+0x04, "0|1" = 0x03 0x05, "./." = 0x00 0x00, "0" =
+0x03 haploid, "0/1/2" = 0x02 0x04 0x06, "0/1|2" =
+0x02 0x04 0x07).
+
+New files:
+
+- bcf/gt.go                — encodeGT / decodeGT.
+- bcf/end_of_vector.go     — sentinel constants.
+- bcf/gt_test.go           — spec's wire forms.
+
+Plus tests in format_test.go:
+
+- TestFormatPerFieldMixedPloidy  — S1="0" + S2="0/1".
+- TestFormatPerFieldAllMissing  — field collapses to
+  typeMissing.
+
+The formatTest.TestFormatRoundTrip / VariableCardinality /
+Missing tests (per-field readers of self-written files) all
+still pass after the restructure.
+
+Migration note: v0.15.x test fixtures self-roundtripped
+through the per-sample block; v0.16.0 fixes that — the
+encoder now matches the spec, and external BCF files
+written by htslib (which always used per-field) now
+decode correctly instead of being misaligned.
+
+§5 BCF2 of SPEC_COMPLIANCE.md is now substantially
+closed. The only remaining gap is a small float
+MISSING encoding refinement (signaling NaN per
+type-byte), which is a one-line writer change.
+
+All 18 packages pass go test -race -count=1;
+golangci-lint run ./... reports 0 issues;
+make fmt-check is clean.

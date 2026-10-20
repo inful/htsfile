@@ -1138,25 +1138,18 @@ Remaining spec-conformance gaps:
    encodes "missing" via the `typeMissing` byte (size 0),
    which is the simpler form accepted by the spec but
    not its only representation.
-3. ❓ **END_OF_VECTOR** (line 2304–2305, 2325–2326).
-   Integer END_OF_VECTOR sentinels (`0x81` / `0x8001` /
-   `0x80000001`) and float END_OF_VECTOR (`0x7F800002`)
-   mark pad values in mixed-length vectors. The current
-   reader/writer do not emit or recognise these.
-4. ❓ **Per-field FORMAT encoding** (line 2236–2242). The
-   spec encodes genotype values by FORMAT key, one type
-   byte for the whole N-sample vector (padded with
-   END_OF_VECTOR values for shorter samples). The current
-   reader/writer encode per sample, which works for
-   self-roundtrip but is not the spec's compact form.
+3. ✅ **END_OF_VECTOR** (line 2304–2305, 2325–2326).
+   Closed by T4.23, v0.16.0. The encoder pads shorter
+   entries with `0x81` (int8) or `0x80000001` (int32)
+   or `0x7F800002` (float32); the reader strips them.
+4. ✅ **Per-field FORMAT encoding** (line 2236–2242).
+   Closed by T4.23, v0.16.0. Each FORMAT key now has
+   exactly one type byte for the whole N-sample vector.
 5. ✅ **Integer reserved range on writer side** (line
    2306). Closed by T4.22, v0.15.11.
 
 Item 2 is small enough to close in a focused commit
 (the per-type MISSING form is one writer-side change).
-Items 3 and 4 are structural changes that would require
-a fresh BCF package revision and are out of scope for the
-incremental gap-closure plan.
 
 ### Spec rules exercised by tests but currently
 **outside SPEC_COMPLIANCE.md's task taxonomy**
@@ -1191,13 +1184,13 @@ In priority order (most spec-rule-fixing value):
 
 Remaining:
 
-1. **Per-field FORMAT encoding + END_OF_VECTOR**
-   (§5, line 2208–2255, 2304, 2325). The spec
-   encodes genotype values by FORMAT key with
-   END_OF_VECTOR padding for mixed-length vectors.
-   Closing this requires restructuring the
-   per-sample block — out of scope for the v0.15.x
-   gap-closure plan.
+1. ✅ **Per-field FORMAT encoding + END_OF_VECTOR**
+   (§5, line 2208–2255, 2304, 2325). Closed by T4.23,
+   v0.16.0. The encoder now emits the per-field block
+   (one type byte per field, N values per field padded
+   with END_OF_VECTOR); the reader strips the
+   padding so each sample sees only its own
+   cardinality.
 2. ✅ **Inline size in type byte** (§BcfTypeEncoding,
    line 2271). Closed by T4.21, v0.15.11. The
    writer now emits `(1<<4) | type` for atomic
@@ -1209,7 +1202,69 @@ Remaining:
    v0.15.11. The writer refuses to emit values
    in `[-2^31, -2^31+7]`.
 
-Item 1 is the meaningful §5 gap.
+§5 BCF2 is now substantially spec-compliant.
+
+### T4.23 — Per-field FORMAT encoding + END_OF_VECTOR (§5 line 2208–2255, 2304, 2325)
+
+**Spec (§5, line 2208–2255):**
+
+> "Genotype fields are encoded not by sample as in VCF
+> but rather by field, with a vector of values for each
+> sample following each field."
+
+**Spec (§BcfTypeEncoding, line 2304–2305):**
+
+> For integer types, the values `0x81`, `0x8001`,
+> `0x80000001` are END_OF_VECTOR indicators. For
+> float, `0x7F800002`.
+
+The v0.15.x FORMAT block was per-sample (one type byte
+per sample per key) which works for self-roundtrip but
+is not the spec's compact form. **T4.23 restructures the
+block to be per-field**: for each FORMAT key, the
+encoder emits exactly one type byte (size in high nibble,
+type in low) plus N typed values, padded with
+END_OF_VECTOR sentinels for shorter entries. The reader
+strips the padding so each sample sees only its own
+cardinality.
+
+GT is stored in the per-field block as a typed int8
+vector (the spec's wire form at line 2463): each allele
+encodes as `(allele+1)<<1 | phased`. Mixed-ploidy GTs
+(e.g. chrX-style haploid + diploid in one record) are
+padded with the int8 END_OF_VECTOR (`0x81`) for the
+shorter entries.
+
+Where:
+- `bcf/gt.go`: `encodeGT(gt string) []uint8` and
+  `decodeGT(ints []uint8) (string, error)` implement the
+  spec's int-vector encoding and its inverse. The phasing
+  rule attaches the phased bit to the trailing allele of
+  each pair.
+- `bcf/end_of_vector.go`: sentinel constants
+  `bcfEndOfVectorInt8 = 0x81`, `bcfEndOfVectorInt32 =
+  0x80000001`, `bcfEndOfVectorFloat32 = 0x7F800002`.
+- `bcf/format.go`: per-field reader
+  `(*Decoder).readFormatBlock` and writer
+  `writeFormatBlock`. `fieldMaxSize` computes the
+  uniform vector size; `writeFormatSampleValue`
+  pads shorter entries with the appropriate
+  END_OF_VECTOR.
+- Tests: `TestEncodeGT`, `TestDecodeGT`,
+  `TestGTRoundTrip`, `TestFormatPerFieldMixedPloidy`,
+  `TestFormatPerFieldAllMissing`.
+
+Acceptance:
+- "0/1" → int vector `[0x02, 0x04]` and back.
+- "0|1" → `[0x03, 0x05]`.
+- "./." → `[0x00, 0x00]`.
+- Mixed-ploidy (`S1=0`, `S2=0/1`): the encoder pads S1
+  with END_OF_VECTOR, the decoder strips it, both samples
+  recover their own GT cardinality.
+- All-missing fields collapse to a single `typeMissing`
+  byte for the whole field.
+
+Status: ✅ (v0.16.0)
 
 ### T4.17 — LAA cross-check (§1.6.2)
 
