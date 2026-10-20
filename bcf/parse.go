@@ -465,7 +465,7 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 	switch def.Type {
 	case "Integer":
 		v.Ints = make([]int64, count)
-		switch t {
+		switch t & 0x0F { // mask the high nibble (inline size)
 		case typeInt8:
 			for i := 0; i < count; i++ {
 				b, err := d.readByte()
@@ -496,7 +496,7 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 		}
 	case "Float":
 		v.Floats = make([]float64, count)
-		switch t {
+		switch t & 0x0F { // mask the high nibble (inline size)
 		case typeFloat:
 			for i := 0; i < count; i++ {
 				var bits uint32

@@ -166,6 +166,18 @@ func (d *Decoder) readSampleTypedValue(def *FormatDef) (SampleValue, error) {
 	return val, nil
 }
 
+// int64Slice converts a []int32 to a []int64 so the
+// shared checkBcfIntegerRange helper accepts the FORMAT
+// Ints slice. A copy avoids aliasing of the caller's
+// storage.
+func int64Slice(xs []int32) []int64 {
+	out := make([]int64, len(xs))
+	for i, v := range xs {
+		out[i] = int64(v)
+	}
+	return out
+}
+
 // writeSample emits one per-sample block given the FORMAT
 // layout. The version selects the long-string type tag
 // (0xF) for BCF 2.2; pass 1 for BCF 2.1.
@@ -214,14 +226,22 @@ func writeSampleTypedValue(w *bytes.Buffer, val *SampleValue, def *FormatDef, ve
 	}
 	switch def.Type {
 	case "Integer":
-		w.WriteByte(typeInt32)
+		if err := checkBcfIntegerRange(fmt.Sprintf("FORMAT/%s", def.ID), int64Slice(val.Ints)); err != nil {
+			return err
+		}
+		// Atomic FORMAT Integer vector: encode the size
+		// in the high nibble (T4.21, §BcfTypeEncoding
+		// line 2271): `(1<<4) | type`.
+		w.WriteByte(typeByteAtomic(typeInt32))
 		for _, n := range val.Ints {
 			var b [4]byte
 			binary.LittleEndian.PutUint32(b[:], uint32(n)) //nolint:gosec // wire-format reinterpret
 			w.Write(b[:])
 		}
 	case "Float":
-		w.WriteByte(typeFloat)
+		// Atomic FORMAT Float vector: encode the size
+		// in the high nibble (T4.21).
+		w.WriteByte(typeByteAtomic(typeFloat))
 		for _, f := range val.Floats {
 			var b [4]byte
 			binary.LittleEndian.PutUint32(b[:], math.Float32bits(f))

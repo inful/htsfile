@@ -1128,15 +1128,10 @@ Implemented in the v2 reader/writer:
   0xFFFFFFFF`).
 
 Remaining spec-conformance gaps:
-1. ❓ **Atomic type byte inline size** (line 2271). The
-   spec encodes the vector size in the high nibble of
-   the type byte for sizes 1–14 (`size<<4 | type`) with
-   size 15 indicating overflow. The current writer emits
-   the bare type byte (no inline size) for atomic (size 1)
-   values, e.g. `0x03` for a single int32 instead of the
-   spec's `0x13`. The decoder ignores the high nibble and
-   uses the header's declared Number to drive the
-   cardinality, so round-tripping still works.
+1. ✅ **Atomic type byte inline size** (line 2271).
+   Closed by T4.21, v0.15.11. The writer now emits
+   `(1<<4) | type` for atomic Integer/Float; the
+   reader masks the high nibble to accept both forms.
 2. ❓ **Float MISSING encoding** (line 2333). The spec
    defines float MISSING as signaling NaN `0x7F800001`
    and END_OF_VECTOR as `0x7F800002`. The current writer
@@ -1154,12 +1149,11 @@ Remaining spec-conformance gaps:
    END_OF_VECTOR values for shorter samples). The current
    reader/writer encode per sample, which works for
    self-roundtrip but is not the spec's compact form.
-5. ❓ **Integer reserved range on writer side** (line
-   2306). T4.14 added the VCF-level rejection; the BCF
-   writer should not emit forbidden values either.
+5. ✅ **Integer reserved range on writer side** (line
+   2306). Closed by T4.22, v0.15.11.
 
-Items 1, 2, and 5 are small enough to close in v0.16.0
-(closing the audit gap on real binary encoding details).
+Item 2 is small enough to close in a focused commit
+(the per-type MISSING form is one writer-side change).
 Items 3 and 4 are structural changes that would require
 a fresh BCF package revision and are out of scope for the
 incremental gap-closure plan.
@@ -1204,20 +1198,17 @@ Remaining:
    Closing this requires restructuring the
    per-sample block — out of scope for the v0.15.x
    gap-closure plan.
-2. **Inline size in type byte** (§BcfTypeEncoding,
-   line 2271). Atomic values should carry
-   size 1 in the high nibble (`1<<4 | type`). The
-   current writer emits the bare type byte; the
-   decoder ignores the high nibble and uses the
-   header's Number. Spec-compliant but cosmetic.
-3. **Integer reserved range on writer**
-   (§1.4.2, line 2306). T4.14 added VCF-side
-   rejection; the BCF writer should also refuse
-   forbidden values to avoid producing files
-   that bcftools / htslib will reject.
+2. ✅ **Inline size in type byte** (§BcfTypeEncoding,
+   line 2271). Closed by T4.21, v0.15.11. The
+   writer now emits `(1<<4) | type` for atomic
+   Integer and Float; the reader masks the high
+   nibble to accept both the bare and inline-size
+   form.
+3. ✅ **Integer reserved range on writer**
+   (§1.4.2, line 2306). Closed by T4.22,
+   v0.15.11. The writer refuses to emit values
+   in `[-2^31, -2^31+7]`.
 
-Items 2 and 3 are small enough to close
-incrementally (each fits in a single commit).
 Item 1 is the meaningful §5 gap.
 
 ### T4.17 — LAA cross-check (§1.6.2)

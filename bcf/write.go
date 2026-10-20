@@ -11,6 +11,58 @@ import (
 	"github.com/inful/htsfile/internal/bgzf"
 )
 
+// typeByteAtomic returns the BCF2 type-descriptor byte for
+// an atomic (size-1) value: the size in the high nibble
+// (must be 1 for atomic values) and the type in the low
+// nibble. Per §BcfTypeEncoding (line 2271):
+//
+//	"5,6,7,8 bits & The number of elements of the
+//	upcoming type. For atomic values, the size must be
+//	1."
+//
+// yEncodes as `(1<<4) | type`, e.g. `0x13` for a single
+// int32, `0x15` for a single float32. The decoder ignores
+// the high nibble (it reads the count from the header's
+// declared Number), so this is wire-compatible with the
+// existing reader.
+func typeByteAtomic(t uint8) uint8 {
+	return (1 << 4) | t
+}
+
+// bcfIntReservedMin is the lowest of the eight Integer
+// values that BCF2 (§BcfTypeEncoding, line 2306 / §1.4.2)
+// reserves for its type-prefix encoding. The eight values
+// [MinInt32, MinInt32+7] are forbidden in both VCF and
+// BCF; the writer refuses to emit them so a BCF file
+// round-trips through bcftools / htslib cleanly.
+const (
+	bcfIntReservedMin = int64(math.MinInt32)
+	bcfIntReservedMax = bcfIntReservedMin + 7 // -2147483641
+)
+
+// bcfIntegerReserved reports whether v is one of the
+// eight BCF2-reserved Integer values. See [T4.22].
+func bcfIntegerReserved(v int64) bool {
+	return v >= bcfIntReservedMin && v <= bcfIntReservedMax
+}
+
+// checkBcfIntegerRange returns an error if any element of
+// ints is in the BCF2-reserved Integer range
+// [MinInt32, MinInt32+7]. Used by the writer to refuse
+// forbidden values before they hit the wire. Format
+// errors are kept under one message so the writer
+// returns one error per field rather than one per
+// value.
+func checkBcfIntegerRange(field string, ints []int64) error {
+	for _, v := range ints {
+		if bcfIntegerReserved(v) {
+			return fmt.Errorf("bcf: %s value %d is in the BCF2 forbidden range [%d, %d] (§1.4.2)",
+				field, v, bcfIntReservedMin, bcfIntReservedMax)
+		}
+	}
+	return nil
+}
+
 // Encoder writes a BCF v2.1 document to an underlying
 // [io.Writer]. The output is BGZF-compressed per the BCF
 // spec.
@@ -390,7 +442,13 @@ func writeTypedInfoValue(w *bytes.Buffer, val *InfoValue, hdr *Header) error {
 			binary.LittleEndian.PutUint32(lb[:], uint32(len(val.Ints)))
 			w.Write(lb[:])
 		}
-		w.WriteByte(typeInt32) // value type byte
+		if err := checkBcfIntegerRange("INFO", val.Ints); err != nil {
+			return err
+		}
+		// Atomic (size 1) Integer vectors encode the size
+		// in the high nibble (T4.21, §BcfTypeEncoding
+		// line 2271): `(1<<4) | type`.
+		w.WriteByte(typeByteAtomic(typeInt32))
 		for _, n := range val.Ints {
 			var b [4]byte
 			binary.LittleEndian.PutUint32(b[:], uint32(int32(n)))
@@ -403,7 +461,9 @@ func writeTypedInfoValue(w *bytes.Buffer, val *InfoValue, hdr *Header) error {
 			binary.LittleEndian.PutUint32(lb[:], uint32(len(val.Floats)))
 			w.Write(lb[:])
 		}
-		w.WriteByte(typeFloat)
+		// Atomic (size 1) Float vectors encode the size
+		// in the high nibble (T4.21).
+		w.WriteByte(typeByteAtomic(typeFloat))
 		for _, f := range val.Floats {
 			var b [4]byte
 			binary.LittleEndian.PutUint32(b[:], math.Float32bits(float32(f)))

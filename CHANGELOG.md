@@ -11,6 +11,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.11] — 2026-10-20
+
+Patch release closing the two smaller spec gaps listed
+in `vcf/SPEC_COMPLIANCE.md` §5 BCF2.
+
+### Added — bcf
+
+- **T4.21 — Atomic inline-size type byte**
+  (§BcfTypeEncoding, line 2271). The BCF writer now
+  emits the type-descriptor byte for atomic Integer
+  and Float INFO/FORMAT values with size 1 encoded in
+  the high nibble (`(1<<4) | type`), e.g. `0x13` for a
+  single int32. The reader masks the high nibble
+  (`t & 0x0F`) so both bare and inline-size forms are
+  accepted.
+- **T4.22 — Forbidden Integer range on writer**
+  (§1.4.2, §BcfTypeEncoding line 2306). The BCF writer
+  refuses to emit Integer values in the BCF2 reserved
+  range `[-2^31, -2^31+7]` and surfaces a clear error
+  to the caller.
+
+### Tests
+
+- `TestWriter_ForbiddenIntegerRange` (T4.22).
+- `TestWriter_AcceptsValidIntegerRange`.
+- `TestWriter_AtomicInlineSize` (T4.21).
+- `TestReader_AcceptsInlineSizeTypeByte` — verifies the
+  wire bytes contain the inline-size form after BGZF
+  decompression.
+
+`go test -race -count=1 ./...` is green;
+`golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean.
+
 ## [0.15.10] — 2026-10-20
 
 Docs-only release: the v0.15.7 audit's "BCF2 binary
