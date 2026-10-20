@@ -1,43 +1,49 @@
-docs+tests(v0.18.1): document Validator streaming footgun + CLI pipeline test
+refactor(cmd/htsfile): consolidate translate.go streaming loop (v0.18.2)
 
-Two small-but-leverage things from the architecture
-review that ship together.
+Closes the architecture review's item #4. The four
+translate.go subcommand functions (runSAMToBAM /
+runBAMToSAM / runVCFToBCF / runBCFToVCF) each
+implemented the same "decode header → write header →
+stream records" loop verbatim, with only the
+concrete decoder/encoder types and the convert
+functions differing.
 
-Item #3 — document Validator streaming-state footgun.
+runTranslateStream[DH, EH, DR, ER any]
+accepts seven closures (readHeader, readRecord,
+convertHeader, writeHeader, convertRecord,
+writeRecord, finalise) and implements the shared
+loop once. Each call site binds a single decoder
+and encoder pair and threads them through the
+helper.
 
-The Validator had a doc comment claiming "safe to
-re-use across multiple Validate calls" — accurate for
-the one-shot helper, misleading for the streaming API.
-Cross-file reuse leaks seenIDs/seenChroms into the next
-file's first record; concurrent streams race on the
-mutable fields. The new doc comment is explicit and
-turns the footgun into a documented contract.
+The helper is closure-based rather than
+interface-based because the four encoders use
+different method names for the same operations
+(`WriteHeader`/`Close` for bam and bcf;
+`EncodeHeader`/`Flush` for sam and vcf). A single
+interface would force one naming convention on
+every package; closures don't.
 
-Item #5 — CLI pipeline integration test.
+Per-function line counts dropped from ~25 to ~14.
+The shared pattern (header parse → header convert
+→ header write → record loop → finalise) lives in
+exactly one place.
 
-The README has long claimed "every format the library
-reads has a Writer; CLI roundtrip works for all of
-them" without a single test exercising the claim
-end-to-end. TestCLIPipeline_VCFToBCFAndBack drives
+Also dropped: the dead `var _ = bytes.NewReader`
+sentinel and its `bytes` import.
 
-  vcf.NewDecoder(minimal VCF)
-  → runVCFToBCF
-  → runBCFToVCF
-  → vcf.NewDecoder
-  → vcf.NewValidator(ModeDefault).Validate
+All four subcommands retain their public signatures
+and observable behaviour. Existing tests pass:
+- TestSAMToBAMAndBack
+- TestVCFToBCFAndBack
+- TestCLIPipeline_VCFToBCFAndBack
 
-and asserts no issues emerge at the pipeline boundary.
-A regression in any of the four conversions now trips
-the test.
+go test -race -count=1 ./... is green; golangci-lint
+run ./... reports 0 issues; make fmt-check is clean.
 
-TestValidatorResetClearsState (in vcf/validate_test.go,
-re-created after the v0.18.0 split dropped the file)
-locks the doc-comment promise: a Validator that runs
-two files via the streaming API without Reset() must
-fire a false duplicate ID; after Reset() it must not.
-
-go test -race -count=1 ./... is green; golangci-lint run
-./... reports 0 issues; make fmt-check is clean.
-
-Remaining from the review:
-  - consolidate translate.go symmetric pairs (item #4)
+The architecture review's five items are now closed:
+  done at v0.17.0: split CLI by subcommand (#2)
+  done at v0.18.0: split vcf/validate.go (#1)
+  done at v0.18.1: document Validator streaming-state footgun (#3)
+                     add CLI pipeline integration test (#5)
+  done at v0.18.2: consolidate translate.go streaming loop (#4)

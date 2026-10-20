@@ -11,6 +11,43 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.18.2] — 2026-10-20
+
+Refactor release closing the architecture review's
+item #4: consolidate the four file-conversion
+subcommands in `cmd/htsfile/translate.go` behind a
+single streaming helper.
+
+### Changed — cmd/htsfile
+
+- **`runTranslateStream` helper** in translate.go.
+  Replaces the four per-format `runSAMToBAM` /
+  `runBAMToSAM` / `runVCFToBCF` / `runBCFToVCF`
+  functions' duplicated streaming loops. Each
+  function now binds a single decoder + encoder pair
+  and threads them through the generic helper via
+  closures, instead of re-implementing the
+  `for { parse; convert; write }` loop verbatim.
+- The four subcommand functions dropped from ~25 lines
+  each to ~14 lines. The shared pattern (header
+  parse → header convert → header write → record
+  loop → finalise) lives in one place.
+- The helper is closure-based rather than
+  interface-based because the four encoders use
+  different method names for the same operations
+  (`WriteHeader`/`Close` for bam & bcf;
+  `EncodeHeader`/`Flush` for sam & vcf). A single
+  interface would force one naming convention on
+  every package; closures don't.
+- Dead `var _ = bytes.NewReader` sentinel and its
+  `bytes` import removed (it was being kept alive
+  for no reason).
+
+### Tests
+
+All existing tests stay green (`TestSAMToBAMAndBack`,
+`TestVCFToBCFAndBack`, `TestCLIPipeline_VCFToBCFAndBack`).
+
 ## [0.18.1] — 2026-10-20
 
 Documentation + integration-test release closing the

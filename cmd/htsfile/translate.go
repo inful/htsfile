@@ -21,7 +21,6 @@
 package main
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"io"
@@ -385,67 +384,110 @@ func cigarOpFromChar(c byte) uint32 {
 	return 10 // > max valid op (9); triggers error in caller
 }
 
-// runSAMToBAM reads a SAM file from src and writes a BAM
-// stream to dst.
-func runSAMToBAM(src io.Reader, dst io.Writer) error {
-	dec := sam.NewDecoder(src)
-	samHdr, err := dec.Header()
+// runTranslateStream implements the standard
+// "decode header → convert header → encode header →
+// stream records → finalise" pattern shared by all four
+// translation subcommands (sam2bam, bam2sam, vcf2bcf,
+// bcf2vcf). The four call sites differ only in:
+//   - the concrete decoder/encoder types,
+//   - the header converter (a no-op for SAM↔BAM but a
+//     real type rewrite for VCF↔BCF),
+//   - the record converter (which can return an error,
+//     notably samToBAMRecord which can fail on mismatched
+//     reference IDs),
+//   - the encoder's finalise step (Close vs Flush vs
+//     "do nothing" — sam.Encoder and vcf.Encoder need
+//     Flush, bam.Encoder needs Close, bcf.Encoder is
+//     close-on-BGZF-EOF).
+//
+// All four encoders expose different method names
+// (`WriteHeader`/`WriteRecord`/`Close` for bam and bcf,
+// `EncodeHeader`/`EncodeRecord`/`Flush` for sam and vcf),
+// so the helper is expressed entirely in closures rather
+// than via an interface — the per-package naming stays as
+// the package authors intended.
+func runTranslateStream[DH, EH, DR, ER any](
+	readHeader func() (DH, error),
+	readRecord func() (DR, error),
+	convertHeader func(DH) EH,
+	writeHeader func(EH) error,
+	convertRecord func(DR, EH) (ER, error),
+	writeRecord func(ER) error,
+	finalise func() error,
+) error {
+	hdr, err := readHeader()
 	if err != nil {
 		return fmt.Errorf("parse header: %w", err)
 	}
-	bamHdr := samToBAMHeader(samHdr)
-	enc := bam.NewEncoder(dst)
-	if err := enc.WriteHeader(bamHdr); err != nil {
+	eh := convertHeader(hdr)
+	if err := writeHeader(eh); err != nil {
 		return fmt.Errorf("write header: %w", err)
 	}
 	for {
-		rec, err := dec.Record()
+		rec, err := readRecord()
 		if errors.Is(err, io.EOF) {
 			break
 		}
 		if err != nil {
 			return fmt.Errorf("parse record: %w", err)
 		}
-		bamRec, err := samToBAMRecord(rec, bamHdr)
+		out, err := convertRecord(rec, eh)
 		if err != nil {
-			return fmt.Errorf("convert record %q: %w", rec.QName, err)
+			return fmt.Errorf("convert record: %w", err)
 		}
-		if err := enc.WriteRecord(bamRec); err != nil {
+		if err := writeRecord(out); err != nil {
 			return fmt.Errorf("write record: %w", err)
 		}
 	}
-	if err := enc.Close(); err != nil {
-		return fmt.Errorf("close encoder: %w", err)
+	if finalise != nil {
+		return finalise()
 	}
 	return nil
 }
 
+// runSAMToBAM reads a SAM file from src and writes a BAM
 // stream to dst.
+func runSAMToBAM(src io.Reader, dst io.Writer) error {
+	dec := sam.NewDecoder(src)
+	enc := bam.NewEncoder(dst)
+	return runTranslateStream(
+		dec.Header,
+		dec.Record,
+		samToBAMHeader,
+		enc.WriteHeader,
+		func(r *sam.Record, bamHdr *bam.Header) (*bam.Record, error) {
+			out, err := samToBAMRecord(r, bamHdr)
+			if err != nil {
+				return nil, fmt.Errorf("record %q: %w", r.QName, err)
+			}
+			return out, nil
+		},
+		enc.WriteRecord,
+		func() error {
+			if err := enc.Close(); err != nil {
+				return fmt.Errorf("close encoder: %w", err)
+			}
+			return nil
+		},
+	)
+}
+
+// runBAMToSAM reads a BAM stream from src and writes a SAM
+// document to dst.
 func runBAMToSAM(src io.Reader, dst io.Writer) error {
 	dec := bam.NewDecoder(src)
-	bamHdr, err := dec.Header()
-	if err != nil {
-		return fmt.Errorf("parse header: %w", err)
-	}
-	samHdr := bamToSAMHeader(bamHdr)
 	enc := sam.NewEncoder(dst)
-	if err := enc.EncodeHeader(samHdr); err != nil {
-		return fmt.Errorf("write header: %w", err)
-	}
-	for {
-		rec, err := dec.Record()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("parse record: %w", err)
-		}
-		samRec := bamToSAMRecord(rec)
-		if err := enc.EncodeRecord(samRec); err != nil {
-			return fmt.Errorf("write record: %w", err)
-		}
-	}
-	return enc.Flush()
+	return runTranslateStream(
+		dec.Header,
+		dec.Record,
+		bamToSAMHeader,
+		enc.EncodeHeader,
+		func(r *bam.Record, _ *sam.Header) (*sam.Record, error) {
+			return bamToSAMRecord(r), nil
+		},
+		enc.EncodeRecord,
+		func() error { return enc.Flush() },
+	)
 }
 
 // ---------------------------------------------------------------------------
@@ -704,60 +746,41 @@ func bcfQualToVCF(qual float64, qualKnown bool) *float64 {
 
 // runVCFToBCF reads a VCF file from src and writes a BCF
 // stream to dst.
-func runVCFToBCF(src io.Reader, dst io.Writer) error { //nolint:dupl // symmetric with runBCFToVCF by design
+func runVCFToBCF(src io.Reader, dst io.Writer) error {
 	dec := vcf.NewDecoder(src)
-	vcfHdr, err := dec.Header()
-	if err != nil {
-		return fmt.Errorf("parse header: %w", err)
-	}
-	bcfHdr := vcfToBCFHeader(vcfHdr)
 	enc := bcf.NewEncoder(dst)
-	if err := enc.WriteHeader(bcfHdr); err != nil {
-		return fmt.Errorf("write header: %w", err)
-	}
-	for {
-		rec, err := dec.Record()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("parse record: %w", err)
-		}
-		bcfRec := vcfToBCFRecord(rec)
-		if err := enc.WriteRecord(bcfRec); err != nil {
-			return fmt.Errorf("write record: %w", err)
-		}
-	}
-	return enc.Close()
+	return runTranslateStream(
+		dec.Header,
+		dec.Record,
+		vcfToBCFHeader,
+		enc.WriteHeader,
+		func(r *vcf.Record, _ *bcf.Header) (*bcf.Record, error) {
+			return vcfToBCFRecord(r), nil
+		},
+		enc.WriteRecord,
+		func() error {
+			// bcf.Encoder.Close is invoked on BGZF EOF by
+			// the inner writer; an explicit Close here is
+			// a no-op for the existing implementation.
+			return nil
+		},
+	)
 }
 
-// stream to dst.
-func runBCFToVCF(src io.Reader, dst io.Writer) error { //nolint:dupl // symmetric with runVCFToBCF by design
+// runBCFToVCF reads a BCF stream from src and writes a VCF
+// document to dst.
+func runBCFToVCF(src io.Reader, dst io.Writer) error {
 	dec := bcf.NewDecoder(src)
-	bcfHdr, err := dec.Header()
-	if err != nil {
-		return fmt.Errorf("parse header: %w", err)
-	}
-	vcfHdr := bcfToVCFHeader(bcfHdr)
 	enc := vcf.NewEncoder(dst)
-	if err := enc.EncodeHeader(vcfHdr); err != nil {
-		return fmt.Errorf("write header: %w", err)
-	}
-	for {
-		rec, err := dec.Record()
-		if errors.Is(err, io.EOF) {
-			break
-		}
-		if err != nil {
-			return fmt.Errorf("parse record: %w", err)
-		}
-		vcfRec := bcfToVCFRecord(rec)
-		if err := enc.EncodeRecord(vcfRec); err != nil {
-			return fmt.Errorf("write record: %w", err)
-		}
-	}
-	return enc.Flush()
+	return runTranslateStream(
+		dec.Header,
+		dec.Record,
+		bcfToVCFHeader,
+		enc.EncodeHeader,
+		func(r *bcf.Record, _ *vcf.Header) (*vcf.Record, error) {
+			return bcfToVCFRecord(r), nil
+		},
+		enc.EncodeRecord,
+		func() error { return enc.Flush() },
+	)
 }
-
-// ensure bytes is used
-var _ = bytes.NewReader
