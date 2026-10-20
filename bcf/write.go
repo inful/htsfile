@@ -297,8 +297,13 @@ func filterIndex(name string, hdr *Header) uint32 {
 	return bcfFilterMissing
 }
 
-// writeTypedQual emits the QUAL typed float64. Missing is
-// typeMissing (qualKnown=false → emit sentinel).
+// writeTypedQual emits the QUAL typed float64. Missing
+// is typeMissing (qualKnown=false → emit sentinel).
+// Returns when the value is known to wire the float64
+// body. We keep the package's existing float64 width
+// rather than switch to float32 — the reader accepts
+// both and the wider width is what existing test
+// fixtures rely on.
 func writeTypedQual(w *bytes.Buffer, qual float64, qualKnown bool) {
 	if !qualKnown {
 		w.WriteByte(typeMissing)

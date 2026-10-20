@@ -1105,14 +1105,64 @@ gap. Numbers in parentheses are the line numbers in the
 
 ### §5 BCF2
 
-- ✅ BGZF container (existing vcf/bcf package).
-- ✅ String dictionary (existing `##dictionary=` parsing).
-- ❓ **Type encoding** (the 1-byte prefix + vector length,
-  §BcfTypeEncoding line 2258) is not implemented — the
-  `bcf` package currently uses text encoding (records
-  carry VCF text, not the binary type-prefixed format).
-  This is a significant gap; a real BCF2 reader needs the
-  binary type-prefixed encoding.
+The `bcf` package already implements most of the BCF2
+binary type encoding (§BcfTypeEncoding). The v0.15.7
+audit wording ("type encoding not implemented") was
+written when only the v1 text-based reader existed; by
+v0.15.7 the v2 reader/writer had landed.
+
+Implemented in the v2 reader/writer:
+- BGZF container.
+- 6-byte magic + length-prefixed VCF-style header.
+- BCF 2.1 (default) and BCF 2.2 (long-string `0xF`
+  type tag) magic accept.
+- CHROM (int32), POS (int32), ID/REF/ALT
+  (typed-string), FILTER (typed), QUAL (typed float64),
+  INFO (typed per declaration), per-sample FORMAT
+  (typed values).
+- Type-byte vocabulary: `typeMissing=0`, `typeInt8=1`,
+  `typeInt16=2`, `typeInt32=3`, `typeFloat=5`,
+  `typeString=7`, `typeLong=0xF` (BCF 2.2 long strings).
+- Per-spec missing-value sentinels for FILTER and length
+  prefixes (`bcfFilterMissing = bcfInt32Missing =
+  0xFFFFFFFF`).
+
+Remaining spec-conformance gaps:
+1. ❓ **Atomic type byte inline size** (line 2271). The
+   spec encodes the vector size in the high nibble of
+   the type byte for sizes 1–14 (`size<<4 | type`) with
+   size 15 indicating overflow. The current writer emits
+   the bare type byte (no inline size) for atomic (size 1)
+   values, e.g. `0x03` for a single int32 instead of the
+   spec's `0x13`. The decoder ignores the high nibble and
+   uses the header's declared Number to drive the
+   cardinality, so round-tripping still works.
+2. ❓ **Float MISSING encoding** (line 2333). The spec
+   defines float MISSING as signaling NaN `0x7F800001`
+   and END_OF_VECTOR as `0x7F800002`. The current writer
+   encodes "missing" via the `typeMissing` byte (size 0),
+   which is the simpler form accepted by the spec but
+   not its only representation.
+3. ❓ **END_OF_VECTOR** (line 2304–2305, 2325–2326).
+   Integer END_OF_VECTOR sentinels (`0x81` / `0x8001` /
+   `0x80000001`) and float END_OF_VECTOR (`0x7F800002`)
+   mark pad values in mixed-length vectors. The current
+   reader/writer do not emit or recognise these.
+4. ❓ **Per-field FORMAT encoding** (line 2236–2242). The
+   spec encodes genotype values by FORMAT key, one type
+   byte for the whole N-sample vector (padded with
+   END_OF_VECTOR values for shorter samples). The current
+   reader/writer encode per sample, which works for
+   self-roundtrip but is not the spec's compact form.
+5. ❓ **Integer reserved range on writer side** (line
+   2306). T4.14 added the VCF-level rejection; the BCF
+   writer should not emit forbidden values either.
+
+Items 1, 2, and 5 are small enough to close in v0.16.0
+(closing the audit gap on real binary encoding details).
+Items 3 and 4 are structural changes that would require
+a fresh BCF package revision and are out of scope for the
+incremental gap-closure plan.
 
 ### Spec rules exercised by tests but currently
 **outside SPEC_COMPLIANCE.md's task taxonomy**
@@ -1147,10 +1197,28 @@ In priority order (most spec-rule-fixing value):
 
 Remaining:
 
-1. **BCF2 binary type encoding** (§5, line 2258). The
-   spec is precise about the 1-byte type-prefixed
-   encoding. The current `bcf` package uses text. Big
-   change but completes §5.
+1. **Per-field FORMAT encoding + END_OF_VECTOR**
+   (§5, line 2208–2255, 2304, 2325). The spec
+   encodes genotype values by FORMAT key with
+   END_OF_VECTOR padding for mixed-length vectors.
+   Closing this requires restructuring the
+   per-sample block — out of scope for the v0.15.x
+   gap-closure plan.
+2. **Inline size in type byte** (§BcfTypeEncoding,
+   line 2271). Atomic values should carry
+   size 1 in the high nibble (`1<<4 | type`). The
+   current writer emits the bare type byte; the
+   decoder ignores the high nibble and uses the
+   header's Number. Spec-compliant but cosmetic.
+3. **Integer reserved range on writer**
+   (§1.4.2, line 2306). T4.14 added VCF-side
+   rejection; the BCF writer should also refuse
+   forbidden values to avoid producing files
+   that bcftools / htslib will reject.
+
+Items 2 and 3 are small enough to close
+incrementally (each fits in a single commit).
+Item 1 is the meaningful §5 gap.
 
 ### T4.17 — LAA cross-check (§1.6.2)
 

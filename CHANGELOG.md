@@ -11,6 +11,38 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.15.10] — 2026-10-20
+
+Docs-only release: the v0.15.7 audit's "BCF2 binary
+type encoding not implemented" was outdated. By v0.15.7
+the `bcf` package's v2 reader/writer had already
+landed with typed CHROM/POS/ID/REF/ALT/FILTER/QUAL/
+INFO fields (per §BcfTypeEncoding). This release
+brings the SPEC_COMPLIANCE.md §5 BCF2 section in line
+with reality and lists the remaining gaps
+realistically:
+
+- **Per-field FORMAT encoding + END_OF_VECTOR**
+  (§5, line 2208–2255, 2304, 2325) — the meaningful
+  remaining gap. The spec encodes FORMAT keys as one
+  type byte covering N samples with END_OF_VECTOR
+  padding for mixed-length vectors. The current
+  per-sample block works for self-roundtrip but is
+  not the spec's compact form.
+- **Inline size in type byte** (§BcfTypeEncoding,
+  line 2271) — atomic values should carry
+  size 1 in the high nibble. Cosmetic, fits in a
+  single commit.
+- **Integer reserved range on writer** (§1.4.2,
+  line 2306) — T4.14 added VCF-side rejection. The
+  BCF writer should also refuse forbidden values
+  to avoid producing files that bcftools will
+  reject.
+
+`go test -race -count=1 ./...` is green;
+`golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean. No code changes.
+
 ## [0.15.9] — 2026-10-19
 
 Patch release closing the LAA cross-check.
