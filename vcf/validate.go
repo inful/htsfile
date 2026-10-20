@@ -37,11 +37,31 @@ const (
 //	    log.Printf("%v\n", iss)
 //	}
 //
-// A Validator is safe to re-use across multiple Validate calls. The
-// streaming API ([Validator.HeaderChecks], [Validator.Next],
+// A Validator is safe to re-use across multiple Validate calls —
+// Validate reads its slice argument and does not mutate the
+// receiver.
+//
+// The streaming API ([Validator.HeaderChecks], [Validator.Next],
 // [Validator.Finish]) holds cross-record state in the
-// Validator itself, so do not share a Validator across
-// concurrent streams.
+// Validator itself (seenIDs, prevChrom, etc.) so successive
+// records flowing through the same Validator can be matched
+// against their predecessors. Two gotchas follow:
+//
+//   - **Sharing a Validator across files leaks state.** The
+//     seenIDs / seenChroms sets accumulate entries from the
+//     previous file and will fire cross-record duplicate-ID
+//     errors at the first record of the new file. Call
+//     [Validator.Reset] before reusing a Validator for a new
+//     input.
+//
+//   - **Do not share a Validator across concurrent streams.**
+//     The mutable fields are not guarded by a mutex; concurrent
+//     calls into Next/Finish from multiple goroutines will race.
+//
+// The one-shot [Validator.Validate] helper takes a record slice
+// and does not touch the streaming fields, so it is goroutine-
+// safe by construction as long as the receiver is not shared
+// with another concurrent Validate call.
 type Validator struct {
 	Mode Mode
 
@@ -178,9 +198,15 @@ func (v *Validator) Validate(h *Header, records []*Record) []ValidationError {
 	return issues
 }
 
-// Reset clears any state from a previous streaming run. It
-// does not change the Mode. Call this before reusing a
-// Validator for a new file when you used the streaming API.
+// Reset clears any streaming state accumulated by previous
+// calls to [Validator.HeaderChecks], [Validator.Next], and
+// [Validator.Finish]. It does not change the Mode.
+//
+// Call Reset before reusing a Validator for a *different*
+// input file: without it, seenIDs/seenChroms accumulate
+// across files and the duplicate-ID check fires at the
+// first record of the new input. Reset is *not* needed
+// between Validate (one-shot) calls on the same receiver.
 func (v *Validator) Reset() {
 	v.recordIdx = 0
 	v.prevChrom = ""

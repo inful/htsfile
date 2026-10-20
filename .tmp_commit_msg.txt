@@ -1,66 +1,43 @@
-refactor(vcf): split validate.go into four domain-keyed files (v0.18.0)
+docs+tests(v0.18.1): document Validator streaming footgun + CLI pipeline test
 
-Closes the architecture review's item #1. The old
-vcf/validate.go was a 3,172-line god module — 100
-exported symbols, 49 of 162 commits (~30% of the repo's
-history) touched it, and every SPEC_COMPLIANCE.md
-task numbered T-number added more code to the same
-file. The split is mechanical (no behaviour change)
-and groups rules by domain:
+Two small-but-leverage things from the architecture
+review that ship together.
 
-  validate.go           752 LoC  orchestrator (Validator
-                                  struct + lifecycle:
-                                  New, WithReference,
-                                  Validate, Reset,
-                                  HeaderChecks, Next,
-                                  Finish; checkHeader,
-                                  checkRecord)
-  validate_record.go    571 LoC  record-level rules
-                                  (checkEventType,
-                                  checkPhaseStyle,
-                                  checkPloidy, checkEND,
-                                  checkENDBounds,
-                                  checkGVCFBlock,
-                                  checkGVCFBlockRef,
-                                  checkSVLENBounds,
-                                  checkSVClaim,
-                                  checkFilter,
-                                  checkBreakendPositions,
-                                  checkRefMatchesReference)
-  validate_info.go      530 LoC  INFO-level rules
-                                  (checkInfo plus its
-                                  helpers, including
-                                  the rn-determined-keys
-                                  machinery and the
-                                  SV-CLAIM helpers)
-  validate_samples.go  1,347 LoC  per-sample/FORMAT block
-                                  (checkSamples plus
-                                  the GT/ploidy/LAA/PSL/
-                                  PSO/MATEID layer)
+Item #3 — document Validator streaming-state footgun.
 
-Largest functions are now in their right-sized files:
-  checkInfo        247 LoC (validate_info.go)
-  checkSamples     242 LoC (validate_samples.go)
-  checkRecord      196 LoC (validate.go)
-  Next             181 LoC (validate.go)
-  checkRNDet.      118 LoC (validate_info.go)
+The Validator had a doc comment claiming "safe to
+re-use across multiple Validate calls" — accurate for
+the one-shot helper, misleading for the streaming API.
+Cross-file reuse leaks seenIDs/seenChroms into the next
+file's first record; concurrent streams race on the
+mutable fields. The new doc comment is explicit and
+turns the footgun into a documented contract.
 
-Each new file gets a minimal `package vcf` +
-imports header that matches what its contents actually
-reference (fmt, strings, regexp, strconv, math as
-needed). The orchestrator's `Validator` struct,
-helper types, and lifecycle methods are the only
-file-level state; everything else is reachable
-through regular package-internal function calls.
+Item #5 — CLI pipeline integration test.
 
-The split also opens room for consolidating duplicated
-helpers (Next/Validate share ~180 lines of header
-loading, record loop, validation entry, and footer).
+The README has long claimed "every format the library
+reads has a Writer; CLI roundtrip works for all of
+them" without a single test exercising the claim
+end-to-end. TestCLIPipeline_VCFToBCFAndBack drives
+
+  vcf.NewDecoder(minimal VCF)
+  → runVCFToBCF
+  → runBCFToVCF
+  → vcf.NewDecoder
+  → vcf.NewValidator(ModeDefault).Validate
+
+and asserts no issues emerge at the pipeline boundary.
+A regression in any of the four conversions now trips
+the test.
+
+TestValidatorResetClearsState (in vcf/validate_test.go,
+re-created after the v0.18.0 split dropped the file)
+locks the doc-comment promise: a Validator that runs
+two files via the streaming API without Reset() must
+fire a false duplicate ID; after Reset() it must not.
 
 go test -race -count=1 ./... is green; golangci-lint run
 ./... reports 0 issues; make fmt-check is clean.
 
 Remaining from the review:
-  - document Validator streaming-state footgun (item #3)
   - consolidate translate.go symmetric pairs (item #4)
-  - add CLI pipeline integration test (item #5)

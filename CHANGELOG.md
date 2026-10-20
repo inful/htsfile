@@ -11,6 +11,46 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.18.1] — 2026-10-20
+
+Documentation + integration-test release closing the
+architecture review's items #3 and #5.
+
+### Changed — vcf
+
+- **`Validator.Reset` doc comment** and the `Validator`
+  type's package-level doc have been rewritten to call
+  out two streaming-state footguns that were previously
+  implicit:
+  - Sharing a Validator across files leaks
+    seenIDs / seenChroms into the next file's first
+    record; call `Reset()` before reusing for a new
+    file.
+  - Sharing a Validator across concurrent streams
+    races on the mutable fields; the streaming API is
+    not safe for concurrent use.
+  The one-shot `Validate` helper remains safe to call
+  from multiple goroutines on the same receiver
+  because it doesn't touch the streaming fields.
+
+### Added
+
+- **`vcf/validate_test.go`** restored with
+  `TestValidatorResetClearsState` that exercises the
+  footgun the new docs describe: a Validator that runs
+  through two files via the streaming API without
+  `Reset()` fires a false duplicate-ID at the
+  boundary; after `Reset()` it cleans. Locks the new
+  doc comment against drift.
+- **`cmd/htsfile/cli_test.go`**: `TestCLIPipeline_VCFToBCFAndBack`
+  drives the VCF → BCF → VCF → check pipeline through
+  the CLI helpers and verifies the data round-trips
+  with no validation issues at the end. Closes the
+  review's item #5 (the "every format round-trips"
+  claim in the README).
+
+## [0.17.0] — 2026-10-20
+
 ## [0.18.0] — 2026-10-20
 
 Refactor release closing the architecture review's

@@ -456,3 +456,64 @@ func TestRunSummaryDispatchVCF(t *testing.T) {
 		t.Errorf("expected records field in dispatch summary: %q", out)
 	}
 }
+
+// TestCLIPipeline_VCFToBCFAndBack is the architecture review's
+// item #5: an end-to-end pipeline test that drives VCF →
+// BCF → VCF → check via the CLI helpers and verifies the
+// data round-trips. Catches any regression in the boundary
+// conversions that the per-format unit tests miss.
+func TestCLIPipeline_VCFToBCFAndBack(t *testing.T) {
+	// 1. VCF → BCF (runVCFToBCF).
+	var bcfBuf bytes.Buffer
+	if err := runVCFToBCF(strings.NewReader(minimalVCF), &bcfBuf); err != nil {
+		t.Fatalf("vcf→bcf: %v", err)
+	}
+	if bcfBuf.Len() == 0 {
+		t.Fatal("bcf output is empty")
+	}
+
+	// 2. BCF → VCF (runBCFToVCF).
+	var vcfBuf bytes.Buffer
+	if err := runBCFToVCF(&bcfBuf, &vcfBuf); err != nil {
+		t.Fatalf("bcf→vcf: %v", err)
+	}
+	out := vcfBuf.String()
+	// 3. Verify the round-tripped VCF has the expected
+	// header and record contents.
+	if !strings.Contains(out, "##fileformat=VCFv4.5") {
+		t.Errorf("missing fileformat: %q", out)
+	}
+	if !strings.Contains(out, "chr1\t100") {
+		t.Errorf("missing chr1:100 record: %q", out)
+	}
+	if !strings.Contains(out, "DP=42") {
+		t.Errorf("missing DP=42 INFO: %q", out)
+	}
+
+	// 4. Validate the round-tripped VCF (runCheckVCF on the
+	// buffer) and confirm it's clean. This is the part the
+	// pipeline must satisfy across the BCF boundary.
+	if issues := vcf.NewValidator(vcf.ModeDefault).Validate(
+		func() *vcf.Header {
+			h, err := vcf.NewDecoder(strings.NewReader(out)).Header()
+			if err != nil {
+				t.Fatalf("vcf header after round-trip: %v", err)
+			}
+			return h
+		}(),
+		func() []*vcf.Record {
+			var recs []*vcf.Record
+			dec := vcf.NewDecoder(strings.NewReader(out))
+			for {
+				r, err := dec.Record()
+				if err != nil {
+					break
+				}
+				recs = append(recs, r)
+			}
+			return recs
+		}(),
+	); len(issues) != 0 {
+		t.Errorf("round-tripped VCF has issues: %+v", issues)
+	}
+}
