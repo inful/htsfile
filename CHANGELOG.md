@@ -11,6 +11,96 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.19.1] — 2026-10-20
+
+Fix release. Repairs a regression introduced in v0.18.2.
+
+### Fixed
+
+- **`htsfile vcf2bcf` emitted an unterminated BCF stream.**
+  The v0.18.2 consolidation of the four translation
+  subcommands behind `runTranslateStream` gave
+  `runVCFToBCF` a `finalise` closure that returned `nil`
+  on the assumption that `bcf.Encoder.Close` "is invoked on
+  BGZF EOF by the inner writer". That is not the case:
+  `Close` is what flushes the pending BGZF block and emits
+  the 28-byte EOF marker. Without it the output was a BCF
+  header followed by an un-flushed data block, and
+  `bcf2vcf` on the result failed with
+  `parse header: line 0 magic: BCF stream too short for
+  magic`. `runVCFToBCF` now calls `enc.Close()` and
+  propagates its error, matching the pre-v0.18.2 behaviour.
+
+  Caught by `TestVCFToBCFMinimal`,
+  `TestVCFToBCFMultipleRecords`, `TestVCFToBCFAndBack` and
+  `TestCLIPipeline_VCFToBCFAndBack` — all four were
+  failing on v0.18.2, which shipped because the release
+  verification only inspected the last three lines of the
+  test output and the failure was above the cut.
+
+## [0.19.0] — 2026-10-20
+
+Audit-only release. A fresh section-by-section pass of
+VCFv4.5 against the current tree, run after the v0.18.x
+refactor series. The refactors were behaviour-neutral, so
+the v0.15.7 → v0.16.1 gap-closure still holds and BCF2
+(§5) remains spec-compliant. Three new gaps found, all
+in the reserved-key metadata area; recorded as T4.25,
+T4.26, T4.27 with spec line references and acceptance
+criteria. No code change in this release.
+
+### Added
+
+- **T4.25 — Reserved INFO/FORMAT key tables
+  incomplete.** `vcf/reserved.go` `reservedInfoKeys`
+  carries only the v4.5-new subset (RN, RUS, RUL, RUC,
+  RB, CIRUC, CIRB, RUB, LAA, LAD); all 21 keys from the
+  spec's Reserved INFO keys table (line 460–480: AA, AC,
+  AD, ADF, ADR, AF, AN, BQ, CIGAR, DB, DP, END, H2, H3,
+  MQ, MQ0, NS, SB, SOMATIC, VALIDATED, 1000G) are absent.
+  `reservedFormatKeys` is likewise missing 15 of the 30
+  keys in the Reserved genotype keys table (line
+  534–596). `Validator.checkReservedKeys` skips unknown
+  keys, so a header declaring, say,
+  `##INFO=<ID=DP,Number=5,Type=String,...>` or
+  `##FORMAT=<ID=HQ,Number=G,Type=Float,...>` produces no
+  diagnostic in either mode.
+- **T4.26 — Three reserved FORMAT keys have the wrong
+  Number/Type.** A false-positive bug, not a missing
+  check. The spec says `LAA . Integer` (line 547),
+  `LPL LG Integer` (line 554), `LPP LG Integer`
+  (line 555); `reserved.go` says `{., String}`,
+  `{P, String}`, `{G, Integer}`. A file declaring any of
+  the three the spec-correct way is warned against under
+  `ModeStrict`. (The value-parsing paths already tolerate
+  both forms, so only the header cross-check is wrong.)
+  A follow-on correction: the T4.17 note "the spec's
+  `LAA Type=String` default" is itself inaccurate.
+- **T4.27 — `checkReservedKeys` doc comment
+  contradicts its gating.** The comment describes a
+  default-mode warning "the caller can promote … by
+  switching to ModeStrict", but `HeaderChecks` gates the
+  whole call on `v.Mode == ModeStrict`, so there is
+  nothing to promote.
+
+### Verified clean this pass
+
+§1.4.1 BOM rejection and percent-encoding; §1.4.2 the
+`-2^31 .. -2^31+7` forbidden Integer range (T4.14);
+§1.4.3 `##SAMPLE` parsing and the `##META` `Values`
+cross-check (T1.3); §1.4.4 the INFO-key regex with the
+`1000G` legacy exception (T4.13); §1.4.7 contig/pedigree
+resolution (T1.5, T4.16); §1.6.1 the `##fileformat`-first
+rule and CHROM contiguity (T3.1); §1.6.1.1 padding bases
+and full-REF matching (T4.3, T4.4); §1.6.1.6 CIEND span-zero
+and cardinality = 2×ALT (T2.3); §1.6.1.7 CIRUC/CIRB
+(T4.12) and CIPOS span-zero; §1.6.2 GT phasing,
+PSL/PSO/PSQ missing-value coupling, LAA cardinality
+(T4.17), trailing-field drop (GT excepted); §1.6.5.1
+breakend remote-position bounds and mate PSL/PSO equality
+(T4.6, T3.3); §1.7 gVCF `<*>` block rules (T1.6, T4.9);
+§5 BCF2 (T4.21–T4.24).
+
 ## [0.18.2] — 2026-10-20
 
 Refactor release closing the architecture review's

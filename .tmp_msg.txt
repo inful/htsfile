@@ -1,0 +1,70 @@
+docs+fix(v0.19.x): fresh VCFv4.5 audit finds 3 reserved-key gaps; fix vcf2bcf regression
+
+Audit (v0.19.0, no code change):
+
+A fresh section-by-section pass of VCFv4.5 against the
+tree after the v0.18.x refactor series. The refactors
+were behaviour-neutral so the v0.15.7 → v0.16.1
+gap-closure still holds and BCF2 (§5) remains
+spec-compliant. Verified clean: §1.4.1 BOM/percent
+encoding, §1.4.2 forbidden Integer range, §1.4.3
+##SAMPLE + ##META Values, §1.4.4 INFO-key regex with
+the 1000G exception, §1.4.7 contig/pedigree, §1.6.1
+fileformat-first + CHROM contiguity, §1.6.1.1 padding +
+full-REF, §1.6.1.6 CIEND span-zero + 2×ALT cardinality,
+§1.6.1.7 CIRUC/CIRB + CIPOS span-zero, §1.6.2 GT
+phasing / PSL-PSO-PSQ coupling / LAA cardinality /
+trailing-field drop, §1.6.5.1 breakend bounds + mate
+PSL/PSO equality, §1.7 gVCF <*>, §5 BCF2.
+
+Three new gaps, all in reserved-key metadata:
+
+T4.25 — reservedInfoKeys carries only the v4.5-new
+  subset (RN, RUS, RUL, RUC, RB, CIRUC, CIRB, RUB,
+  LAA, LAD). All 21 keys from the spec's Reserved INFO
+  keys table (line 460-480: AA, AC, AD, ADF, ADR, AF,
+  AN, BQ, CIGAR, DB, DP, END, H2, H3, MQ, MQ0, NS, SB,
+  SOMATIC, VALIDATED, 1000G) are absent.
+  reservedFormatKeys is missing 15 of the 30 keys in the
+  Reserved genotype keys table (line 534-596).
+  checkReservedKeys skips unknown keys, so
+  `##INFO=<ID=DP,Number=5,Type=String,...>` and
+  `##FORMAT=<ID=HQ,Number=G,Type=Float,...>` produce no
+  diagnostic in either mode.
+
+T4.26 — three reserved FORMAT keys have the wrong
+  Number/Type. Spec: LAA . Integer (547), LPL LG Integer
+  (554), LPP LG Integer (555). Ours: {., String}, {P,
+  String}, {G, Integer}. A file declaring any of the
+  three spec-correct is warned against under ModeStrict.
+  This is a false positive, not a missing check — the
+  value-parsing paths already tolerate both wire forms.
+  Also corrects the T4.17 note "the spec's LAA
+  Type=String default", which is wrong.
+
+T4.27 — checkReservedKeys' doc comment describes a
+  default-mode warning "the caller can promote … by
+  switching to ModeStrict", but HeaderChecks gates the
+  whole call on v.Mode == ModeStrict, so there is
+  nothing to promote.
+
+Fix (v0.19.1):
+
+The v0.18.2 consolidation gave runVCFToBCF a finalise
+closure returning nil, on a wrong assumption that
+bcf.Encoder.Close is a no-op. It is what flushes the
+pending BGZF block and emits the 28-byte EOF marker, so
+`htsfile vcf2bcf` produced an unterminated BCF stream and
+`bcf2vcf` on it failed with "BCF stream too short for
+magic". Restored enc.Close() with error propagation.
+
+Four tests were already failing on v0.18.2
+(TestVCFToBCFMinimal, TestVCFToBCFMultipleRecords,
+TestVCFToBCFAndBack, TestCLIPipeline_VCFToBCFAndBack).
+v0.18.2 shipped them because the release check only read
+the last three lines of go test output. Verified green
+now with the full output inspected.
+
+go test -race -count=1 ./... is green across all 14
+packages; golangci-lint run ./... reports 0 issues;
+make fmt-check is clean.

@@ -759,9 +759,9 @@ func runVCFToBCF(src io.Reader, dst io.Writer) error {
 		},
 		enc.WriteRecord,
 		func() error {
-			// bcf.Encoder.Close is invoked on BGZF EOF by
-			// the inner writer; an explicit Close here is
-			// a no-op for the existing implementation.
+			if err := enc.Close(); err != nil {
+				return fmt.Errorf("close encoder: %w", err)
+			}
 			return nil
 		},
 	)

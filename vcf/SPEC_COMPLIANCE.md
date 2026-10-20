@@ -1415,6 +1415,130 @@ were not enforced; this task closes them.
 
 **Status:** ✅ (v0.15.7)
 
+### T4.25 — Reserved INFO/FORMAT key tables incomplete (§1.6.1.4, §1.6.2)
+
+Found by the v0.19.0 audit.
+
+**Spec (Reserved INFO keys table, line 460–480):**
+
+```
+AA 1 String | AC A Integer | AD R Integer | ADF R Integer
+ADR R Integer | AF A Float | AN 1 Integer | BQ 1 Float
+CIGAR A String | DB 0 Flag | DP 1 Integer | END 1 Integer
+H2 0 Flag | H3 0 Flag | MQ 1 Float | MQ0 1 Integer
+NS 1 Integer | SB 4 Integer | SOMATIC 0 Flag
+VALIDATED 0 Flag | 1000G 0 Flag
+```
+
+**Spec (Reserved genotype keys table, line 534–596):**
+
+```
+AD R Integer | ADF R Integer | ADR R Integer | DP 1 Integer
+EC A Integer | LEN 1 Integer | FT 1 String | GL G Float
+GP G Float | GQ 1 Integer | GT 1 String | HQ 2 Integer
+LA . Integer | LAA . Integer | LAD LR Integer | LADF LR Integer
+LADR LR Integer | LEC LA Integer | LGL LG Float | LGP LG Float
+LPL LG Integer | LPP LG Integer | MQ 1 Integer | PL G Integer
+PP G Integer | PQ 1 Integer | PS 1 Integer | PSL P String
+PSO P Integer | PSQ P Integer
+(+ the M / DPM / ADM base-modification families, already
+ covered via MFamily)
+```
+
+**Gap:** `vcf/reserved.go` `reservedInfoKeys` carries only
+the v4.5-*new* subset (RN, RUS, RUL, RUC, RB, CIRUC, CIRB,
+RUB, LAA, LAD) and `reservedFormatKeys` carries only the
+local-allele + phase-set + GL/GP/PL families. Every key in
+the two spec tables above that is not in those subsets is
+absent, so `Validator.checkReservedKeys` silently skips
+it. A file declaring, say,
+`##INFO=<ID=DP,Number=5,Type=String,...>` or
+`##FORMAT=<ID=HQ,Number=G,Type=Float,...>` produces no
+diagnostic in either `ModeDefault` or `ModeStrict`.
+
+**Acceptance:**
+- All 21 INFO keys and all 30 FORMAT keys listed in the two
+  spec tables are present in `reservedInfoKeys` /
+  `reservedFormatKeys` with the spec's Number and Type.
+- A header declaring any of them with a wrong Number or Type
+  emits a `header/INFO/<key>` or `header/FORMAT/<key>`
+  diagnostic.
+- A header declaring them correctly emits nothing.
+- The base-modification families keep resolving through
+  `MFamily` rather than literal table entries.
+
+**Status:** ⬜ open
+
+### T4.26 — Three reserved FORMAT keys have the wrong Number/Type (§1.6.2)
+
+Found by the v0.19.0 audit. This is a **false-positive**
+bug: the validator emits a diagnostic on files that follow
+the spec exactly.
+
+**Spec (line 547):** `LAA & . & Integer`
+
+Our table says `LAA: {Number: ".", Type: TypeString}`.
+A header declaring the spec-correct
+`##FORMAT=<ID=LAA,Number=.,Type=Integer,...>` is warned
+against under `ModeStrict`.
+
+**Spec (line 554):** `LPL & LG & Integer`
+
+Our table says `LPL: {Number: "P", Type: TypeString}` —
+wrong on both fields.
+
+**Spec (line 555):** `LPP & LG & Integer`
+
+Our table says `LPP: {Number: "G", Type: TypeInteger}` —
+wrong on Number.
+
+Note `laaLenFor` and `checkLAA` already tolerate either
+wire form (the LAA values parse as either `Ints` or `Strs`),
+so the *parsing* path is fine; only the header-metadata
+cross-check is wrong. Related: the T4.17 comment says
+"the spec's `LAA Type=String` default", which is
+incorrect — v4.5 says Integer.
+
+**Acceptance:**
+- `reservedFormatKeys["LAA"] == {".", TypeInteger}`
+- `reservedFormatKeys["LPL"] == {"LG", TypeInteger}`
+- `reservedFormatKeys["LPP"] == {"LG", TypeInteger}`
+- A file with the three spec-correct declarations validates
+  clean under `ModeStrict`.
+
+**Status:** ⬜ open
+
+### T4.27 — `checkReservedKeys` doc comment contradicts its gating (§1.6.1.4)
+
+Found by the v0.19.0 audit.
+
+`Validator.checkReservedKeys` carries this doc comment:
+
+> The check is non-fatal: the spec lists these as
+> reservations, not strict requirements, so we surface a
+> warning the caller can promote to an error by switching
+> to ModeStrict.
+
+But `HeaderChecks` gates the entire call on
+`if v.Mode == ModeStrict` (vcf/validate.go:234), so in
+`ModeDefault` there is *no* reserved-key check at all —
+there is nothing to "promote". The comment describes a
+default-mode check that does not exist.
+
+Either the gate moves to the diagnostic (emit at
+`SeverityWarning` in both modes, keep the existing
+`SeverityWarning` payload) or the comment is corrected to
+say "runs only in ModeStrict". The first is closer to the
+spec's "reserved" framing and is the larger user win: a
+wrong reserved-key declaration should be visible by
+default.
+
+**Acceptance:**
+- Doc comment matches the implemented gating, and
+  `vcf/reserved_test.go` covers whichever behaviour ships.
+
+**Status:** ⬜ open
+
 ---
 
 ## Quick index — by spec section
@@ -1427,10 +1551,11 @@ were not enforced; this task closes them.
 | §1.6.1 CHROM column | T3.1 |
 | §1.6.1 ID column | T3.2 |
 | §1.6.1 FILTER column | T1.1, T1.2 |
+| §1.6.1 Reserved INFO keys table | T4.25 |
 | §1.6.1.7 SV info keys | T2.3, T2.4, T2.5, T2.9, T2.10 |
 | §1.6.1.7 CNV section | T2.6 |
 | §1.6.1.7 CNV:TR section | T2.7 |
-| §1.6.2 FORMAT column | T2.1, T2.2, T2.8 |
+| §1.6.2 FORMAT column | T2.1, T2.2, T2.8, T4.25, T4.26, T4.27 |
 | §1.6.2 PSO field | T3.3 |
 | §1.7 gVCF | T1.6, T4.9 |
 | §1.6.5.1 Breakend round-trip | T4.10 |
