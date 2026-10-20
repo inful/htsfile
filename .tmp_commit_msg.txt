@@ -1,43 +1,52 @@
-chore(bcf): per-type MISSING sentinels for Integer/Float FORMAT (T4.24, v0.16.1)
+refactor(cmd/htsfile): split CLI by subcommand + per-subcommand tests (v0.17.0)
 
-Closes the last §5 BCF2 gap. Per §BcfTypeEncoding
-line 2304 / 2333:
+Closes the architecture review's item #2: bring the CLI
+from a 0.21× test ratio to its own per-subcommand files
+with their own _test.go.
 
-  - Integer MISSING = 0x80000000 (the first of the
-    eight reserved values just above math.MinInt32).
-  - Float MISSING = 0x7F800001 (signaling NaN,
-    distinguished from END_OF_VECTOR 0x7F800002).
+Before:
+  main.go                       2046 lines,  64 funcs
+  cmd/htsfile test ratio         0.21×
 
-The previous writer (v0.16.0) encoded missing Float /
-Integer slots via the size-0 `typeMissing` byte
-(spec-compliant but not the per-type form). Some
-external tools emit the per-type sentinel; this
-release adds symmetric handling on the read path and
-moves the write path to the per-type form so files
-round-trip cleanly with htslib / pysam.
+After:
+  main.go                        796 lines,  36 funcs
+  cmd/htsfile test ratio         0.35×
+  (climbing toward the >= 0.6× target of the review)
 
-Changes:
+The per-format runCheck* / runRoundtrip* / runSummary*
+families move into dedicated files:
+  - check.go      (366 lines)  — runCheck + 11 helpers
+  - roundtrip.go   (353)       — runRoundtrip + 11 helpers
+  - summary.go     (439)       — runSummary + 11 helpers
+                                  + bedTypeFromColumns
+  - report.go      (260)       — reportSeverity / reportIssue
+                                  + runIssueReport + 8 adapters
 
-- bcf/end_of_vector.go: new constants
-  bcfFloatMissing (0x7F800001) and bcfIntMissingInt32
-  (0x80000000) keep the spec's reserved sentinels
-  alongside the existing END_OF_VECTOR constants.
+main.go stays the orchestrator: main, usage,
+format-detection, sniffing, dispatch, and the
+translate / vcfquery / vcfindex paths. The 43 functions
+moved out preserve their signatures byte-for-byte; the
+wire output is unchanged.
 
-- bcf/format.go:
-  * writer: per-type MISSING for Integer / Float
-    missing slots;
-  * reader: detects either size-0 typeMissing
-    (whole-field) or per-type MISSING
-    (per-sample slot) and surfaces Missing=true on
-    the corresponding sample.
+New file cmd/htsfile/cli_test.go (458 lines) with three
+test families:
+  - runCheck* / runRoundtrip* / runSummary* per format
+    (clean records);
+  - runCheckVCF strict-mode rejection;
+  - dispatch tests that exercise runCheck / runRoundtrip
+    / runSummary through tempfile format detection;
+  - a coverage-shim test that forces the build to fail if
+    any of the eight reportFrom* adapters is removed.
 
-- bcf/format_test.go: TestFormatFloatMissingSignalingNaN
-  and TestFormatIntMissingSentinel cover mixed
-  missing/present slots.
+The split also opened room for consolidation: each
+per-format helper now lives next to its own future tests
+(rather than buried inside a 2 kLoC god file).
 
-§5 BCF2 of vcf/SPEC_COMPLIANCE.md is now
-spec-compliant.
+Remaining from the review:
+  - split vcf/validate.go (item #1)
+  - document Validator streaming-state footgun (item #3)
+  - consolidate translate.go symmetric pairs (item #4)
+  - add CLI pipeline integration test (item #5)
 
-All 18 packages pass go test -race -count=1;
-golangci-lint run ./... reports 0 issues;
-make fmt-check is clean.
+go test -race -count=1 ./... is green; golangci-lint
+run ./... reports 0 issues; make fmt-check is clean.

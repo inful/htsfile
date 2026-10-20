@@ -11,6 +11,49 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.17.0] — 2026-10-20
+
+Architecture cleanup release closing the architecture
+review's item #2: bring `cmd/htsfile` from a 0.21×
+test ratio onto its own per-subcommand files.
+
+### Changed — cmd/htsfile
+
+- **Split CLI by subcommand.** `main.go` (2,046 LoC,
+  64 funcs) is now 796 LoC / 36 funcs. The per-format
+  `runCheck*`, `runRoundtrip*`, and `runSummary*`
+  families moved into dedicated files:
+  - `cmd/htsfile/check.go` — `runCheck` + 11 per-format
+    `runCheck*Xxx` helpers.
+  - `cmd/htsfile/roundtrip.go` — `runRoundtrip` + 11
+    per-format helpers.
+  - `cmd/htsfile/summary.go` — `runSummary` + 11
+    per-format helpers + `bedTypeFromColumns`.
+  - `cmd/htsfile/report.go` — `reportSeverity`/
+    `reportIssue` types, `runIssueReport`, and the 8
+    `reportFrom*` adapters.
+  The `//nolint:dupl` annotations on each duplicate pair
+  stay; the structural similarity (same `Decoder →
+  records → Validator → reporter` shape) is intentional.
+  Forcing a generic abstraction earlier would couple
+  unrelated packages; the dispatch table lives here
+  because the per-format Issue types differ.
+
+### Added — cmd/htsfile
+
+- `cmd/htsfile/cli_test.go` (~458 lines). Integration
+  tests for `runCheckVCF` / `runRoundtripVCF` /
+  `runSummaryVCF` per format, plus dispatch tests
+  that exercise `runCheck`/`runRoundtrip`/`runSummary`
+  through the format-detection tempfile path.
+  Test-to-source ratio went from 0.21× to 0.35×.
+
+### Lint
+
+`go test -race -count=1 ./...` is green;
+`golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean.
+
 ## [0.16.1] — 2026-10-20
 
 Patch release closing the last §5 BCF2 gap: per-type
