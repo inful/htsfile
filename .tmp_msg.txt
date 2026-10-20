@@ -1,70 +1,84 @@
-docs+fix(v0.19.x): fresh VCFv4.5 audit finds 3 reserved-key gaps; fix vcf2bcf regression
+fix(vcf): complete the reserved-key tables and run the check by default (T4.25-T4.27, v0.20.0)
 
-Audit (v0.19.0, no code change):
+Closes the three gaps the v0.19.0 audit found. All three
+land in the same two files and their tests cross-cover
+each other, so this ships as one release rather than
+three; splitting would have produced intermediate commits
+that do not compile.
 
-A fresh section-by-section pass of VCFv4.5 against the
-tree after the v0.18.x refactor series. The refactors
-were behaviour-neutral so the v0.15.7 → v0.16.1
-gap-closure still holds and BCF2 (§5) remains
-spec-compliant. Verified clean: §1.4.1 BOM/percent
-encoding, §1.4.2 forbidden Integer range, §1.4.3
-##SAMPLE + ##META Values, §1.4.4 INFO-key regex with
-the 1000G exception, §1.4.7 contig/pedigree, §1.6.1
-fileformat-first + CHROM contiguity, §1.6.1.1 padding +
-full-REF, §1.6.1.6 CIEND span-zero + 2×ALT cardinality,
-§1.6.1.7 CIRUC/CIRB + CIPOS span-zero, §1.6.2 GT
-phasing / PSL-PSO-PSQ coupling / LAA cardinality /
-trailing-field drop, §1.6.5.1 breakend bounds + mate
-PSL/PSO equality, §1.7 gVCF <*>, §5 BCF2.
+T4.25 — tables incomplete.
 
-Three new gaps, all in reserved-key metadata:
+reservedInfoKeys carried only the v4.5-new subset. All 21
+keys from the spec's Reserved INFO keys table (lines
+460-480) were absent: AA, AC, AD, ADF, ADR, AF, AN, BQ,
+CIGAR, DB, DP, END, H2, H3, MQ, MQ0, NS, SB, SOMATIC,
+VALIDATED, 1000G. reservedFormatKeys was missing 18 of the
+Reserved genotype keys table (lines 534-596): AD, ADF,
+ADR, DP, EC, LEN, FT, GQ, GT, HQ, LA, MQ, PP, PQ, PS.
+checkReservedKeys skips unknown keys, so a header
+declaring `##INFO=<ID=DP,Number=5,Type=String,...>` or
+`##FORMAT=<ID=HQ,Number=G,Type=Float,...>` produced no
+diagnostic in either mode.
 
-T4.25 — reservedInfoKeys carries only the v4.5-new
-  subset (RN, RUS, RUL, RUC, RB, CIRUC, CIRB, RUB,
-  LAA, LAD). All 21 keys from the spec's Reserved INFO
-  keys table (line 460-480: AA, AC, AD, ADF, ADR, AF,
-  AN, BQ, CIGAR, DB, DP, END, H2, H3, MQ, MQ0, NS, SB,
-  SOMATIC, VALIDATED, 1000G) are absent.
-  reservedFormatKeys is missing 15 of the 30 keys in the
-  Reserved genotype keys table (line 534-596).
-  checkReservedKeys skips unknown keys, so
-  `##INFO=<ID=DP,Number=5,Type=String,...>` and
-  `##FORMAT=<ID=HQ,Number=G,Type=Float,...>` produce no
-  diagnostic in either mode.
+T4.26 — nine FORMAT keys had the wrong Number or Type.
 
-T4.26 — three reserved FORMAT keys have the wrong
-  Number/Type. Spec: LAA . Integer (547), LPL LG Integer
-  (554), LPP LG Integer (555). Ours: {., String}, {P,
-  String}, {G, Integer}. A file declaring any of the
-  three spec-correct is warned against under ModeStrict.
-  This is a false positive, not a missing check — the
-  value-parsing paths already tolerate both wire forms.
-  Also corrects the T4.17 note "the spec's LAA
-  Type=String default", which is wrong.
+  LAA  spec `.` Integer   was `.` String
+  LAD  spec LR  Integer   was `.` String
+  LADF spec LR  Integer   was `.` String
+  LADR spec LR  Integer   was `.` String
+  LEC  spec LA  Integer   was `.` Integer
+  LGL  spec LG  Float     was G  String
+  LGP  spec LG  Float     was G  String
+  LPL  spec LG  Integer   was P  String
+  LPP  spec LG  Integer   was G  Integer
 
-T4.27 — checkReservedKeys' doc comment describes a
-  default-mode warning "the caller can promote … by
-  switching to ModeStrict", but HeaderChecks gates the
-  whole call on v.Mode == ModeStrict, so there is
-  nothing to promote.
+All nine are local-allele keys whose Number should be
+LA/LR/LG. LPL and LPP were also wrong on Type — they are
+the phred-scaled likelihood and posterior, so Integer,
+not Float (Float is LGL/LGP). The audit named only LAA,
+LPL and LPP; diffing the whole table during the fix
+turned up the other six.
 
-Fix (v0.19.1):
+This was a false-positive bug: ModeStrict warned against
+files that follow the spec exactly. Only the header
+metadata cross-check was affected — laaLenFor and
+checkLAA already tolerated both wire forms.
 
-The v0.18.2 consolidation gave runVCFToBCF a finalise
-closure returning nil, on a wrong assumption that
-bcf.Encoder.Close is a no-op. It is what flushes the
-pending BGZF block and emits the 28-byte EOF marker, so
-`htsfile vcf2bcf` produced an unterminated BCF stream and
-`bcf2vcf` on it failed with "BCF stream too short for
-magic". Restored enc.Close() with error propagation.
+T4.27 — gating contradicted its own doc comment.
 
-Four tests were already failing on v0.18.2
-(TestVCFToBCFMinimal, TestVCFToBCFMultipleRecords,
-TestVCFToBCFAndBack, TestCLIPipeline_VCFToBCFAndBack).
-v0.18.2 shipped them because the release check only read
-the last three lines of go test output. Verified green
-now with the full output inspected.
+HeaderChecks called checkReservedKeys only under
+v.Mode == ModeStrict, while the function's doc comment
+described a default-mode warning "the caller can promote
+... by switching to ModeStrict". There was nothing to
+promote. The gate now lives on the diagnostic rather than
+the call: the check runs in both modes and still reports
+SeverityWarning. A reserved key declared with the wrong
+Number or Type is a header defect regardless of mode, and
+the spec frames these keys as reserved "albeit optional".
+HeaderChecks also preallocates issues to
+len(h.Infos)+len(h.Formats).
 
-go test -race -count=1 ./... is green across all 14
-packages; golangci-lint run ./... reports 0 issues;
-make fmt-check is clean.
+Tests:
+
+vcf/reserved_table_test.go (new) transcribes both spec
+tables verbatim as specReservedInfo / specReservedFormat
+and diffs the implementation against them, so the tables
+cannot silently drift again. Five tests cover the table
+contents, the absence of false positives on all 51
+spec-correct declarations, 11 wrong declarations being
+caught, and the ModeDefault gating.
+
+TestIsReservedInfoKey and TestIsReservedFormatKey were
+asserting the gap: both listed DP/AF/AC/NS and GT/DP as
+keys that must NOT be reserved, the exact inverse of the
+spec tables. That pinned the incomplete tables in place.
+Rewritten to assert the spec tables, with genuinely
+arbitrary keys (MN, RM, FOO, ZZZ) as the negatives.
+
+The base-modification families (M / DPM / ADM, spec lines
+556-588, all Number=M) stay out of the tables: they are
+an open-ended key space resolved by MFamily.
+
+go test -race -count=1 ./... green across all 14
+packages; golangci-lint run ./... 0 issues; make
+fmt-check clean.

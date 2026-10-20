@@ -1,28 +1,54 @@
 package vcf
 
 // reservedInfoKeys enumerates the VCF v4.5 reserved INFO keys
-// whose expected Number/Type the Validator can compare against
-// user-declared ##INFO lines. The full v4.5 spec lists many
-// more; this table is the v4.5-new subset (base modifications,
-// tandem repeats, local-allele-related). The other reserved
-// INFO keys from earlier versions are already covered by the
-// generic Number/Type validation path.
+// whose expected Number/Type the Validator compares against
+// user-declared ##INFO lines.
+//
+// Two groups:
+//
+//  1. The Reserved INFO keys table (spec lines 460-480):
+//     AA, AC, AD, ADF, ADR, AF, AN, BQ, CIGAR, DB, DP, END,
+//     H2, H3, MQ, MQ0, NS, SB, SOMATIC, VALIDATED, 1000G.
+//  2. The v4.5-new structural-variant keys (spec lines
+//     1070-1110): RN, RUS, RUL, RUC, RB, CIRUC, CIRB, RUB,
+//     plus the INFO-side local-allele fields LAA and LAD.
 //
 // Each entry: {key, number string, type code}. Number=.
 // denotes "any" per spec (no cardinality check).
 //
-// Source: VCFv4.5 §1.6.1.4 (reserved keys), §1.6.1.5 (base
-// modification), §1.6.1.6 (tandem repeats).
+// Source: VCFv4.5 section 1.6.1 Reserved INFO keys table
+// (lines 460-480) and section 1.6.1.6 (tandem repeats).
 var reservedInfoKeys = map[string]reservedKey{
-	// Base modification: M followed by a non-negative integer
-	// and an optional single nucleotide (e.g. M0A, M5mC,
-	// M5hmC). Number=1, Type=String. The key is treated
-	// literally by the validator — callers can match the
-	// pattern with reservedBaseModKeys below.
-	// Tandem-repeat fields (VCFv4.5 §1.6.1.7 lines 1070
-	// and 1084-1110): RN is per-allele; RUS/RUL/RUC/RB are
-	// flat lists whose length is determined by RN; CIRUC /
-	// CIRB are flat lists whose length is 2×RN.
+	// -- Reserved INFO keys table, spec lines 460-480. --
+	"AA":        {Number: "1", Type: TypeString},
+	"AC":        {Number: "A", Type: TypeInteger},
+	"AD":        {Number: "R", Type: TypeInteger},
+	"ADF":       {Number: "R", Type: TypeInteger},
+	"ADR":       {Number: "R", Type: TypeInteger},
+	"AF":        {Number: "A", Type: TypeFloat},
+	"AN":        {Number: "1", Type: TypeInteger},
+	"BQ":        {Number: "1", Type: TypeFloat},
+	"CIGAR":     {Number: "A", Type: TypeString},
+	"DB":        {Number: "0", Type: TypeFlag},
+	"DP":        {Number: "1", Type: TypeInteger},
+	"END":       {Number: "1", Type: TypeInteger},
+	"H2":        {Number: "0", Type: TypeFlag},
+	"H3":        {Number: "0", Type: TypeFlag},
+	"MQ":        {Number: "1", Type: TypeFloat},
+	"MQ0":       {Number: "1", Type: TypeInteger},
+	"NS":        {Number: "1", Type: TypeInteger},
+	"SB":        {Number: "4", Type: TypeInteger},
+	"SOMATIC":   {Number: "0", Type: TypeFlag},
+	"VALIDATED": {Number: "0", Type: TypeFlag},
+	// 1000G is both a reserved Flag and the one INFO key the
+	// spec's key regex (line 433) carves out as a legacy
+	// exception: ^([A-Za-z_][0-9A-Za-z_.]*|1000G)$.
+	"1000G": {Number: "0", Type: TypeFlag},
+
+	// -- v4.5-new tandem-repeat fields (spec lines 1070 and
+	//    1084-1110). RN is per-allele; RUS/RUL/RUC/RB are
+	//    flat lists whose length is determined by RN;
+	//    CIRUC/CIRB are flat lists whose length is twice RN. --
 	"RN":    {Number: "A", Type: TypeInteger},
 	"RUS":   {Number: ".", Type: TypeString},
 	"RUL":   {Number: ".", Type: TypeInteger},
@@ -32,39 +58,73 @@ var reservedInfoKeys = map[string]reservedKey{
 	"CIRB":  {Number: ".", Type: TypeInteger},
 	"RUB":   {Number: ".", Type: TypeInteger},
 	// Local-allele related (also appear as FORMAT keys below).
-	"LAA": {Number: ".", Type: TypeString},
-	"LAD": {Number: ".", Type: TypeString},
+	"LAA": {Number: ".", Type: TypeInteger},
+	"LAD": {Number: "LR", Type: TypeInteger},
 }
 
 // reservedFormatKeys enumerates the VCF v4.5 reserved FORMAT
-// keys. LAA is the only one validated structurally today
-// (it must come right after GT; see Validator.checkSamples).
-// The others are documented here so callers can detect them
-// and the validator can check declared Number/Type against
-// the spec.
+// keys. Two groups:
+//
+//  1. The Reserved genotype keys table (spec lines 534-596):
+//     AD, ADF, ADR, DP, EC, LEN, FT, GL, GP, GQ, GT, HQ, LA,
+//     LAA, LAD, LADF, LADR, LEC, LGL, LGP, LPL, LPP, MQ, PL,
+//     PP, PQ, PS, PSL, PSO, PSQ.
+//  2. The local-allele family (LAA, LAD, LADF, LADR, LEC,
+//     LGL, LGP, LPL, LPP) and the phase-set list trio (PSL,
+//     PSO, PSQ), which the v4.5 local-allele and phase-set
+//     work introduced.
+//
+// The base-modification families (M, DPM, ADM - spec lines
+// 556-588, all Number=M) are deliberately NOT literal entries:
+// they are resolved by [MFamily] so the table stays finite.
 var reservedFormatKeys = map[string]reservedKey{
-	// Local-allele family (LAA must follow GT; rest may
-	// follow any of the local-allele keys).
-	"LAA":  {Number: ".", Type: TypeString},
-	"LAD":  {Number: ".", Type: TypeString},
-	"LADF": {Number: ".", Type: TypeString},
-	"LADR": {Number: ".", Type: TypeString},
-	"LEC":  {Number: ".", Type: TypeInteger},
-	"LGL":  {Number: "G", Type: TypeString},
-	"LGP":  {Number: "G", Type: TypeString},
-	"LPL":  {Number: "P", Type: TypeString},
-	"LPP":  {Number: "G", Type: TypeInteger},
-	// Phase-set list trio (v4.5). All three use Number=P
-	// (one value per allele value in GT).
+	// -- Reserved genotype keys table, spec lines 534-596. --
+	"AD":  {Number: "R", Type: TypeInteger},
+	"ADF": {Number: "R", Type: TypeInteger},
+	"ADR": {Number: "R", Type: TypeInteger},
+	"DP":  {Number: "1", Type: TypeInteger},
+	"EC":  {Number: "A", Type: TypeInteger},
+	"LEN": {Number: "1", Type: TypeInteger},
+	"FT":  {Number: "1", Type: TypeString},
+	"GL":  {Number: "G", Type: TypeFloat},
+	"GP":  {Number: "G", Type: TypeFloat},
+	"GQ":  {Number: "1", Type: TypeInteger},
+	"GT":  {Number: "1", Type: TypeString},
+	"HQ":  {Number: "2", Type: TypeInteger},
+	"LA":  {Number: ".", Type: TypeInteger},
+	"MQ":  {Number: "1", Type: TypeInteger},
+	"PL":  {Number: "G", Type: TypeInteger},
+	"PP":  {Number: "G", Type: TypeInteger},
+	"PQ":  {Number: "1", Type: TypeInteger},
+	"PS":  {Number: "1", Type: TypeInteger},
+
+	// -- Local-allele family. LAA must follow GT; the rest may
+	//    follow any of the local-allele keys.
+	//
+	//    LAA is Integer, not String: spec line 547 reads
+	//    `LAA & . & Integer & 1-based indices into ALT`.
+	//    laaLenFor / checkLAA already accept either wire form
+	//    (the values may parse as Ints or as Strs), so only
+	//    the header-metadata cross-check needed correcting. --
+	"LAA":  {Number: ".", Type: TypeInteger},
+	"LAD":  {Number: "LR", Type: TypeInteger},
+	"LADF": {Number: "LR", Type: TypeInteger},
+	"LADR": {Number: "LR", Type: TypeInteger},
+	"LEC":  {Number: "LA", Type: TypeInteger},
+	"LGL":  {Number: "LG", Type: TypeFloat},
+	"LGP":  {Number: "LG", Type: TypeFloat},
+	// LPL and LPP are the local-allele forms of the
+	// phred-scaled likelihood/posterior, so Number=LG with
+	// Type=Integer - not LG Float (that is LGL/LGP) and not
+	// Number=G. Spec lines 554-555.
+	"LPL": {Number: "LG", Type: TypeInteger},
+	"LPP": {Number: "LG", Type: TypeInteger},
+
+	// -- Phase-set list trio (spec lines 594-596). All three
+	//    use Number=P: one value per allele value in GT. --
 	"PSL": {Number: "P", Type: TypeString},
 	"PSO": {Number: "P", Type: TypeInteger},
 	"PSQ": {Number: "P", Type: TypeInteger},
-	// Genotype likelihood / posterior trio (per VCFv4.5
-	// §1.6.2). All three use Number=G; PL is Integer,
-	// GL and GP are Float.
-	"PL": {Number: "G", Type: TypeInteger},
-	"GL": {Number: "G", Type: TypeFloat},
-	"GP": {Number: "G", Type: TypeFloat},
 }
 
 // reservedKey is the expected (Number, Type) pair for a

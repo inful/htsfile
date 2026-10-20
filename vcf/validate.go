@@ -221,19 +221,24 @@ func (v *Validator) Reset() {
 }
 
 // HeaderChecks runs the header-only checks and the
-// reserved-key metadata check (ModeStrict). Call this once
-// at the start of a streaming run. Subsequent calls are
-// no-ops.
+// reserved-key metadata check. Call this once at the start
+// of a streaming run. Subsequent calls are no-ops.
+//
+// checkReservedKeys runs in both modes and reports
+// SeverityWarning; it used to be gated on ModeStrict while
+// its doc comment described a default-mode warning, so the
+// two disagreed (SPEC_COMPLIANCE.md T4.27). A reserved key
+// declared with the wrong Number or Type is a header defect
+// in either mode, and the spec frames the reserved keys as
+// reserved "albeit optional" - visible but not fatal.
 func (v *Validator) HeaderChecks(h *Header) []ValidationError {
 	if v.headerDone {
 		return nil
 	}
 	v.headerDone = true
-	var issues []ValidationError
+	issues := make([]ValidationError, 0, len(h.Infos)+len(h.Formats))
 	issues = append(issues, v.checkHeader(h)...)
-	if v.Mode == ModeStrict {
-		issues = append(issues, v.checkReservedKeys(h)...)
-	}
+	issues = append(issues, v.checkReservedKeys(h)...)
 	return issues
 }
 

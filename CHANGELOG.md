@@ -11,6 +11,106 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - *(nothing yet)*
 
+## [0.20.0] — 2026-10-20
+
+Closes the three reserved-key gaps the v0.19.0 audit
+found: T4.25 (tables incomplete), T4.26 (nine keys wrong),
+T4.27 (gating contradicted its own doc comment).
+
+One release rather than three: all three land in the same
+two files and the tests cross-cover each other, so
+splitting them would have produced intermediate commits
+that do not compile.
+
+### Added — vcf
+
+- **`reservedInfoKeys` gained all 21 keys from the spec's
+  Reserved INFO keys table** (lines 460-480): AA, AC, AD,
+  ADF, ADR, AF, AN, BQ, CIGAR, DB, DP, END, H2, H3, MQ,
+  MQ0, NS, SB, SOMATIC, VALIDATED, 1000G.
+- **`reservedFormatKeys` gained the 18 keys it was
+  missing** from the Reserved genotype keys table (lines
+  534-596): AD, ADF, ADR, DP, EC, LEN, FT, GQ, GT, HQ, LA,
+  MQ, PP, PQ, PS.
+- **`vcf/reserved_table_test.go`** (new) transcribes both
+  spec tables verbatim as `specReservedInfo` /
+  `specReservedFormat` and diffs the implementation against
+  them, so the tables cannot silently drift from the spec
+  again. Five tests:
+  `TestReservedInfoTable_MatchesSpecTable`,
+  `TestReservedFormatTable_MatchesSpecTable`,
+  `TestReservedKeys_NoFalsePositiveOnSpecDeclarations`,
+  `TestReservedKeys_WrongDeclarationWarns` (11 wrong
+  declarations must be caught), and
+  `TestReservedKeys_RunInDefaultMode`.
+
+### Fixed — vcf (T4.26)
+
+- **Nine reserved FORMAT keys matched neither the spec
+  nor reality**, so `ModeStrict` warned against files
+  that follow the spec exactly:
+
+  | Key | Spec (lines 547-555) | Was |
+  |---|---|---|
+  | LAA  | `.` Integer  | `.` String |
+  | LAD  | `LR` Integer | `.` String |
+  | LADF | `LR` Integer | `.` String |
+  | LADR | `LR` Integer | `.` String |
+  | LEC  | `LA` Integer | `.` Integer |
+  | LGL  | `LG` Float   | `G` String |
+  | LGP  | `LG` Float   | `G` String |
+  | LPL  | `LG` Integer | `P` String |
+  | LPP  | `LG` Integer | `G` Integer |
+
+  All nine are local-allele keys whose Number should be
+  `LA`/`LR`/`LG`; the old table used `.` / `G` / `P`. LPL
+  and LPP were also wrong on Type — they are the
+  phred-scaled likelihood and posterior, so Integer, not
+  Float (Float is LGL/LGP).
+
+  The v0.19.0 audit named only LAA, LPL and LPP. Diffing
+  the full spec table during the fix turned up the other
+  six.
+
+  Only the header-metadata cross-check was affected: the
+  value-parsing paths (`laaLenFor`, `checkLAA`) already
+  tolerated both wire forms.
+
+### Changed — vcf (T4.27)
+
+- **`Validator.checkReservedKeys` is no longer gated on
+  `ModeStrict`.** `HeaderChecks` used to call it only
+  under `v.Mode == ModeStrict`, while the function's own
+  doc comment described a default-mode warning "the caller
+  can promote ... by switching to ModeStrict" — there was
+  nothing to promote. The gate now lives on the
+  diagnostic, not the call: the check runs in both modes
+  and still reports `SeverityWarning`. A reserved key
+  declared with the wrong Number or Type is a header
+  defect regardless of mode, and the spec frames these
+  keys as reserved "albeit optional" — visible, not
+  fatal. `HeaderChecks` also preallocates `issues` to
+  `len(h.Infos)+len(h.Formats)`.
+
+### Changed — tests
+
+- **`TestIsReservedInfoKey` / `TestIsReservedFormatKey`
+  were asserting the gap.** Both listed DP/AF/AC/NS and
+  GT/DP as keys that must **not** be reserved — the exact
+  inverse of the spec tables, which pinned the incomplete
+  tables in place. Rewritten to assert the spec tables,
+  with genuinely-arbitrary keys (MN, RM, FOO, ZZZ) as the
+  negative cases.
+
+The base-modification families (M / DPM / ADM, spec lines
+556-588, all `Number=M`) stay out of the tables on
+purpose: they are an open-ended key space resolved by
+`MFamily`, so literal entries would not cover them.
+
+`go test -race -count=1 ./...` is green across all 14
+packages; `golangci-lint run ./...` reports 0 issues;
+`make fmt-check` is clean.
+
 ## [0.19.1] — 2026-10-20
 
 Fix release. Repairs a regression introduced in v0.18.2.

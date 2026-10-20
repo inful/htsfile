@@ -1467,30 +1467,53 @@ diagnostic in either `ModeDefault` or `ModeStrict`.
 - The base-modification families keep resolving through
   `MFamily` rather than literal table entries.
 
-**Status:** ⬜ open
+**Where:**
+- `vcf/reserved.go`: `reservedInfoKeys` gains all 21 spec-
+  table keys (grouped under a "Reserved INFO keys table"
+  comment with the spec's line range); `reservedFormatKeys`
+  gains all 18 missing non-base-mod spec-table keys.
+- `vcf/reserved_test.go`: `TestIsReservedInfoKey` /
+  `TestIsReservedFormatKey` — both previously asserted
+  that DP/AF/AC/NS and GT/DP were **not** reserved, which
+  pinned the gap in place. Rewritten to assert the spec
+  tables, with genuinely-arbitrary keys (MN, RM, FOO, ZZZ)
+  as the negative cases.
+- `vcf/reserved_table_test.go`: new. `specReservedInfo` /
+  `specReservedFormat` transcribe the two spec tables
+  verbatim; `TestReservedInfoTable_MatchesSpecTable` and
+  `TestReservedFormatTable_MatchesSpecTable` diff the
+  tables against them, `TestReservedKeys_WrongDeclarationWarns`
+  proves 11 wrong declarations are caught.
 
-### T4.26 — Three reserved FORMAT keys have the wrong Number/Type (§1.6.2)
+**Status:** ✅ (v0.20.0)
+
+### T4.26 — Nine reserved FORMAT keys have the wrong Number/Type (§1.6.2)
 
 Found by the v0.19.0 audit. This is a **false-positive**
 bug: the validator emits a diagnostic on files that follow
 the spec exactly.
 
-**Spec (line 547):** `LAA & . & Integer`
+The audit originally listed three keys; diffing the whole
+spec table against the implementation during the fix found
+nine. All nine were wrong:
 
-Our table says `LAA: {Number: ".", Type: TypeString}`.
-A header declaring the spec-correct
-`##FORMAT=<ID=LAA,Number=.,Type=Integer,...>` is warned
-against under `ModeStrict`.
+| Key | Spec (lines 547-555) | Was | Now |
+|---|---|---|---|
+| LAA  | `.` Integer  | `.` String   | `.` Integer |
+| LAD  | `LR` Integer | `.` String   | `LR` Integer |
+| LADF | `LR` Integer | `.` String   | `LR` Integer |
+| LADR | `LR` Integer | `.` String   | `LR` Integer |
+| LEC  | `LA` Integer | `.` Integer  | `LA` Integer |
+| LGL  | `LG` Float   | `G` String   | `LG` Float |
+| LGP  | `LG` Float   | `G` String   | `LG` Float |
+| LPL  | `LG` Integer | `P` String   | `LG` Integer |
+| LPP  | `LG` Integer | `G` Integer  | `LG` Integer |
 
-**Spec (line 554):** `LPL & LG & Integer`
-
-Our table says `LPL: {Number: "P", Type: TypeString}` —
-wrong on both fields.
-
-**Spec (line 555):** `LPP & LG & Integer`
-
-Our table says `LPP: {Number: "G", Type: TypeInteger}` —
-wrong on Number.
+The common thread is that all nine are local-allele keys
+whose Number should be one of `LA`/`LR`/`LG`; the original
+table used `.` / `G` / `P` instead. LPL and LPP were also
+wrong on Type — they are the phred-scaled likelihood and
+posterior, so Integer, not Float (Float is LGL/LGP).
 
 Note `laaLenFor` and `checkLAA` already tolerate either
 wire form (the LAA values parse as either `Ints` or `Strs`),
@@ -1499,14 +1522,21 @@ cross-check is wrong. Related: the T4.17 comment says
 "the spec's `LAA Type=String` default", which is
 incorrect — v4.5 says Integer.
 
-**Acceptance:**
-- `reservedFormatKeys["LAA"] == {".", TypeInteger}`
-- `reservedFormatKeys["LPL"] == {"LG", TypeInteger}`
-- `reservedFormatKeys["LPP"] == {"LG", TypeInteger}`
-- A file with the three spec-correct declarations validates
-  clean under `ModeStrict`.
+**Where:**
+- `vcf/reserved.go`: all nine entries corrected, each with
+  an inline comment naming the spec line it comes from.
+- `vcf/reserved_table_test.go`:
+  `TestReservedKeys_NoFalsePositiveOnSpecDeclarations`
+  walks `specReservedInfo` and `specReservedFormat` and
+  asserts a spec-correct declaration produces no
+  `header/INFO/<key>` or `header/FORMAT/<key>` diagnostic.
 
-**Status:** ⬜ open
+**Acceptance:**
+- All nine entries match the spec table (locked by
+  `TestReservedFormatTable_MatchesSpecTable`).
+- A file with any spec-correct declaration validates clean.
+
+**Status:** ✅ (v0.20.0)
 
 ### T4.27 — `checkReservedKeys` doc comment contradicts its gating (§1.6.1.4)
 
@@ -1525,19 +1555,30 @@ But `HeaderChecks` gates the entire call on
 there is nothing to "promote". The comment describes a
 default-mode check that does not exist.
 
-Either the gate moves to the diagnostic (emit at
-`SeverityWarning` in both modes, keep the existing
-`SeverityWarning` payload) or the comment is corrected to
-say "runs only in ModeStrict". The first is closer to the
-spec's "reserved" framing and is the larger user win: a
-wrong reserved-key declaration should be visible by
-default.
+Shipped the first option: the gate moved off the
+diagnostic. `checkReservedKeys` now runs in **both** modes
+and still reports `SeverityWarning`. A reserved key
+declared with the wrong Number or Type is a header defect
+regardless of mode, and the spec frames these keys as
+reserved "albeit optional" — visible, not fatal. This is
+also the larger user win: the check is now reachable
+without asking callers to opt into strict mode.
+
+**Where:**
+- `vcf/validate.go`: `HeaderChecks` drops the
+  `if v.Mode == ModeStrict` guard and preallocates `issues`
+  to `len(h.Infos)+len(h.Formats)` (the bound the two
+  contributing checks can hit).
+- `vcf/reserved_table_test.go`:
+  `TestReservedKeys_RunInDefaultMode` asserts a wrong
+  `##INFO=<ID=DP,Number=5,Type=String,...>` produces a
+  `SeverityWarning` under `ModeDefault`.
 
 **Acceptance:**
-- Doc comment matches the implemented gating, and
-  `vcf/reserved_test.go` covers whichever behaviour ships.
+- Doc comment matches the implemented gating.
+- The check is reachable in `ModeDefault`.
 
-**Status:** ⬜ open
+**Status:** ✅ (v0.20.0)
 
 ---
 

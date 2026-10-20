@@ -6,12 +6,25 @@ import (
 )
 
 func TestIsReservedInfoKey(t *testing.T) {
+	// The v4.5-new structural-variant subset.
 	for _, key := range []string{"RN", "RUS", "RUL", "RUC", "RB", "CIRUC", "CIRB", "RUB", "LAA", "LAD"} {
 		if !IsReservedInfoKey(key) {
 			t.Errorf("IsReservedInfoKey(%q): should be true", key)
 		}
 	}
-	for _, key := range []string{"DP", "AF", "AC", "NS", "MN", "RM", "FOO"} {
+	// The Reserved INFO keys table (spec lines 460-480). T4.25
+	// added these; before it DP/AF/AC/NS were absent and this
+	// test asserted they were NOT reserved, which pinned the gap.
+	for _, key := range []string{
+		"AA", "AC", "AD", "ADF", "ADR", "AF", "AN", "BQ", "CIGAR",
+		"DB", "DP", "END", "H2", "H3", "MQ", "MQ0", "NS", "SB",
+		"SOMATIC", "VALIDATED", "1000G",
+	} {
+		if !IsReservedInfoKey(key) {
+			t.Errorf("IsReservedInfoKey(%q): should be true (spec Reserved INFO keys table)", key)
+		}
+	}
+	for _, key := range []string{"MN", "RM", "FOO", "ZZZ"} {
 		if IsReservedInfoKey(key) {
 			t.Errorf("IsReservedInfoKey(%q): should be false", key)
 		}
@@ -28,7 +41,18 @@ func TestIsReservedFormatKey(t *testing.T) {
 			t.Errorf("IsReservedFormatKey(%q): should be true", key)
 		}
 	}
-	for _, key := range []string{"GT", "DP", "FOO"} {
+	// The Reserved genotype keys table (spec lines 534-596),
+	// excluding the M/DPM/ADM base-modification families which
+	// resolve through IsBaseModKey / MFamily instead.
+	for _, key := range []string{
+		"AD", "ADF", "ADR", "DP", "EC", "LEN", "FT", "GQ", "GT",
+		"HQ", "LA", "MQ", "PP", "PQ", "PS",
+	} {
+		if !IsReservedFormatKey(key) {
+			t.Errorf("IsReservedFormatKey(%q): should be true (spec Reserved genotype keys table)", key)
+		}
+	}
+	for _, key := range []string{"FOO", "ZZZ"} {
 		if IsReservedFormatKey(key) {
 			t.Errorf("IsReservedFormatKey(%q): should be false", key)
 		}
