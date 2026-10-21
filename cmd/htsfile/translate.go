@@ -508,6 +508,22 @@ func vcfToBCFHeader(h *vcf.Header) *bcf.Header {
 		sb.WriteString(m.Raw)
 		sb.WriteByte('\n')
 	}
+	// The BCF header text must include the sample-line
+	// (`#CHROM\tPOS\tID\t...\tSAMPLE1\tSAMPLE2…`) so the BCF
+	// decoder can recover SampleNames. MetaLines only carry
+	// the `##` prefixes, so we synthesise the sample line
+	// from h.SampleNames when the input header omitted one.
+	if len(h.SampleNames) > 0 {
+		sb.WriteString("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
+		if len(h.Formats) > 0 {
+			sb.WriteString("\tFORMAT")
+		}
+		for _, sn := range h.SampleNames {
+			sb.WriteByte('\t')
+			sb.WriteString(sn)
+		}
+		sb.WriteByte('\n')
+	}
 	bh := &bcf.Header{
 		FileFormat: h.FileFormat.String(),
 		Raw:        sb.String(),
@@ -539,6 +555,67 @@ func vcfToBCFHeader(h *vcf.Header) *bcf.Header {
 			}
 		}
 		bh.InfosOrder = append(bh.InfosOrder, rest[:end])
+	}
+	// Mirror for ##FORMAT: the BCF record per-sample block
+	// keys off FormatsOrder (uint16 indices).
+	bh.Formats = make(map[string]*bcf.FormatDef, len(h.Formats))
+	for id, fd := range h.Formats {
+		if fd == nil {
+			continue
+		}
+		var t string
+		switch fd.Type {
+		case vcf.TypeInteger:
+			t = "Integer"
+		case vcf.TypeFloat:
+			t = "Float"
+		case vcf.TypeCharacter:
+			t = "Character"
+		case vcf.TypeString:
+			t = "String"
+		default:
+			t = fd.Type.String()
+		}
+		bh.Formats[id] = &bcf.FormatDef{
+			ID:          fd.ID,
+			Number:      fd.Number.String(),
+			Type:        t,
+			Description: fd.Description,
+		}
+	}
+	for _, m := range h.MetaLines {
+		if m.Key != "FORMAT" {
+			continue
+		}
+		const prefix = "<ID="
+		if !strings.HasPrefix(m.Value, prefix) {
+			continue
+		}
+		rest := m.Value[len(prefix):]
+		end := strings.IndexByte(rest, ',')
+		if end < 0 {
+			end = strings.IndexByte(rest, '>')
+			if end < 0 {
+				end = len(rest)
+			}
+		}
+		bh.FormatsOrder = append(bh.FormatsOrder, rest[:end])
+	}
+	// Also populate bh.Filters from the header
+	// text so the BCF FILTER writer can resolve q10/s50
+	// indices. The VCF parser keys filters by name in
+	// h.Filters (map) but the BCF writer consumes an
+	// ordered slice at index time.
+	seenFilter := map[string]bool{}
+	for _, line := range strings.Split(sb.String(), "\n") {
+		if !strings.HasPrefix(line, "##FILTER=") {
+			continue
+		}
+		id, _ := extractIDAndDescription(line)
+		if id != "" && !seenFilter[id] {
+			bh.Filters = append(bh.Filters, id)
+			seenFilter[id] = true
+		}
 	}
 	return bh
 }
@@ -577,12 +654,138 @@ func bcfToVCFHeader(h *bcf.Header) *vcf.Header {
 	vh := &vcf.Header{
 		FileFormat: parseVCFFileFormat(h.FileFormat),
 		Infos:      bcfInfosToVCF(h.Infos),
+		Formats:    bcfFormatsToVCF(h.Formats),
 	}
 	for _, name := range h.Contigs {
 		vh.Contigs = append(vh.Contigs, &vcf.Contig{ID: name})
 	}
 	vh.SampleNames = append([]string(nil), h.SampleNames...)
+	// Re-emit FORMAT declarations as MetaLines so
+	// bcfToVCFRecord's vcfFormatOrder() can resolve
+	// Format-key indices back to names.
+	for _, id := range h.FormatsOrder {
+		fd := h.Formats[id]
+		if fd == nil {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString("<ID=")
+		b.WriteString(id)
+		b.WriteString(",Number=")
+		b.WriteString(fd.Number)
+		b.WriteString(",Type=")
+		b.WriteString(fd.Type)
+		if fd.Description != "" {
+			b.WriteString(",Description=\"")
+			b.WriteString(fd.Description)
+			b.WriteString("\"")
+		}
+		b.WriteString(">")
+		vh.MetaLines = append(vh.MetaLines, vcf.MetaLine{
+			Key:   "FORMAT",
+			Value: b.String(),
+		})
+	}
+	// Re-emit FILTER declarations with their Descriptions
+	// extracted from h.Raw. Without this, the VCF encoder
+	// would re-emit ##FILTER=<ID=…,Description="">.
+	if vh.Filters == nil {
+		vh.Filters = map[string]*vcf.FilterDef{}
+	}
+	for _, line := range strings.Split(h.Raw, "\n") {
+		if !strings.HasPrefix(line, "##FILTER=") {
+			continue
+		}
+		id, desc := extractIDAndDescription(line)
+		if id != "" {
+			vh.Filters[id] = &vcf.FilterDef{ID: id, Description: desc}
+		}
+	}
+	for _, id := range h.Filters {
+		if _, present := vh.Filters[id]; !present {
+			vh.Filters[id] = &vcf.FilterDef{ID: id}
+		}
+	}
+	// Contig metadata (length=, md5=, species=, taxonomy=,
+	// assembly=, URL=…). The BCF header only carries a
+	// stripped Contigs []string; rich Contig fields must
+	// be rehydrated from h.Raw so emitContig can rebuild
+	// a faithful ##contig line.
+	for _, c := range vh.Contigs {
+		for _, line := range strings.Split(h.Raw, "\n") {
+			if !strings.HasPrefix(line, "##contig=") {
+				continue
+			}
+			if !strings.Contains(line, "ID="+c.ID+",") && !strings.Contains(line, "ID="+c.ID+">") {
+				continue
+			}
+			populateContig(c, line)
+		}
+	}
+	// Re-emit unparsed ##-prefixed lines from h.Raw to
+	// preserve fileDate / source / reference / phasing /
+	// assembly / pedigreeDB / any other unstructured pragmas.
+	for _, line := range strings.Split(h.Raw, "\n") {
+		if !strings.HasPrefix(line, "##") {
+			continue
+		}
+		if strings.HasPrefix(line, "##INFO=") ||
+			strings.HasPrefix(line, "##FORMAT=") ||
+			strings.HasPrefix(line, "##FILTER=") ||
+			strings.HasPrefix(line, "##contig=") ||
+			strings.HasPrefix(line, "##fileformat=") {
+			continue
+		}
+		// Strip leading "##" and split key=rest.
+		rest := strings.TrimPrefix(line, "##")
+		eq := strings.IndexByte(rest, '=')
+		if eq < 0 {
+			continue
+		}
+		vh.MetaLines = append(vh.MetaLines, vcf.MetaLine{
+			Key:   rest[:eq],
+			Value: rest[eq+1:],
+			Raw:   line,
+		})
+	}
+	for _, c := range vh.Contigs {
+		// Skip — emitContig will handle from typed fields.
+		_ = c
+	}
 	return vh
+}
+
+// bcfFormatsToVCF copies a bcf FormatDef map to vcf.
+func bcfFormatsToVCF(m map[string]*bcf.FormatDef) map[string]*vcf.FormatDef {
+	if m == nil {
+		return nil
+	}
+	out := make(map[string]*vcf.FormatDef, len(m))
+	for k, v := range m {
+		if v == nil {
+			out[k] = nil
+			continue
+		}
+		var n vcf.Number
+		if v.Number != "" {
+			if pn, err := vcf.ParseNumber(v.Number); err == nil {
+				n = pn
+			}
+		}
+		var t vcf.FieldType
+		if v.Type != "" {
+			if pt, err := vcf.ParseFieldType(v.Type); err == nil {
+				t = pt
+			}
+		}
+		out[k] = &vcf.FormatDef{
+			ID:          v.ID,
+			Number:      n,
+			Type:        t,
+			Description: v.Description,
+		}
+	}
+	return out
 }
 
 // parseVCFFileFormat parses a "VCFvMAJOR.MINOR" string into a
@@ -642,7 +845,7 @@ func bcfInfosToVCF(m map[string]*bcf.InfoDef) map[string]*vcf.InfoDef {
 // "no ID available". BCF's wire format uses typeMissing for
 // this; we normalise both "." and an empty slice to the
 // missing-ID form here so the encoder emits typeMissing.
-func vcfToBCFRecord(r *vcf.Record) *bcf.Record {
+func vcfToBCFRecord(r *vcf.Record, bh *bcf.Header) *bcf.Record {
 	hasID := false
 	for _, id := range r.ID {
 		if id != "." && id != "" {
@@ -680,7 +883,133 @@ func vcfToBCFRecord(r *vcf.Record) *bcf.Record {
 		QualKnown: r.Qual != nil,
 		Filter:    append([]string(nil), r.Filter...),
 		Info:      info,
+		Format:    vcfFormatKeysToBCF(r.Format, bh),
+		Samples:   vcfSamplesToBCF(r.Samples, bh, r.Format),
 	}
+}
+
+// vcfFormatKeysToBCF maps VCF FORMAT key names (rec.Format)
+// to BCF uint16 indices in bh.FormatsOrder. Unknown names
+// are skipped (matches the v1 behavior of silently dropping
+// keys the BCF header doesn't declare).
+func vcfFormatKeysToBCF(keys []string, bh *bcf.Header) []uint16 {
+	if bh == nil {
+		return nil
+	}
+	idx := make(map[string]uint16, len(bh.FormatsOrder))
+	for i, name := range bh.FormatsOrder {
+		idx[name] = uint16(i)
+	}
+	out := make([]uint16, 0, len(keys))
+	for _, k := range keys {
+		if v, ok := idx[k]; ok {
+			out = append(out, v)
+			continue
+		}
+		// Auto-register FORMAT keys that appear on a
+		// record but weren't declared in the header.
+		// The BCF writer needs every FORMAT key to have
+		// a header index and a Type — without a Type the
+		// per-sample encoding would refuse to emit. The
+		// safety default picks Integer which works for
+		// the common case (GT-as-int, DP, GQ, HQ).
+		bh.FormatsOrder = append(bh.FormatsOrder, k)
+		idx[k] = uint16(len(bh.FormatsOrder) - 1) //nolint:gosec // bounded by FormatsOrder size
+		if bh.Formats == nil {
+			bh.Formats = map[string]*bcf.FormatDef{}
+		}
+		if _, present := bh.Formats[k]; !present {
+			bh.Formats[k] = &bcf.FormatDef{
+				ID:     k,
+				Number: "1",
+				Type:   "Integer",
+			}
+		}
+		out = append(out, idx[k])
+	}
+	return out
+}
+
+// vcfSamplesToBCF converts vcf.Genotype per-sample values
+// to bcf.Sample slices.
+func vcfSamplesToBCF(samples []vcf.Genotype, bh *bcf.Header, keys []string) []bcf.Sample {
+	if bh == nil {
+		return nil
+	}
+	idx := make(map[string]uint16, len(bh.FormatsOrder))
+	for i, name := range bh.FormatsOrder {
+		idx[name] = uint16(i)
+	}
+	out := make([]bcf.Sample, len(samples))
+	for si, gt := range samples {
+		s := bcf.Sample{Fields: make(map[uint16]bcf.SampleValue, len(keys))}
+		for _, k := range keys {
+			kIdx, ok := idx[k]
+			if !ok {
+				continue
+			}
+			fv, present := gt.Fields[k]
+			if !present {
+				s.Fields[kIdx] = bcf.SampleValue{Type: "Missing"}
+				continue
+			}
+			s.Fields[kIdx] = vcfFieldToBCF(&fv, k, bh)
+		}
+		out[si] = s
+		_ = si
+	}
+	return out
+}
+
+// vcfFieldToBCF converts a vcf.FieldValue into the BCF wire
+// shape.
+func vcfFieldToBCF(fv *vcf.FieldValue, key string, bh *bcf.Header) bcf.SampleValue {
+	fd := bh.Formats[key]
+	typeName := ""
+	if fd != nil {
+		typeName = fd.Type
+	}
+	if typeName == "" {
+		switch fv.Type {
+		case vcf.TypeInteger:
+			typeName = "Integer"
+		case vcf.TypeFloat:
+			typeName = "Float"
+		case vcf.TypeCharacter:
+			typeName = "Character"
+		case vcf.TypeString:
+			typeName = "String"
+		}
+	}
+	sv := bcf.SampleValue{
+		Type:    typeName,
+		Missing: fv.Missing,
+	}
+	if len(fv.Ints) > 0 {
+		sv.Ints = make([]int32, len(fv.Ints))
+		for i, n := range fv.Ints {
+			sv.Ints[i] = int32(n) //nolint:gosec // VCF FORMAT ints fit int32
+		}
+	}
+	if len(fv.IntMissing) > 0 {
+		sv.IntMissing = append([]bool(nil), fv.IntMissing...)
+	}
+	if len(fv.Floats) > 0 {
+		sv.Floats = make([]float32, len(fv.Floats))
+		for i, f := range fv.Floats {
+			sv.Floats[i] = float32(f)
+		}
+	}
+	if len(fv.FloatMissing) > 0 {
+		sv.FloatMissing = append([]bool(nil), fv.FloatMissing...)
+	}
+	if len(fv.Chars) > 0 {
+		sv.Str = string(fv.Chars)
+	}
+	if len(fv.Strs) > 0 {
+		sv.Strs = append([]string(nil), fv.Strs...)
+	}
+	return sv
 }
 
 // vcfQualToBCF extracts the float64 quality from a VCF Qual
@@ -696,7 +1025,7 @@ func vcfQualToBCF(q *float64) float64 {
 // Per-sample FORMAT data is not synthesised (BCF v1 doesn't
 // carry it). vcf.InfoValue uses unexported typedCore, so we
 // set the values via the typedCore path.
-func bcfToVCFRecord(r *bcf.Record) *vcf.Record {
+func bcfToVCFRecord(r *bcf.Record, vh *vcf.Header) *vcf.Record {
 	var idList []string
 	if r.ID != "" {
 		idList = strings.Split(r.ID, ",")
@@ -722,16 +1051,139 @@ func bcfToVCFRecord(r *bcf.Record) *vcf.Record {
 		info[k] = vv
 	}
 	return &vcf.Record{
-		Line:   r.Line,
-		Chrom:  r.CHROM,
-		Pos:    r.Pos,
-		ID:     idList,
-		Ref:    r.Ref,
-		Alt:    append([]string(nil), r.Alt...),
-		Qual:   bcfQualToVCF(r.Qual, r.QualKnown),
-		Filter: append([]string(nil), r.Filter...),
-		Info:   info,
+		Line:    r.Line,
+		Chrom:   r.CHROM,
+		Pos:     r.Pos,
+		ID:      idList,
+		Ref:     r.Ref,
+		Alt:     append([]string(nil), r.Alt...),
+		Qual:    bcfQualToVCF(r.Qual, r.QualKnown),
+		Filter:  append([]string(nil), r.Filter...),
+		Info:    info,
+		Format:  bcfFormatKeysToNames(r.Format, vh),
+		Samples: bcfSamplesToVCF(r.Samples, r.Format, vh),
 	}
+}
+
+// bcfFormatKeysToNames maps BCF FORMAT-key indices back to
+// the FORMAT key names from the VCF header (vh.Formats
+// maps name → def).
+func bcfFormatKeysToNames(keys []uint16, vh *vcf.Header) []string {
+	if vh == nil {
+		return nil
+	}
+	order := vcfFormatOrder(vh)
+	out := make([]string, 0, len(keys))
+	for _, k := range keys {
+		if int(k) < len(order) {
+			out = append(out, order[k])
+		}
+	}
+	return out
+}
+
+// bcfSamplesToVCF converts per-sample BCF values back to
+// vcf.Genotype slices.
+func bcfSamplesToVCF(samples []bcf.Sample, keys []uint16, vh *vcf.Header) []vcf.Genotype {
+	if vh == nil {
+		return nil
+	}
+	order := vcfFormatOrder(vh)
+	out := make([]vcf.Genotype, len(samples))
+	for si, s := range samples {
+		sg := vcf.Genotype{Fields: make(map[string]vcf.FieldValue, len(keys))}
+		for _, k := range keys {
+			if int(k) >= len(order) {
+				continue
+			}
+			name := order[k]
+			sv, ok := s.Fields[k]
+			if !ok {
+				continue
+			}
+			// Skip wholly-missing fields — VCF emits
+			// trailing "." which spec §1.6.1 says can be
+			// dropped when every sample is missing.
+			if sv.Missing && len(sv.Ints) == 0 && len(sv.FloatMissing) == 0 && len(sv.IntMissing) == 0 && len(sv.Strs) == 0 && sv.Str == "" && len(sv.Floats) == 0 {
+				continue
+			}
+			sg.Fields[name] = bcfFieldToVCF(&sv, name, vh)
+		}
+		out[si] = sg
+		_ = si
+	}
+	return out
+}
+
+// vcfFormatOrder builds a declaration-order list of FORMAT
+// IDs from the VCF header's MetaLines. Reused by both
+// bcf-side helpers to resolve BCF FORMAT-key indices.
+func vcfFormatOrder(vh *vcf.Header) []string {
+	order := make([]string, 0, len(vh.Formats))
+	for _, m := range vh.MetaLines {
+		if m.Key != "FORMAT" {
+			continue
+		}
+		const prefix = "<ID="
+		if !strings.HasPrefix(m.Value, prefix) {
+			continue
+		}
+		rest := m.Value[len(prefix):]
+		end := strings.IndexByte(rest, ',')
+		if end < 0 {
+			end = strings.IndexByte(rest, '>')
+			if end < 0 {
+				end = len(rest)
+			}
+		}
+		order = append(order, rest[:end])
+	}
+	return order
+}
+
+// bcfFieldToVCF converts a bcf.SampleValue back to vcf.FieldValue.
+func bcfFieldToVCF(sv *bcf.SampleValue, name string, vh *vcf.Header) vcf.FieldValue {
+	fd := vh.Formats[name]
+	typeCode := vcf.TypeUnknown
+	if fd != nil {
+		typeCode = fd.Type
+	}
+	fv := vcf.FieldValue{}
+	fv.Type = typeCode
+	// Whole-field missing collapses to "." in VCF output,
+	// but a per-slot missing list like ". , ." must round-trip
+	// as ".,." (VCF §1.6.2 line 508). When the BCF decoder
+	// provides per-slot flags, suppress the whole-field
+	// Missing bit so writeTyped emits the list.
+	if len(sv.IntMissing) > 0 || len(sv.FloatMissing) > 0 {
+		sv.Missing = false
+	}
+	fv.Missing = sv.Missing
+	if len(sv.Ints) > 0 {
+		fv.Ints = make([]int64, len(sv.Ints))
+		for i, n := range sv.Ints {
+			fv.Ints[i] = int64(n)
+		}
+	}
+	if len(sv.IntMissing) > 0 {
+		fv.IntMissing = append([]bool(nil), sv.IntMissing...)
+	}
+	if len(sv.Floats) > 0 {
+		fv.Floats = make([]float64, len(sv.Floats))
+		for i, f := range sv.Floats {
+			fv.Floats[i] = float64(f)
+		}
+	}
+	if len(sv.FloatMissing) > 0 {
+		fv.FloatMissing = append([]bool(nil), sv.FloatMissing...)
+	}
+	if sv.Str != "" && typeCode == vcf.TypeCharacter {
+		fv.Chars = []byte(sv.Str)
+	}
+	if len(sv.Strs) > 0 {
+		fv.Strs = append([]string(nil), sv.Strs...)
+	}
+	return fv
 }
 
 // bcfQualToVCF converts a (qual, qualKnown) pair to a VCF
@@ -747,24 +1199,84 @@ func bcfQualToVCF(qual float64, qualKnown bool) *float64 {
 // runVCFToBCF reads a VCF file from src and writes a BCF
 // stream to dst.
 func runVCFToBCF(src io.Reader, dst io.Writer) error {
+	// Pre-scan: read all records into memory so we can
+	// discover FORMAT/INFO keys referenced by records but
+	// not declared in the header (V1.6.1 line 695 allows
+	// this; the BCF header must nonetheless declare
+	// every key used). Two passes — the first populates
+	// bh.FormatsOrder/bh.InfosOrder; the second writes.
 	dec := vcf.NewDecoder(src)
 	enc := bcf.NewEncoder(dst)
-	return runTranslateStream(
-		dec.Header,
-		dec.Record,
-		vcfToBCFHeader,
-		enc.WriteHeader,
-		func(r *vcf.Record, _ *bcf.Header) (*bcf.Record, error) {
-			return vcfToBCFRecord(r), nil
-		},
-		enc.WriteRecord,
-		func() error {
-			if err := enc.Close(); err != nil {
-				return fmt.Errorf("close encoder: %w", err)
+	hdr, err := dec.Header()
+	if err != nil {
+		return fmt.Errorf("parse header: %w", err)
+	}
+	bh := vcfToBCFHeader(hdr)
+	var records []*vcf.Record
+	for {
+		rec, err := dec.Record()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return fmt.Errorf("parse record: %w", err)
+		}
+		records = append(records, rec)
+	}
+	// Register FORMAT/INFO keys that appear only on records
+	// (typical for VCFs whose header is incomplete). For
+	// each one we also need a matching ##FORMAT= or
+	// ##INFO= line in bh.Raw so the BCF on-disk header
+	// remains self-describing for downstream readers.
+	extraText := strings.Builder{}
+	for _, rec := range records {
+		for _, k := range rec.Format {
+			if !lookupHeaderKey(bh.FormatsOrder, k) {
+				bh.FormatsOrder = append(bh.FormatsOrder, k)
+				if bh.Formats == nil {
+					bh.Formats = map[string]*bcf.FormatDef{}
+				}
+				bh.Formats[k] = &bcf.FormatDef{ID: k, Number: "1", Type: "Integer"}
+				extraText.WriteString("##FORMAT=<ID=" + k + ",Number=1,Type=Integer>\n")
 			}
-			return nil
-		},
-	)
+		}
+		for k := range rec.Info {
+			if !lookupHeaderKey(bh.InfosOrder, k) {
+				bh.InfosOrder = append(bh.InfosOrder, k)
+				if bh.Infos == nil {
+					bh.Infos = map[string]*bcf.InfoDef{}
+				}
+				bh.Infos[k] = &bcf.InfoDef{ID: k, Number: ".", Type: "String"}
+				extraText.WriteString("##INFO=<ID=" + k + ",Number=.,Type=String>\n")
+			}
+		}
+	}
+	// Splice the extra ##FORMAT / ##INFO lines into bh.Raw
+	// before the sample line so the BCF file is complete.
+	bh.Raw += extraText.String()
+	if err := enc.WriteHeader(bh); err != nil {
+		return fmt.Errorf("write header: %w", err)
+	}
+	for _, rec := range records {
+		if err := enc.WriteRecord(vcfToBCFRecord(rec, bh)); err != nil {
+			return fmt.Errorf("write record: %w", err)
+		}
+	}
+	if err := enc.Close(); err != nil {
+		return fmt.Errorf("close encoder: %w", err)
+	}
+	return nil
+}
+
+// lookupHeaderKey reports whether key is in list
+// (bcf.InfosOrder or bcf.FormatsOrder).
+func lookupHeaderKey(list []string, key string) bool {
+	for _, v := range list {
+		if v == key {
+			return true
+		}
+	}
+	return false
 }
 
 // runBCFToVCF reads a BCF stream from src and writes a VCF
@@ -777,10 +1289,107 @@ func runBCFToVCF(src io.Reader, dst io.Writer) error {
 		dec.Record,
 		bcfToVCFHeader,
 		enc.EncodeHeader,
-		func(r *bcf.Record, _ *vcf.Header) (*vcf.Record, error) {
-			return bcfToVCFRecord(r), nil
+		func(r *bcf.Record, vh *vcf.Header) (*vcf.Record, error) {
+			return bcfToVCFRecord(r, vh), nil
 		},
 		enc.EncodeRecord,
 		func() error { return enc.Flush() },
 	)
+}
+
+// extractIDAndDescription parses a "<TYPE>=<ID=…,Description=\"…\">"
+// line into the ID and Description, respecting quoted commas.
+// Used to rehydrate FILTER/FORMAT/INFO Description values from
+// the BCF header's Raw text.
+func extractIDAndDescription(line string) (id, desc string) {
+	const prefix = "<ID="
+	i := strings.Index(line, prefix)
+	if i < 0 {
+		return "", ""
+	}
+	rest := line[i+len(prefix):]
+	end := strings.Index(rest, ">")
+	if end < 0 {
+		return "", ""
+	}
+	body := rest[:end]
+	kvs := splitQuotedCSV(body)
+	if len(kvs) > 0 {
+		id = kvs[0] // The "<ID=" prefix already stripped the leading "ID=".
+	}
+	for _, kv := range kvs[1:] {
+		if strings.HasPrefix(kv, "Description=") {
+			d := strings.TrimPrefix(kv, "Description=")
+			if len(d) >= 2 && d[0] == '"' && d[len(d)-1] == '"' {
+				d = d[1 : len(d)-1]
+			}
+			desc = d
+		}
+	}
+	return id, desc
+}
+
+// splitQuotedCSV splits a comma list respecting quoted spans.
+func splitQuotedCSV(s string) []string {
+	out := []string{}
+	cur := []byte{}
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' {
+			inQuote = !inQuote
+			cur = append(cur, c)
+			continue
+		}
+		if !inQuote && c == ',' {
+			out = append(out, string(cur))
+			cur = cur[:0]
+			continue
+		}
+		cur = append(cur, c)
+	}
+	out = append(out, string(cur))
+	return out
+}
+
+// populateContig fills a vcf.Contig's rich fields from a
+// ##contig=<ID=…,length=…,…> line.
+func populateContig(c *vcf.Contig, line string) {
+	const prefix = "<"
+	body := strings.TrimPrefix(line, "##contig=")
+	body = strings.TrimPrefix(body, prefix)
+	end := strings.Index(body, ">")
+	if end < 0 {
+		return
+	}
+	for _, kv := range splitQuotedCSV(body[:end]) {
+		eq := strings.IndexByte(kv, '=')
+		if eq < 0 {
+			continue
+		}
+		k, v := kv[:eq], kv[eq+1:]
+		if len(v) >= 2 && v[0] == '"' && v[len(v)-1] == '"' {
+			v = v[1 : len(v)-1]
+		}
+		switch k {
+		case "ID":
+			// already set on c
+		case "length":
+			n, _ := strconv.ParseInt(v, 10, 64)
+			c.Length = n
+		case "md5":
+			c.MD5 = v
+		case "URL":
+			c.URL = v
+		case "species":
+			c.Species = v
+		case "taxonomy":
+			c.Taxonomy = v
+		default:
+			if c.Other == nil {
+				c.Other = map[string]string{}
+			}
+			c.Other[k] = v
+		}
+	}
 }

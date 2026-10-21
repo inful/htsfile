@@ -90,10 +90,17 @@ func (h *Header) LookupContig(i int) string {
 // i is out of range. The special value 0 traditionally maps
 // to "PASS" in VCF/BCF; the decoder handles that mapping.
 func (h *Header) LookupFilter(i int) string {
-	if h == nil || i < 0 || i >= len(h.Filters) {
+	// Per BCF §GenotypeEncoding (VCFv4.5 line 2256) and
+	// htslib convention: filter index 0 is the implicit
+	// PASS, even when explicit ##FILTER lines are declared.
+	// Declared filters therefore occupy indices 1..N.
+	if i == 0 {
+		return "PASS"
+	}
+	if h == nil || i < 0 || i-1 >= len(h.Filters) {
 		return ""
 	}
-	return h.Filters[i]
+	return h.Filters[i-1]
 }
 
 // ParseHeader parses a VCF-format header text into a Header.
@@ -170,7 +177,7 @@ func extractIDFromAngleField(line, prefix string) string {
 			rest = rest[:end]
 		}
 	}
-	for _, kv := range strings.Split(rest, ",") {
+	for _, kv := range splitStructuredFields(rest, ",") {
 		if strings.HasPrefix(kv, "ID=") {
 			return strings.TrimPrefix(kv, "ID=")
 		}
@@ -189,7 +196,10 @@ func parseStructuredField(line, prefix string) *InfoDef {
 		}
 	}
 	def := &InfoDef{}
-	for _, kv := range strings.Split(rest, ",") {
+	// Comma-aware split: the Description value can contain
+	// commas inside double quotes. Treat '"' as toggling a
+	// "inside string" state and skip commas in that state.
+	for _, kv := range splitStructuredFields(rest, ",") {
 		kv = strings.TrimSpace(kv)
 		switch {
 		case strings.HasPrefix(kv, "ID="):
@@ -199,7 +209,14 @@ func parseStructuredField(line, prefix string) *InfoDef {
 		case strings.HasPrefix(kv, "Type="):
 			def.Type = strings.TrimPrefix(kv, "Type=")
 		case strings.HasPrefix(kv, "Description="):
-			def.Description = strings.TrimPrefix(kv, "Description=")
+			// Strip outer quotes if present so callers
+			// see the bare description.
+			d := strings.TrimPrefix(kv, "Description=")
+			d = strings.TrimPrefix(d, "\"")
+			if d != "" && d[len(d)-1] == '"' {
+				d = d[:len(d)-1]
+			}
+			def.Description = d
 		}
 	}
 	return def
@@ -236,4 +253,32 @@ func sortedKeys[V any](m map[string]V) []string {
 	}
 	sort.Strings(keys)
 	return keys
+}
+
+// splitStructuredFields splits a key=value comma list
+// respecting "..." quoting (commas inside quotes are
+// part of the value). Description values like
+// "dbSNP membership, build 129" include a comma and
+// would be split by strings.Split.
+func splitStructuredFields(s, sep string) []string {
+	out := []string{}
+	cur := []byte{}
+	inQuote := false
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if c == '"' {
+			inQuote = !inQuote
+			cur = append(cur, c)
+			continue
+		}
+		if !inQuote && i+len(sep) <= len(s) && s[i:i+len(sep)] == sep {
+			out = append(out, string(cur))
+			cur = cur[:0]
+			i += len(sep) - 1
+			continue
+		}
+		cur = append(cur, c)
+	}
+	out = append(out, string(cur))
+	return out
 }

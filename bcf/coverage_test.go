@@ -104,8 +104,10 @@ func TestHeader_LookupContig_Empty(t *testing.T) {
 	if got := hdr.LookupContig(0); got != "" {
 		t.Errorf("LookupContig(0) on empty: got %q", got)
 	}
-	if got := hdr.LookupFilter(0); got != "" {
-		t.Errorf("LookupFilter(0) on empty: got %q", got)
+	// Index 0 is always PASS (VCFv4.5 / htslib convention),
+	// so an empty header still resolves it.
+	if got := hdr.LookupFilter(0); got != "PASS" {
+		t.Errorf("LookupFilter(0) on empty: got %q, want \"PASS\"", got)
 	}
 }
 

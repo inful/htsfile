@@ -143,49 +143,56 @@ type testRecord struct {
 // block.
 func (b *builder) writeRecord(t *testing.T, r *testRecord) {
 	t.Helper()
-	var payload bytes.Buffer
-	var prefix [16]byte
+	var shared bytes.Buffer
+	// Spec section 5, BcfSiteEncoding: 24-byte site prefix
+	// CHROM, POS, rlen, QUAL, n_info, n_allele, n_sample,
+	// n_fmt.
+	nInfo := uint16(len(r.Info))
+	nAllele := uint16(1 + len(r.Alt))
+	var prefix [24]byte
 	binary.LittleEndian.PutUint32(prefix[0:4], uint32(r.contigIdx))
 	binary.LittleEndian.PutUint32(prefix[4:8], uint32(int32(r.Pos)-1))
-	binary.LittleEndian.PutUint32(prefix[8:12], 0)
-	binary.LittleEndian.PutUint32(prefix[12:16], uint32(len(r.Info)))
-	payload.Write(prefix[:])
-	var nFmt [2]byte
-	binary.LittleEndian.PutUint16(nFmt[:], 0)
-	payload.Write(nFmt[:])
-	testWriteTypedString(&payload, r.ID)
-	testWriteTypedString(&payload, r.Ref)
-	for _, alt := range r.Alt {
-		testWriteTypedString(&payload, alt)
-	}
-	testWriteTypedFilter(&payload, r.filterIdxs)
+	binary.LittleEndian.PutUint32(prefix[8:12], uint32(len(r.Ref))) // rlen
+	qualBits := bcfFloatMissing
 	if r.QualKnown {
-		payload.WriteByte(typeFloat)
-		var bits [8]byte
-		binary.LittleEndian.PutUint64(bits[:], float64Bits(r.Qual))
-		payload.Write(bits[:])
-	} else {
-		payload.WriteByte(typeMissing)
+		qualBits = math.Float32bits(float32(r.Qual))
 	}
+	binary.LittleEndian.PutUint32(prefix[12:16], qualBits)
+	binary.LittleEndian.PutUint16(prefix[16:18], nInfo)
+	binary.LittleEndian.PutUint16(prefix[18:20], nAllele)
+	// n_sample=0 and n_fmt=0 in the shared prefix; the
+	// per-sample block is empty for these fixtures.
+	shared.Write(prefix[:])
+
+	testWriteTypedString(&shared, r.ID)
+	testWriteTypedString(&shared, r.Ref)
+	for _, alt := range r.Alt {
+		testWriteTypedString(&shared, alt)
+	}
+	testWriteTypedFilter(&shared, r.filterIdxs)
 	for _, id := range r.infoOrder {
 		def := r.infoDefs[id]
 		val := r.Info[id]
-		// Look up the key index from the header's
-		// InfosOrder via the package's LookupInfoIndex
-		// helper. BCF stores the key as a positional index
-		// into the header's ##INFO declaration list; the
-		// test's local infoOrder does NOT match the
-		// header's declaration order.
 		hdrIdx, ok := b.hdr.LookupInfoIndex(id)
 		if !ok {
 			panic(fmt.Sprintf("test bug: %q not in header InfosOrder (have %v)", id, b.hdrOrder))
 		}
-		var keyBytes [2]byte
-		binary.LittleEndian.PutUint16(keyBytes[:], uint16(hdrIdx))
-		payload.Write(keyBytes[:])
-		testWriteTypedInfoValue(&payload, def, val)
+		// INFO key is a typed atomic int, not a bare uint16.
+		shared.WriteByte(typeByteAtomic(typeInt32))
+		var kb [4]byte
+		binary.LittleEndian.PutUint32(kb[:], uint32(hdrIdx))
+		shared.Write(kb[:])
+		testWriteTypedInfoValue(&shared, def, val)
 	}
-	b.writeBGZFBlock(payload.Bytes())
+
+	// l_shared + l_indiv framing.
+	var lens [8]byte
+	binary.LittleEndian.PutUint32(lens[0:4], uint32(shared.Len()))
+	binary.LittleEndian.PutUint32(lens[4:8], 0)
+	var rec bytes.Buffer
+	rec.Write(lens[:])
+	rec.Write(shared.Bytes())
+	b.writeBGZFBlock(rec.Bytes())
 }
 
 func testWriteTypedString(b *bytes.Buffer, s string) {
@@ -232,65 +239,80 @@ func testWriteTypedInfoValue(b *bytes.Buffer, def *InfoDef, v InfoValue) {
 		}
 		return
 	}
-	count, isVar := ParseNumber(def.Number)
-	// For variable-count types (A/R/G/.) or unset counts,
-	// determine count from the value's actual length.
-	if count == 0 {
-		switch def.Type {
-		case "Integer":
-			count = len(v.Ints)
-		case "Float":
-			count = len(v.Floats)
-		case "String":
-			count = len(v.Strs)
-		case "Character":
-			count = 1
-		}
+	defSize, isVar := ParseNumber(def.Number)
+	count, hasCount := 0, false
+	switch def.Type {
+	case "Integer":
+		count, hasCount = len(v.Ints), true
+	case "Float":
+		count, hasCount = len(v.Floats), true
+	case "String":
+		count, hasCount = len(v.Strs), true
+	case "Character":
+		count, hasCount = 1, true
 	}
-	if isVar {
-		b.WriteByte(typeInt32)
-		var n [4]byte
-		binary.LittleEndian.PutUint32(n[:], uint32(count))
-		b.Write(n[:])
+	if !hasCount {
+		count, isVar = defSize, false
+	}
+	if !hasCount && defSize == 0 && !isVar {
+		count = 1
+	}
+	size, overflow := testPickBcfSize(count, isVar)
+	var lowType uint8
+	switch def.Type {
+	case "Integer":
+		lowType = typeInt32
+	case "Float":
+		lowType = typeFloat
+	case "String", "Character":
+		lowType = typeString
+	}
+	b.WriteByte((uint8(size) << 4) | lowType)
+	if overflow {
+		b.WriteByte((1 << 4) | typeInt8)
+		b.WriteByte(byte(count))
 	}
 	switch def.Type {
 	case "Integer":
-		b.WriteByte(typeInt32)
 		for _, n := range v.Ints {
 			var x [4]byte
 			binary.LittleEndian.PutUint32(x[:], uint32(int32(n)))
 			b.Write(x[:])
 		}
 	case "Float":
-		b.WriteByte(typeFloat)
 		for _, f := range v.Floats {
 			var x [4]byte
 			binary.LittleEndian.PutUint32(x[:], float32Bits(float32(f)))
 			b.Write(x[:])
 		}
 	case "String":
-		b.WriteByte(typeString)
-		for _, s := range v.Strs {
+		for _, st := range v.Strs {
 			var l [4]byte
-			binary.LittleEndian.PutUint32(l[:], uint32(len(s)))
+			binary.LittleEndian.PutUint32(l[:], uint32(len(st)))
 			b.Write(l[:])
-			b.WriteString(s)
+			b.WriteString(st)
 		}
 	case "Character":
-		b.WriteByte(typeString)
 		var l [4]byte
-		binary.LittleEndian.PutUint32(l[:], 1)
+		binary.LittleEndian.PutUint32(l[:], uint32(len(v.Str)))
 		b.Write(l[:])
-		if len(v.Str) > 0 {
-			b.WriteByte(v.Str[0])
-		}
+		b.WriteString(v.Str)
 	}
+}
+
+// testPickBcfSize mirrors pickBcfSize for the test fixture
+// builder. Independent copy because tests live in a _test
+// file and cannot reuse package-private helpers.
+func testPickBcfSize(count int, isVar bool) (size int, overflow bool) {
+	if isVar || count >= 15 {
+		return 15, true
+	}
+	return count, false
 }
 
 // float64Bits / float32Bits wrap math.Float64bits /
 // Float32bits so the helpers don't need a separate math
 // import.
-func float64Bits(f float64) uint64 { return math.Float64bits(f) }
 func float32Bits(f float32) uint32 { return math.Float32bits(f) }
 
 // readAll reads all records from a BCF byte slice and

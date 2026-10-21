@@ -551,11 +551,11 @@ func (h *Header) applyStructured(key string, pairs []fieldPair, lineNo int) erro
 			// subtypes for IUPAC codes).
 		} else {
 			switch first {
-			case "DEL", "INS", "DUP", "INV", "CNV":
+			case "DEL", "INS", "DUP", "INV", "CNV", "*", "NON_REF":
 				// ok
 			default:
 				return &ParseError{Line: lineNo, Field: "ALT",
-					Msg: fmt.Sprintf("ALT ID %q has first-level type %q; must be one of DEL, INS, DUP, INV, CNV, or an IUPAC code", d.ID, first)}
+					Msg: fmt.Sprintf("ALT ID %q has first-level type %q; must be one of DEL, INS, DUP, INV, CNV, *, or an IUPAC code, or NON_REF", d.ID, first)}
 			}
 		}
 		if _, exists := h.Alts[d.ID]; exists {
@@ -1383,7 +1383,12 @@ func decodeTyped(c *typedCore, raw []string) {
 	case TypeInteger:
 		for _, r := range raw {
 			if r == "." {
+				// Per-slot missing — keep slot, flag it so the
+				// writer re-emits ".". Slot value is unused
+				// (IntMissing[i] is authoritative); 0 here is a
+				// placeholder so len(Ints)==len(IntMissing).
 				c.Ints = append(c.Ints, 0)
+				c.IntMissing = append(c.IntMissing, true)
 				continue
 			}
 			n, err := strconv.ParseInt(r, 10, 32)
@@ -1391,22 +1396,27 @@ func decodeTyped(c *typedCore, raw []string) {
 				// Lenient: keep raw but mark type mismatch for the
 				// validator to surface.
 				c.Ints = append(c.Ints, 0)
+				c.IntMissing = append(c.IntMissing, true)
 				continue
 			}
 			c.Ints = append(c.Ints, n)
+			c.IntMissing = append(c.IntMissing, false)
 		}
 	case TypeFloat:
 		for _, r := range raw {
 			if r == "." {
 				c.Floats = append(c.Floats, 0)
+				c.FloatMissing = append(c.FloatMissing, true)
 				continue
 			}
 			f, err := parseVCFFloat(r)
 			if err != nil {
 				c.Floats = append(c.Floats, 0)
+				c.FloatMissing = append(c.FloatMissing, true)
 				continue
 			}
 			c.Floats = append(c.Floats, f)
+			c.FloatMissing = append(c.FloatMissing, false)
 		}
 	case TypeString:
 		for _, r := range raw {

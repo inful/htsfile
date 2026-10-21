@@ -113,11 +113,21 @@ func (v *FieldValue) Float() float64 {
 // read or write the typed slices go through the InfoValue / FieldValue
 // wrappers, where the fields are promoted.
 type typedCore struct {
-	Type    FieldType
-	Ints    []int64
-	Floats  []float64
-	Strs    []string
-	Chars   []byte
+	Type FieldType
+	Ints []int64
+	// IntMissing parallels Ints slot-by-slot: IntMissing[i]
+	// marks Ints[i] as the per-slot VCF missing value ".".
+	// Output round-trip must emit "." for those slots (VCF
+	// §1.6.2 line 508).
+	IntMissing []bool
+	Floats     []float64
+	// FloatMissing parallels Floats slot-by-slot. A "." in a
+	// Float list (e.g. AF=.,.) stays "." on output.
+	FloatMissing []bool
+	Strs         []string
+	Chars        []byte
+	// Whole-field missing ("." for a non-list or a list that
+	// is itself entirely missing) is encoded as Missing=true.
 	Missing bool
 	Raw     []string
 }

@@ -198,11 +198,25 @@ func (e *Encoder) WriteRecord(r *Record) error {
 	if !ok {
 		return fmt.Errorf("bcf: record CHROM %q not in header", r.CHROM)
 	}
-	payload, err := encodeRecord(r, chromIdx, e.hdr, e.version)
+	shared, err := encodeRecord(r, chromIdx, e.hdr, e.version)
 	if err != nil {
 		return fmt.Errorf("bcf: encoding record: %w", err)
 	}
-	if _, err := e.w.Write(payload); err != nil {
+	individ, err := encodeIndivid(r, e.hdr, e.version)
+	if err != nil {
+		return fmt.Errorf("bcf: encoding per-sample data: %w", err)
+	}
+	// Spec section 5, BcfSiteEncoding: every record is
+	// preceded by l_shared (CHROM..INFO) and l_indiv
+	// (FORMAT + per-sample genotype fields).
+	var lens [8]byte
+	binary.LittleEndian.PutUint32(lens[0:4], uint32(len(shared)))
+	binary.LittleEndian.PutUint32(lens[4:8], uint32(len(individ)))
+	var rec bytes.Buffer
+	rec.Write(lens[:])
+	rec.Write(shared)
+	rec.Write(individ)
+	if _, err := e.w.Write(rec.Bytes()); err != nil {
 		return fmt.Errorf("bcf: writing record: %w", err)
 	}
 	return nil
@@ -221,53 +235,102 @@ func (e *Encoder) Close() error {
 // encodeRecord serializes one Record into the BGZF block
 // payload: prefix (CHROM + POS + rlen + n_info + n_fmt) +
 // ID + REF + ALT + FILTER + QUAL + INFO + per-sample FORMAT.
+// encodeRecord serializes one Record into the BCF2 "site"
+// representation defined in VCFv4.5 section 5, "BCF2 site
+// information encoding":
+//
+//	l_shared  uint32   (written by the caller as a length prefix)
+//	l_indiv   uint32   (ditto)
+//	CHROM     int32
+//	POS       int32    0-based
+//	rlen      int32
+//	QUAL      float32  0x7F800001 when missing
+//	n_info    uint16
+//	n_allele  uint16   REF + ALTs
+//	n_sample  uint24
+//	n_fmt     uint8
+//	ID        typed string
+//	REF+ALT   n_allele typed strings
+//	FILTER    typed vector of int
+//	INFO      n_info x (typed atomic int key, typed vector value)
+//
+// The per-sample FORMAT block is appended by the caller path
+// in writeRecord; this function returns the shared part only.
 func encodeRecord(r *Record, chromIdx int32, hdr *Header, version uint8) ([]byte, error) {
 	var payload bytes.Buffer
-	// Prefix: CHROM (int32) + POS (int32) + rlen (int32) +
-	// n_info (uint32) + n_fmt (uint16) = 18 bytes.
-	prefix := make([]byte, 18)
+	nInfo := uint16(len(r.Info))
+	nAllele := uint16(1 + len(r.Alt)) // REF plus the ALTs
+	nFmt := uint8(len(r.Format))
+
+	// Fixed 24-byte site prefix.
+	var prefix [24]byte
 	binary.LittleEndian.PutUint32(prefix[0:4], uint32(chromIdx))
 	pos0 := uint32(int32(r.Pos) - 1)
 	if r.Pos <= 0 {
 		pos0 = 0xFFFFFFFF // -1 in int32 (BCF's missing sentinel)
 	}
 	binary.LittleEndian.PutUint32(prefix[4:8], pos0)
-	// rlen (uint32) — unused in v1; emit 0.
-	binary.LittleEndian.PutUint32(prefix[8:12], 0)
-	nInfo := uint32(len(r.Info))
-	binary.LittleEndian.PutUint32(prefix[12:16], nInfo)
-	nFmt := uint16(len(r.Format))
-	binary.LittleEndian.PutUint16(prefix[16:18], nFmt)
-	payload.Write(prefix[:18])
-	// ID (typed string).
+	// rlen: length of the record projected onto the reference.
+	// Spec (BcfSiteEncoding): the maximum of len(REF) and the
+	// lengths inferred from the SVLEN/LEN of any symbolic
+	// alleles. We have no reference or symbolic-length metadata
+	// on bcf.Record, so len(REF) is the best available answer
+	// and is what htslib writes for simple records.
+	rlen := int32(len(r.Ref))
+	if rlen < 1 {
+		rlen = 1
+	}
+	binary.LittleEndian.PutUint32(prefix[8:12], uint32(rlen))
+	// QUAL: a plain float32 in the prefix. The per-type
+	// MISSING sentinel 0x7F800001 marks "unknown".
+	qualBits := bcfFloatMissing
+	if r.QualKnown {
+		qualBits = math.Float32bits(float32(r.Qual))
+	}
+	binary.LittleEndian.PutUint32(prefix[12:16], qualBits)
+	binary.LittleEndian.PutUint16(prefix[16:18], nInfo)
+	binary.LittleEndian.PutUint16(prefix[18:20], nAllele)
+	// n_sample occupies 24 bits at offset 20, n_fmt the final
+	// byte.
+	if hdr != nil {
+		binary.LittleEndian.PutUint32(prefix[20:24],
+			uint32(len(hdr.SampleNames))<<8|uint32(nFmt))
+	} else {
+		binary.LittleEndian.PutUint32(prefix[20:24], uint32(nFmt))
+	}
+	payload.Write(prefix[:])
+
+	// ID (typed string; 0x07 marks missing).
 	writeTypedString(&payload, r.ID, version)
-	// REF (typed string).
+	// REF then ALT, all typed strings.
 	writeTypedString(&payload, r.Ref, version)
-	// ALT (zero or more typed strings, terminated by FILTER).
 	for _, alt := range r.Alt {
 		writeTypedString(&payload, alt, version)
 	}
-	// FILTER (typed: missing | single int32 | array of int32).
+	// FILTER: typed vector of dictionary offsets.
 	writeTypedFilter(&payload, r.Filter, hdr)
-	// QUAL (typed: missing | float64).
-	writeTypedQual(&payload, r.Qual, r.QualKnown)
-	// INFO (n_info typed entries; each is keyed by uint16
-	// header index plus a typed value).
+	// INFO: n_info pairs.
 	if err := writeTypedInfo(&payload, r.Info, hdr); err != nil {
 		return nil, err
 	}
-	// Per-sample FORMAT block.
-	if nFmt > 0 {
-		for _, keyIdx := range r.Format {
-			var ib [2]byte
-			binary.LittleEndian.PutUint16(ib[:], keyIdx)
-			payload.Write(ib[:])
-		}
-		if err := writeFormatBlock(&payload, r, hdr, version); err != nil {
-			return nil, err
-		}
-	}
 	return payload.Bytes(), nil
+}
+
+// encodeIndivid writes the per-sample (l_indiv) part: n_fmt
+// typed atomic integer FORMAT-key offsets followed by one
+// typed vector per key (spec section 5, GenotypeEncoding).
+func encodeIndivid(r *Record, hdr *Header, version uint8) ([]byte, error) {
+	var buf bytes.Buffer
+	if len(r.Format) == 0 {
+		return nil, nil
+	}
+	for _, keyIdx := range r.Format {
+		writeTypedInt(&buf, int32(keyIdx))
+	}
+	if err := writeFormatBlock(&buf, r, hdr, version); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
 }
 
 // writeTypedString emits a type byte + optional length prefix
@@ -289,6 +352,18 @@ func writeTypedString(w *bytes.Buffer, s string, version uint8) {
 	binary.LittleEndian.PutUint32(lb[:], uint32(len(s)))
 	w.Write(lb[:])
 	w.WriteString(s)
+}
+
+// writeTypedInt emits a typed atomic 32-bit integer: the type
+// byte (size 1 in the high nibble, int32 in the low nibble)
+// followed by the little-endian value. Spec section 5 uses
+// this form for the INFO dictionary key and for the FORMAT
+// key list.
+func writeTypedInt(w *bytes.Buffer, v int32) {
+	w.WriteByte(typeByteAtomic(typeInt32))
+	var b [4]byte
+	binary.LittleEndian.PutUint32(b[:], uint32(v))
+	w.Write(b[:])
 }
 
 // writeTypedFilter emits the FILTER typed array. BCF FILTER
@@ -338,31 +413,15 @@ func filterIndex(name string, hdr *Header) uint32 {
 	}
 	for i, f := range hdr.Filters {
 		if f == name {
-			return uint32(i)
+			// Declared filters sit at +1 (index 0 is the
+			// implicit PASS).
+			return uint32(i + 1)
 		}
 	}
-	if len(hdr.Filters) == 0 && name == "PASS" {
+	if name == "PASS" {
 		return 0
 	}
 	return bcfFilterMissing
-}
-
-// writeTypedQual emits the QUAL typed float64. Missing
-// is typeMissing (qualKnown=false → emit sentinel).
-// Returns when the value is known to wire the float64
-// body. We keep the package's existing float64 width
-// rather than switch to float32 — the reader accepts
-// both and the wider width is what existing test
-// fixtures rely on.
-func writeTypedQual(w *bytes.Buffer, qual float64, qualKnown bool) {
-	if !qualKnown {
-		w.WriteByte(typeMissing)
-		return
-	}
-	w.WriteByte(typeFloat)
-	var b [8]byte
-	binary.LittleEndian.PutUint64(b[:], math.Float64bits(qual))
-	w.Write(b[:])
 }
 
 // writeTypedInfo emits one typed entry per key in info. Each
@@ -387,11 +446,13 @@ func writeTypedInfo(w *bytes.Buffer, info map[string]InfoValue, hdr *Header) err
 		if !ok {
 			continue // unreachable, but defensive
 		}
+		def, _ := hdr.InfoAt(idx)
 		v := val
-		var ib [2]byte
-		binary.LittleEndian.PutUint16(ib[:], uint16(idx))
-		w.Write(ib[:])
-		if err := writeTypedInfoValue(w, &v, hdr); err != nil {
+		// Spec section 5: "The first value must be a typed
+		// atomic integer giving the offset of the INFO field
+		// key into the dictionary."
+		writeTypedInt(w, int32(idx))
+		if err := writeTypedInfoValue(w, &v, def); err != nil {
 			return err
 		}
 	}
@@ -416,65 +477,72 @@ func writeTypedInfo(w *bytes.Buffer, info map[string]InfoValue, hdr *Header) err
 //     header declaration, not the stream).
 //   - Variable-length (Number=A/R/G/.): length prefix (type byte
 //   - count uint32) + value type byte + value bytes.
-func writeTypedInfoValue(w *bytes.Buffer, val *InfoValue, hdr *Header) error {
-	def, ok := hdr.Infos[val.Type]
-	_ = def // type info is in val.Type; def is for Number
-	isVar := false
-	if ok {
-		_, isVar = ParseNumber(def.Number)
-	}
+
+// writeTypedInfoValue serializes a single INFO value per
+// the BCF 2 type-byte encoding (spec §BcfTypeEncoding,
+// lines 2253-2309). The four high bits of the type byte
+// hold the vector size: 1..14 are inline, 15 means the true
+// count follows as a typed Integer in the byte stream, 0
+// means MISSING. The four low bits hold the BCF type code
+// (1=int8, 2=int16, 3=int32, 5=float32, 7=char/string).
+//
+// Flag has no vector body: typeMissing marks absence, any
+// other byte marks presence.
+func writeTypedInfoValue(w *bytes.Buffer, val *InfoValue, def *InfoDef) error {
 	switch val.Type {
 	case "Flag":
-		// Flag: typeMissing = absent, anything else = present.
 		if val.Flag {
 			w.WriteByte(typeInt8)
 		} else {
 			w.WriteByte(typeMissing)
 		}
 	case "Integer":
-		if isVar {
-			// Variable-length: length prefix + value type +
-			// count + values.
-			w.WriteByte(typeInt32) // length-prefix type byte
-			var lb [4]byte
-			binary.LittleEndian.PutUint32(lb[:], uint32(len(val.Ints)))
-			w.Write(lb[:])
+		count, isVar := len(val.Ints), false
+		if def != nil {
+			_, isVar = ParseNumber(def.Number)
+		}
+		size, overflow := pickBcfSize(count, isVar)
+		w.WriteByte(typeByteSize(uint8(size), typeInt32))
+		if overflow {
+			// Typed Integer overflow: type byte + value.
+			w.WriteByte(typeByteAtomic(typeInt8))
+			w.WriteByte(byte(count))
 		}
 		if err := checkBcfIntegerRange("INFO", val.Ints); err != nil {
 			return err
 		}
-		// Atomic (size 1) Integer vectors encode the size
-		// in the high nibble (T4.21, §BcfTypeEncoding
-		// line 2271): `(1<<4) | type`.
-		w.WriteByte(typeByteAtomic(typeInt32))
 		for _, n := range val.Ints {
 			var b [4]byte
 			binary.LittleEndian.PutUint32(b[:], uint32(int32(n)))
 			w.Write(b[:])
 		}
 	case "Float":
-		if isVar {
-			w.WriteByte(typeInt32)
-			var lb [4]byte
-			binary.LittleEndian.PutUint32(lb[:], uint32(len(val.Floats)))
-			w.Write(lb[:])
+		count, isVar := len(val.Floats), false
+		if def != nil {
+			_, isVar = ParseNumber(def.Number)
 		}
-		// Atomic (size 1) Float vectors encode the size
-		// in the high nibble (T4.21).
-		w.WriteByte(typeByteAtomic(typeFloat))
+		size, overflow := pickBcfSize(count, isVar)
+		w.WriteByte(typeByteSize(uint8(size), typeFloat))
+		if overflow {
+			w.WriteByte(typeByteAtomic(typeInt8))
+			w.WriteByte(byte(count))
+		}
 		for _, f := range val.Floats {
 			var b [4]byte
 			binary.LittleEndian.PutUint32(b[:], math.Float32bits(float32(f)))
 			w.Write(b[:])
 		}
 	case "String":
-		if isVar {
-			w.WriteByte(typeInt32)
-			var lb [4]byte
-			binary.LittleEndian.PutUint32(lb[:], uint32(len(val.Strs)))
-			w.Write(lb[:])
+		count, isVar := len(val.Strs), false
+		if def != nil {
+			_, isVar = ParseNumber(def.Number)
 		}
-		w.WriteByte(typeString)
+		size, overflow := pickBcfSize(count, isVar)
+		w.WriteByte(typeByteSize(uint8(size), typeString))
+		if overflow {
+			w.WriteByte(typeByteAtomic(typeInt8))
+			w.WriteByte(byte(count))
+		}
 		for _, s := range val.Strs {
 			var lb [4]byte
 			binary.LittleEndian.PutUint32(lb[:], uint32(len(s)))
@@ -482,8 +550,7 @@ func writeTypedInfoValue(w *bytes.Buffer, val *InfoValue, hdr *Header) error {
 			w.WriteString(s)
 		}
 	case "Character":
-		// Character is always fixed-length 1.
-		w.WriteByte(typeString)
+		w.WriteByte(typeByteAtomic(typeString))
 		var lb [4]byte
 		binary.LittleEndian.PutUint32(lb[:], uint32(len(val.Str)))
 		w.Write(lb[:])
@@ -494,7 +561,21 @@ func writeTypedInfoValue(w *bytes.Buffer, val *InfoValue, hdr *Header) error {
 	return nil
 }
 
-// serialiseHeader is a no-op fallback for the rare case of
+// pickBcfSize picks the size nibble for a BCF type byte.
+// For variable-length and counts >= 15 we use the overflow
+// marker and emit the true count as a typed int8 right after.
+func pickBcfSize(count int, isVar bool) (size int, overflow bool) {
+	if isVar {
+		return 15, true
+	}
+	if count >= 15 {
+		return 15, true
+	}
+	return count, false
+}
+
+// typeByteAtomic is a convenience for a size-1 typed value:
+// (1<<4)|lo.
 // a Header constructed by hand without Raw text. v1 callers
 // always go through ParseHeader or build a Header with Raw
 // set, so this path is unreachable in practice. Kept as a

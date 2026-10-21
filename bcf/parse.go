@@ -2,6 +2,7 @@ package bcf
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -52,6 +53,22 @@ type Decoder struct {
 	version uint8
 
 	recordLine int
+
+	// pending holds bytes that were read ahead of the
+	// structured parse (l_shared / l_indiv blocks are read
+	// in one io.ReadFull, then handed back to the typed
+	// helpers). ReadByte and peekByte drain it first.
+	pending []byte
+}
+
+// pushBack returns b to the front of the read stream. Used
+// after a bulk io.ReadFull of a length-delimited block, so
+// the typed-value helpers can consume it field by field.
+func (d *Decoder) pushBack(b []byte) {
+	if len(b) == 0 {
+		return
+	}
+	d.pending = append(append([]byte(nil), b...), d.pending...)
 }
 
 // NewDecoder wraps r in a [Decoder]. r is expected to be a
@@ -101,7 +118,7 @@ func (d *Decoder) Header() (*Header, error) {
 	d.version = magic[4]
 	// Length-prefixed header text.
 	var lText uint32
-	if err := binary.Read(d.br, binary.LittleEndian, &lText); err != nil {
+	if err := d.readLe(&lText); err != nil {
 		d.hdrErr = &ParseError{Field: "header",
 			Msg: "failed to read l_text: " + err.Error()}
 		return nil, d.hdrErr
@@ -131,75 +148,85 @@ func (d *Decoder) Record() (*Record, error) {
 		}
 	}
 	d.recordLine++
-	// CHROM (int32) + POS (int32) + rlen (int32) + n_info (uint32)
-	var prefix [16]byte
-	if _, err := io.ReadFull(d.br, prefix[:]); err != nil {
+	// l_shared + l_indiv (uint32 each), spec BcfSiteEncoding.
+	var lens [8]byte
+	if _, err := io.ReadFull(d.br, lens[:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			return nil, io.EOF
 		}
 		return nil, &ParseError{Line: d.recordLine, Field: "record",
-			Msg: "failed to read record prefix: " + err.Error()}
+			Msg: "failed to read record lengths: " + err.Error()}
 	}
-	chromIdx := int32(binary.LittleEndian.Uint32(prefix[0:4]))
-	pos0 := int32(binary.LittleEndian.Uint32(prefix[4:8]))
-	_ = int32(binary.LittleEndian.Uint32(prefix[8:12])) // rlen (unused)
-	nInfo := binary.LittleEndian.Uint32(prefix[12:16])
-	// n_fmt (uint16) — we read it but skip the per-sample
-	// data entirely (v1 limitation).
-	var nFmtBytes [2]byte
-	if _, err := io.ReadFull(d.br, nFmtBytes[:]); err != nil {
+	lShared := binary.LittleEndian.Uint32(lens[0:4])
+	lIndiv := binary.LittleEndian.Uint32(lens[4:8])
+
+	// 24-byte site prefix: CHROM, POS, rlen, QUAL, n_info,
+	// n_allele, n_sample (24 bits), n_fmt (8 bits).
+	shared := make([]byte, lShared)
+	if _, err := io.ReadFull(d.br, shared); err != nil {
 		return nil, &ParseError{Line: d.recordLine, Field: "record",
-			Msg: "failed to read n_fmt: " + err.Error()}
+			Msg: "failed to read record shared block: " + err.Error()}
 	}
-	nFmt := binary.LittleEndian.Uint16(nFmtBytes[:])
-	_ = nFmt // consumed later in the per-sample block
-	// ID (1 byte type + optional 4-byte length + bytes).
+	if len(shared) < 24 {
+		return nil, &ParseError{Line: d.recordLine, Field: "record",
+			Msg: fmt.Sprintf("l_shared=%d too short for the 24-byte site prefix", lShared)}
+	}
+	chromIdx := int32(binary.LittleEndian.Uint32(shared[0:4]))
+	pos0 := int32(binary.LittleEndian.Uint32(shared[4:8]))
+	// rlen at [8:12] is informational; the decoder does not need it.
+	qualBits := binary.LittleEndian.Uint32(shared[12:16])
+	nInfo := binary.LittleEndian.Uint16(shared[16:18])
+	nAllele := binary.LittleEndian.Uint16(shared[18:20])
+	nFmt := uint8(binary.LittleEndian.Uint32(shared[20:24]))
+
+	// QUAL is a plain float32; the per-type MISSING sentinel
+	// 0x7F800001 means "unknown".
+	var qual float64
+	qualKnown := qualBits != bcfFloatMissing
+	if qualKnown {
+		qual = float64(math.Float32frombits(qualBits))
+	}
+
+	// Rest of the shared block, read through the buffered
+	// reader so the typed helpers stay in one place.
+	// Hand the remainder of the shared block back so the
+	// typed helpers below consume it field by field.
+	d.pushBack(shared[24:])
+
+	// ID (typed string).
 	id, err := d.readTypedString()
 	if err != nil {
 		return nil, err
 	}
-	// REF (same shape as ID).
+	// REF is the first of n_allele typed strings; the rest
+	// are ALT.
+	if nAllele == 0 {
+		return nil, &ParseError{Line: d.recordLine, Field: "record",
+			Msg: "n_allele=0 but REF is mandatory"}
+	}
 	ref, err := d.readTypedString()
 	if err != nil {
 		return nil, err
 	}
-	// ALT: a sequence of typed-string entries (each with
-	// type byte 7 or, in BCF 2.2, 0xF for long strings).
-	// The list is terminated by the first non-string type
-	// byte, which begins the FILTER field. An ALT count of
-	// zero is implicit (no typed-string bytes appear between
-	// REF and FILTER).
-	var alt []string
-	for {
-		peek, err := d.peekByte()
-		if err != nil {
-			return nil, err
-		}
-		if peek != typeString && peek != typeLong {
-			break
-		}
+	alt := make([]string, 0, int(nAllele)-1)
+	for i := 1; i < int(nAllele); i++ {
 		a, err := d.readTypedString()
 		if err != nil {
 			return nil, err
 		}
 		alt = append(alt, a)
 	}
-	// FILTER (typed: missing | single int32 | array of int32).
+	// FILTER.
 	filters, err := d.readTypedFilter()
 	if err != nil {
 		return nil, err
 	}
-	// QUAL (typed: missing | float64).
-	qual, qualKnown, err := d.readTypedQual()
+	// INFO.
+	info, err := d.readTypedInfo(uint32(nInfo))
 	if err != nil {
 		return nil, err
 	}
-	// INFO: n_info typed entries. Each is keyed by a uint16
-	// header index plus a typed value.
-	info, err := d.readTypedInfo(nInfo)
-	if err != nil {
-		return nil, err
-	}
+
 	rec := &Record{
 		Line:      d.recordLine,
 		CHROM:     d.hdr.LookupContig(int(chromIdx)),
@@ -212,15 +239,21 @@ func (d *Decoder) Record() (*Record, error) {
 		Filter:    filters,
 		Info:      info,
 	}
-	// Per-sample FORMAT block.
-	if nFmt > 0 {
+
+	// Per-sample block (l_indiv bytes).
+	if lIndiv > 0 && nFmt > 0 {
+		indiv := make([]byte, lIndiv)
+		if _, err := io.ReadFull(d.br, indiv); err != nil {
+			return nil, &ParseError{Line: d.recordLine, Field: "record",
+				Msg: "failed to read per-sample block: " + err.Error()}
+		}
+		d.pushBack(indiv)
 		formatKeys, err := d.readFormatKeys(nFmt)
 		if err != nil {
 			return nil, err
 		}
 		rec.Format = formatKeys
-		sampleNames := d.hdr.SampleNames
-		samples, err := d.readFormatBlock(formatKeys, len(sampleNames))
+		samples, err := d.readFormatBlock(formatKeys, len(d.hdr.SampleNames))
 		if err != nil {
 			return nil, err
 		}
@@ -229,18 +262,83 @@ func (d *Decoder) Record() (*Record, error) {
 	return rec, nil
 }
 
-// readFormatKeys reads the n_fmt uint16 header indices that
-// form the per-record FORMAT list.
-func (d *Decoder) readFormatKeys(nFmt uint16) ([]uint16, error) {
+// readFormatKeys reads the n_fmt typed atomic integers that
+// form the per-record FORMAT key list (spec section 5,
+// GenotypeEncoding: "fmt_key typed int").
+func (d *Decoder) readFormatKeys(nFmt uint8) ([]uint16, error) {
 	keys := make([]uint16, nFmt)
-	for i := uint16(0); i < nFmt; i++ {
-		var b [2]byte
-		if _, err := io.ReadFull(d.br, b[:]); err != nil {
+	for i := uint8(0); i < nFmt; i++ {
+		v, err := d.readTypedInt()
+		if err != nil {
 			return nil, fmt.Errorf("bcf: read FORMAT[%d]: %w", i, err)
 		}
-		keys[i] = binary.LittleEndian.Uint16(b[:])
+		keys[i] = uint16(v)
 	}
 	return keys, nil
+}
+
+// readLe reads a little-endian value of any fixed width,
+// draining the pushback buffer first.
+func (d *Decoder) readLe(v any) error {
+	sz := binary.Size(v)
+	if sz <= 0 {
+		return nil
+	}
+	buf := make([]byte, sz)
+	if err := d.readPending(buf); err != nil {
+		return err
+	}
+	return binary.Read(bytes.NewReader(buf), binary.LittleEndian, v)
+}
+
+// readTypedInt reads one typed atomic integer: a type byte
+// (any of int8/int16/int32) followed by the little-endian
+// value. Used for the INFO dictionary key and the FORMAT key
+// list.
+func (d *Decoder) readTypedInt() (int32, error) {
+	t, err := d.readByte()
+	if err != nil {
+		return 0, err
+	}
+	if t == typeMissing {
+		return 0, nil
+	}
+	switch t & 0x0F {
+	case typeInt8:
+		b, err := d.readByte()
+		if err != nil {
+			return 0, err
+		}
+		return int32(int8(b)), nil
+	case typeInt16:
+		var b [2]byte
+		if err := d.readPending(b[:]); err != nil {
+			return 0, err
+		}
+		return int32(int16(binary.LittleEndian.Uint16(b[:]))), nil
+	case typeInt32:
+		var b [4]byte
+		if err := d.readPending(b[:]); err != nil {
+			return 0, err
+		}
+		return int32(binary.LittleEndian.Uint32(b[:])), nil
+	}
+	return 0, &ParseError{Field: "int",
+		Msg: fmt.Sprintf("unexpected type byte %d for integer", t)}
+}
+
+// readPending fills b, draining the pushback buffer first.
+func (d *Decoder) readPending(b []byte) error {
+	for len(b) > 0 && len(d.pending) > 0 {
+		b[0] = d.pending[0]
+		d.pending = d.pending[1:]
+		b = b[1:]
+	}
+	if len(b) == 0 {
+		return nil
+	}
+	_, err := io.ReadFull(d.br, b)
+	return err
 }
 
 // readTypedString reads a type byte + optional length-prefixed
@@ -260,14 +358,14 @@ func (d *Decoder) readTypedString() (string, error) {
 		return "", nil
 	case typeString, typeLong:
 		var l uint32
-		if err := binary.Read(d.br, binary.LittleEndian, &l); err != nil {
+		if err := d.readLe(&l); err != nil {
 			return "", err
 		}
 		if l == bcfInt32Missing {
 			return "", nil
 		}
 		buf := make([]byte, l)
-		if _, err := io.ReadFull(d.br, buf); err != nil {
+		if err := d.readPending(buf); err != nil {
 			return "", err
 		}
 		return string(buf), nil
@@ -297,17 +395,14 @@ func (d *Decoder) readTypedFilter() ([]string, error) {
 		// and the int32 follows. We treat type 1 as "single
 		// int32" for compatibility with real-world files.
 		var idx uint32
-		if err := binary.Read(d.br, binary.LittleEndian, &idx); err != nil {
+		if err := d.readLe(&idx); err != nil {
 			return nil, err
 		}
 		if idx == bcfFilterMissing {
 			return nil, nil
 		}
-		if idx == 0 && d.hdr != nil && len(d.hdr.Filters) == 0 {
-			// Traditional convention: no ##FILTER lines
-			// means index 0 is PASS.
-			return []string{"PASS"}, nil
-		}
+		// LookupFilter encodes the implicit PASS at 0,
+		// so we don't need a special case here.
 		name := d.hdr.LookupFilter(int(idx))
 		if name == "" {
 			return []string{fmt.Sprintf("FILTER#%d", idx)}, nil
@@ -316,7 +411,7 @@ func (d *Decoder) readTypedFilter() ([]string, error) {
 	case typeInt32:
 		// Array form: int32 length + that many int32 indices.
 		var n uint32
-		if err := binary.Read(d.br, binary.LittleEndian, &n); err != nil {
+		if err := d.readLe(&n); err != nil {
 			return nil, err
 		}
 		if n == 0 {
@@ -325,14 +420,10 @@ func (d *Decoder) readTypedFilter() ([]string, error) {
 		out := make([]string, 0, n)
 		for i := uint32(0); i < n; i++ {
 			var idx uint32
-			if err := binary.Read(d.br, binary.LittleEndian, &idx); err != nil {
+			if err := d.readLe(&idx); err != nil {
 				return nil, err
 			}
 			if idx == bcfFilterMissing {
-				continue
-			}
-			if idx == 0 && d.hdr != nil && len(d.hdr.Filters) == 0 {
-				out = append(out, "PASS")
 				continue
 			}
 			name := d.hdr.LookupFilter(int(idx))
@@ -349,27 +440,6 @@ func (d *Decoder) readTypedFilter() ([]string, error) {
 	}
 }
 
-// readTypedQual reads the QUAL typed value (float64).
-func (d *Decoder) readTypedQual() (qual float64, known bool, err error) {
-	t, err := d.readByte()
-	if err != nil {
-		return 0, false, err
-	}
-	switch t {
-	case typeMissing:
-		return 0, false, nil
-	case typeFloat:
-		var bits uint64
-		if err := binary.Read(d.br, binary.LittleEndian, &bits); err != nil {
-			return 0, false, err
-		}
-		return math.Float64frombits(bits), true, nil
-	default:
-		return 0, false, &ParseError{Field: "QUAL",
-			Msg: fmt.Sprintf("unexpected QUAL type byte %d", t)}
-	}
-}
-
 // readTypedInfo reads the n_info typed INFO entries and
 // returns the resolved Info map.
 func (d *Decoder) readTypedInfo(n uint32) (map[string]InfoValue, error) {
@@ -379,11 +449,14 @@ func (d *Decoder) readTypedInfo(n uint32) (map[string]InfoValue, error) {
 		// ordered INFO declarations. We need an ordered
 		// list — Header.Infos is a map; we look up by
 		// iterating to find the i-th key.
-		var keyBytes [2]byte
-		if _, err := io.ReadFull(d.br, keyBytes[:]); err != nil {
+		// Key: a typed atomic integer giving the offset of
+		// the INFO field key into the dictionary (spec
+		// section 5).
+		keyVal, err := d.readTypedInt()
+		if err != nil {
 			return nil, err
 		}
-		keyIdx := int(binary.LittleEndian.Uint16(keyBytes[:]))
+		keyIdx := int(keyVal)
 		def, ok := d.hdr.InfoAt(keyIdx)
 		if !ok {
 			// Unknown INFO key — read past the typed value
@@ -416,10 +489,10 @@ func (d *Decoder) readTypedInfo(n uint32) (map[string]InfoValue, error) {
 // must consume the length-prefix type byte before reading
 // the value type byte.
 func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
-	//nolint:dupl // not actually duplicate; S1006 placeholder
+	//nolint:dupl // INFO and FORMAT readers parallel by design
 	v := InfoValue{Type: def.Type}
 
-	// Special case: Flag has no length prefix; just one type byte.
+	// Flag has no vector body; one type byte.
 	if def.Type == "Flag" {
 		t, err := d.readByte()
 		if err != nil {
@@ -431,29 +504,52 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 		return v, nil
 	}
 
-	// All other types: optional length prefix, then a value
-	// type byte, then the values.
-	count, isVar := ParseNumber(def.Number)
-	if isVar {
-		// Length prefix: 1 type byte + 4-byte uint32 count.
-		// The type byte is conventionally typeInt32 (1).
-		if _, err := d.readByte(); err != nil {
-			return v, err
-		}
-		var l uint32
-		if err := binary.Read(d.br, binary.LittleEndian, &l); err != nil {
-			return v, err
-		}
-		count = int(l)
-	}
-
-	// Value type byte.
+	// One type descriptor byte per spec §BcfTypeEncoding:
+	// high nibble = size (1..14 inline, 15 = overflow follows,
+	// 0 = missing), low nibble = BCF type code.
+	// If size=15, read a typed Integer from the byte stream
+	// giving the true vector length.
 	t, err := d.readByte()
 	if err != nil {
 		return v, err
 	}
 	if t == typeMissing {
 		return v, nil
+	}
+	size := int(t >> 4)
+	typeCode := t & 0x0F
+	count := size
+	if size == 15 {
+		// Overflow: typed Integer giving the true count.
+		// Read the int's type byte (typically 0x11=int8) and
+		// its value.
+		ct, err := d.readByte()
+		if err != nil {
+			return v, err
+		}
+		switch ct & 0x0F {
+		case typeInt8:
+			b, err := d.readByte()
+			if err != nil {
+				return v, err
+			}
+			count = int(int8(b))
+		case typeInt16:
+			var x uint16
+			if err := d.readLe(&x); err != nil {
+				return v, err
+			}
+			count = int(int16(x))
+		case typeInt32:
+			var x uint32
+			if err := d.readLe(&x); err != nil {
+				return v, err
+			}
+			count = int(int32(x))
+		default:
+			return v, &ParseError{Field: "INFO",
+				Msg: fmt.Sprintf("overflow Integer type byte %d", ct)}
+		}
 	}
 	if count == 0 {
 		return v, nil
@@ -462,7 +558,7 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 	switch def.Type {
 	case "Integer":
 		v.Ints = make([]int64, count)
-		switch t & 0x0F { // mask the high nibble (inline size)
+		switch typeCode {
 		case typeInt8:
 			for i := 0; i < count; i++ {
 				b, err := d.readByte()
@@ -474,7 +570,7 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 		case typeInt16:
 			for i := 0; i < count; i++ {
 				var x uint16
-				if err := binary.Read(d.br, binary.LittleEndian, &x); err != nil {
+				if err := d.readLe(&x); err != nil {
 					return InfoValue{}, err
 				}
 				v.Ints[i] = int64(int16(x))
@@ -482,7 +578,7 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 		case typeInt32:
 			for i := 0; i < count; i++ {
 				var x uint32
-				if err := binary.Read(d.br, binary.LittleEndian, &x); err != nil {
+				if err := d.readLe(&x); err != nil {
 					return InfoValue{}, err
 				}
 				v.Ints[i] = int64(int32(x))
@@ -493,45 +589,54 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 		}
 	case "Float":
 		v.Floats = make([]float64, count)
-		switch t & 0x0F { // mask the high nibble (inline size)
-		case typeFloat:
-			for i := 0; i < count; i++ {
-				var bits uint32
-				if err := binary.Read(d.br, binary.LittleEndian, &bits); err != nil {
-					return InfoValue{}, err
-				}
-				v.Floats[i] = float64(math.Float32frombits(bits))
-			}
-		default:
+		if typeCode != typeFloat {
 			return InfoValue{}, &ParseError{Field: "INFO",
 				Msg: fmt.Sprintf("Float field has type byte %d", t)}
 		}
-	case "Character":
-		if count != 1 {
-			return InfoValue{}, &ParseError{Field: "INFO",
-				Msg: "Character field must have Number=1"}
-		}
-		b, err := d.readByte()
-		if err != nil {
-			return InfoValue{}, err
-		}
-		v.Str = string(rune(b))
-	case "String":
-		v.Strs = make([]string, count)
 		for i := 0; i < count; i++ {
-			var l uint32
-			if err := binary.Read(d.br, binary.LittleEndian, &l); err != nil {
+			var bits uint32
+			if err := d.readLe(&bits); err != nil {
 				return InfoValue{}, err
 			}
+			v.Floats[i] = float64(math.Float32frombits(bits))
+		}
+	case "String":
+		v.Strs = make([]string, count)
+		if typeCode != typeString {
+			return InfoValue{}, &ParseError{Field: "INFO",
+				Msg: fmt.Sprintf("String field has type byte %d", t)}
+		}
+		for i := 0; i < count; i++ {
+			var l uint32
+			if err := d.readLe(&l); err != nil {
+				return InfoValue{}, err
+			}
+			if l == bcfIntMissingInt32 {
+				continue
+			}
 			buf := make([]byte, l)
-			if _, err := io.ReadFull(d.br, buf); err != nil {
+			if err := d.readPending(buf); err != nil {
 				return InfoValue{}, err
 			}
 			v.Strs[i] = string(buf)
 		}
+	case "Character":
+		if typeCode != typeString || count != 1 {
+			return InfoValue{}, &ParseError{Field: "INFO",
+				Msg: fmt.Sprintf("Character field has type byte %d", t)}
+		}
+		var l uint32
+		if err := d.readLe(&l); err != nil {
+			return InfoValue{}, err
+		}
+		buf := make([]byte, l)
+		if err := d.readPending(buf); err != nil {
+			return InfoValue{}, err
+		}
+		v.Str = string(buf)
 	default:
 		return InfoValue{}, &ParseError{Field: "INFO",
-			Msg: "unknown declared type " + def.Type}
+			Msg: fmt.Sprintf("unsupported field type %q", def.Type)}
 	}
 	return v, nil
 }
@@ -548,7 +653,7 @@ func (d *Decoder) skipTypedInfoValue() error {
 	}
 	// Variable-length prefix.
 	var l uint32
-	if err := binary.Read(d.br, binary.LittleEndian, &l); err != nil {
+	if err := d.readLe(&l); err != nil {
 		return err
 	}
 	// Skip l typed elements. We don't know the declared
@@ -568,10 +673,7 @@ func (d *Decoder) skipTypedInfoValue() error {
 	}
 	total := int(l) * elemSize
 	buf := make([]byte, total)
-	if _, err := io.ReadFull(d.br, buf); err != nil {
-		return err
-	}
-	return nil
+	return d.readPending(buf)
 }
 
 // skipFmtBlock is no longer used; the v2 FORMAT reader
@@ -582,21 +684,13 @@ func (d *Decoder) skipFmtBlock() error {
 		Msg: "skipFmtBlock is no longer used; v2 reads the per-sample block directly"}
 }
 
-// peekByte reads one byte without consuming it from the
-// stream.
-func (d *Decoder) peekByte() (byte, error) {
-	b, err := d.br.Peek(1)
-	if err != nil {
-		return 0, err
-	}
-	if len(b) == 0 {
-		return 0, io.EOF
-	}
-	return b[0], nil
-}
-
 // readByte reads one byte (helper for the Decoder).
 func (d *Decoder) readByte() (byte, error) {
+	if len(d.pending) > 0 {
+		b := d.pending[0]
+		d.pending = d.pending[1:]
+		return b, nil
+	}
 	var b [1]byte
 	if _, err := io.ReadFull(d.br, b[:]); err != nil {
 		return 0, err
@@ -644,8 +738,14 @@ func (h *Header) FormatAt(idx int) (*FormatDef, bool) {
 		return nil, false
 	}
 	id := h.FormatsOrder[idx]
-	def, ok := h.Formats[id]
-	return def, ok
+	if def, ok := h.Formats[id]; ok && def != nil {
+		return def, true
+	}
+	// Synthesise a default for FORMAT keys that exist
+	// in declaration order but lack a typed ##FORMAT
+	// line (rare, but allowed). Integer is a safe
+	// default for the common case (GT-as-int, DP, GQ).
+	return &FormatDef{ID: id, Number: "1", Type: "Integer"}, true
 }
 
 // LookupFormatIndex returns the positional index of id in the

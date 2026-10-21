@@ -547,12 +547,20 @@ func writeTyped(b *bytes.Buffer, v *typedCore) {
 			if j > 0 {
 				b.WriteByte(',')
 			}
+			if j < len(v.IntMissing) && v.IntMissing[j] {
+				b.WriteByte('.')
+				continue
+			}
 			b.WriteString(strconv.FormatInt(n, 10))
 		}
 	case TypeFloat:
 		for j, f := range v.Floats {
 			if j > 0 {
 				b.WriteByte(',')
+			}
+			if j < len(v.FloatMissing) && v.FloatMissing[j] {
+				b.WriteByte('.')
+				continue
 			}
 			b.WriteString(formatVCFFloat(f))
 		}

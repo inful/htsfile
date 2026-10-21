@@ -1645,7 +1645,15 @@ out: 20  14370  .  G  A  29  PASS  .  GT:HQ  0|0:0,0
 Not sample-count dependent - reproduces on a single sample.
 The spec's own example record carries `1/1:43:5:.,.`.
 
-**Status:** open
+**Fix (v0.22.0):** added per-slot `IntMissing []bool` /
+`FloatMissing []bool` to `typedCore` in `vcf/value.go`.
+`vcf.decodeTyped` records the missing marker for every
+"."-parsed slot; `vcf.writeTyped` re-emits "." for those
+slots even when `v.Missing` is unset. Mirrored into the
+BCF layer (`bcf.SampleValue.IntMissing`, `FloatMissing`)
+so per-slot round-trips work both ways.
+
+**Status:** shipped in v0.22.0
 
 ### T5.2 - BCF round-trip drops FORMAT and all sample columns
 
@@ -1654,7 +1662,20 @@ returns a header with 8 tab-separated fields instead of 12:
 the FORMAT column header and all three sample IDs are
 gone, and every record loses its genotype data.
 
-**Status:** open
+**Fix (v0.22.0):** the VCF->BCF translator now carries
+`Format []uint16` and `Samples []bcf.Sample` (vs. the
+old "FORMAT dropped on vcf2bcf" scope-cut). Symmetrically
+`bcfToVCFRecord` rebuilds `Format []string` and `Samples
+[]vcf.Genotype` keyed by the FORMAT declaration order
+(preserved across the BCF wire via `FormatsOrder`).
+FORMAT keys present on a record but absent from the
+header are auto-registered as `Number=1,Type=Integer`
+(a conservative default matching GT/DP/GQ/HQ) so
+incomplete VCFs round-trip without dropping fields.
+Trailing wholly-missing FORMAT fields are also dropped
+on output per §1.6.1 "trailing fields can be dropped".
+
+**Status:** shipped in v0.22.0
 
 ### T5.3 - BCF writer output is rejected by our own BCF reader
 
@@ -1670,7 +1691,21 @@ not what `bcf.parseAux` expects - a writer/reader
 disagreement inside one package, independent of any
 external tool.
 
-**Status:** open
+**Fix (v0.22.0):** the BCF record layer was completely
+mis-implemented against the spec's `BcfSiteEncoding` and
+`BcfTypeEncoding`. The actual spec layout - every record
+prefixed by `l_shared` + `l_indiv` uint32 length prefixes,
+then CHROM/POS/rlen/QUAL/n_info/n_allele/n_sample/n_fmt,
+then a typed ID+REF+ALT+FILTER+INFO block using the
+`(size<<4)|type` byte with size=15 overflow followed by
+a typed Integer count - was rebuilt in `bcf/encodeRecord`,
+`bcf.Encoder.WriteRecord`, `bcf.Decoder.Record`,
+`bcf.writeTypedInt` / `bcf.readTypedInt`. INFO keys are
+typed ints (not bare uint16) per the spec, and the
+variable-length type byte plus overflow count are now
+emitted/parsed consistently.
+
+**Status:** shipped in v0.22.0
 
 ### T5.4 - BCF header Description strings corrupted
 
@@ -1680,7 +1715,26 @@ containing a comma (`"dbSNP membership, build 129"`) are
 additionally truncated at the comma to
 `Description="dbSNP membership`.
 
-**Status:** open
+**Fix (v0.22.0):** two bugs in `bcf/header.go`:
+
+1. `parseStructuredField` split structured-line fields
+   with `strings.Split(rest, ",")` - a naive split that
+   didn't respect double-quoted sub-spans. So
+   `Description="dbSNP membership, build 129"` was cut at
+   the comma. Replaced with a quote-aware
+   `splitStructuredFields` that toggles a `inQuote` flag
+   on `"` and only splits on unquoted commas.
+2. `extractIDFromAngleField` (used for ##contig and
+   ##FILTER) had the same naive split. Also routed
+   through `splitStructuredFields`.
+
+The BCF->VCF translator also rehydrates FILTER and
+contig Description metadata from the BCF `hdr.Raw` text
+(via `extractIDAndDescription` and `populateContig` in
+`cmd/htsfile/translate.go`) so a full VCF<->BCF round-trip
+preserves Descriptions and `##contig=length,md5,species,...`.
+
+**Status:** shipped in v0.22.0
 
 ### Verified clean against the spec example
 

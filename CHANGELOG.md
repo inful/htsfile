@@ -7,9 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-10-21
+
+The four BCF defects the §1.6.1 worked example surfaced
+(`T5.1` - `.,.` round-trip; `T5.2` - FORMAT/sample
+dropout; `T5.3` - self-incompatible BCF; `T5.4` -
+Description string corruption) plus a `*` / `NON_REF`
+ALT-ID validator gap (gVCF §1.7).
+
 ### Added
 
-- *(nothing yet)*
+- `vcftypecore.IntMissing` / `vcftypecore.FloatMissing`
+  parallel slices plus matching `bcf.SampleValue` fields
+  so a per-slot "." round-trips through VCF and BCF.
+- `vcf` decoder records per-slot missing for every
+  type where a "." appears in a list; `vcf` writer
+  re-emits "." for those slots.
+- `bcf` writer emits the spec-correct record framing
+  (`l_shared` + `l_indiv` length prefixes; site
+  prefix with QUAL in the prefix; type-byte with size
+  in the high nibble and overflow count following).
+- `bcf` writer emits INFO dictionary keys as typed atomic
+  ints, matching the spec (was bare uint16).
+- `bcf` writer/reader now agree on the variable-length
+  type-byte (size 15 overflow) and re-derive the count
+  from the typed Integer that follows.
+- `bcf` parser recognises `idx == 0` as the implicit
+  `PASS` filter, matching the BCF v2.1 convention and
+  the htslib `LookupFilter` mapping (declared filters
+  live at indices 1..N).
+- `cmd/htsfile/translate.go` two-pass `runVCFToBCF` pre-
+  scans records to register `##FORMAT` / `##INFO` keys
+  referenced only on record lines (a common shape of
+  VCF that's incomplete in its header).
+- `cmd/htsfile/translate.go` rehydrates `##FILTER` and
+  `##contig` `Description` metadata from the BCF
+  `hdr.Raw` text so round-trips preserve them.
+- `bcf/header.go` quote-aware `splitStructuredFields`
+  helper so `Description="…"` with embedded commas
+  stops being truncated at the comma.
+
+### Fixed
+
+- BCF and VCF now round-trip the spec §1.6.1 worked
+  example's five records identically (information
+  columns excepted; only INFO-key sort order and
+  md5 quoting differ, both spec-allowed per lines 126
+  and 133).
+- `cmd/htsfile check --strict` on the §1.6.1 example
+  reports zero diagnostics.
+- `gVCF` parser accepts `<*>` and `<NON_REF>` symbolic
+  ALT IDs (validator previously rejected them).
 
 ## [0.21.0] — 2026-10-20
 

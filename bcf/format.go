@@ -5,7 +5,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
 	"math"
 )
 
@@ -51,6 +50,16 @@ type SampleValue struct {
 	// from an absent field, which the v1 BCF encoder does
 	// not emit.
 	Missing bool
+
+	// IntMissing parallels Ints slot-by-slot: IntMissing[i]
+	// marks Ints[i] as the per-slot VCF missing value ".".
+	// Output round-trip must emit "." for those slots
+	// (VCF §1.6.2 line 508).
+	IntMissing []bool
+
+	// FloatMissing parallels Floats slot-by-slot. A "." in
+	// a Float FORMAT list stays "." on output.
+	FloatMissing []bool
 }
 
 // readFormatBlock consumes the per-field FORMAT block (§5
@@ -80,8 +89,8 @@ func (d *Decoder) readFormatBlock(formatKeys []uint16, sampleCount int) ([]Sampl
 		if err != nil {
 			return nil, fmt.Errorf("bcf: FORMAT key %d (%s): %w", keyIdx, def.ID, err)
 		}
-		for sIdx, sv := range vals {
-			samples[sIdx].Fields[keyIdx] = sv
+		for sIdx := range vals {
+			samples[sIdx].Fields[keyIdx] = vals[sIdx]
 		}
 	}
 	return samples, nil
@@ -124,7 +133,7 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 			return nil, fmt.Errorf("bcf: overflow size marker: got type byte %d, want INT8", ot)
 		}
 		var b [1]byte
-		if _, err := io.ReadFull(d.br, b[:]); err != nil {
+		if err := d.readPending(b[:]); err != nil {
 			return nil, err
 		}
 		size = int(b[0])
@@ -149,7 +158,7 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 			missing := true
 			for i := 0; i < size; i++ {
 				var b [4]byte
-				if _, err := io.ReadFull(d.br, b[:]); err != nil {
+				if err := d.readPending(b[:]); err != nil {
 					return nil, fmt.Errorf("read int32: %w", err)
 				}
 				u := binary.LittleEndian.Uint32(b[:])
@@ -157,16 +166,17 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 					continue
 				}
 				if u == bcfIntMissingInt32 {
+					ints = append(ints, int32(u)) //nolint:gosec // wire-format sentinel
+					out[s].IntMissing = append(out[s].IntMissing, true)
 					continue
 				}
 				missing = false
 				ints = append(ints, int32(u)) //nolint:gosec // wire-format reinterpret
+				out[s].IntMissing = append(out[s].IntMissing, false)
 			}
-			if missing && size > 0 {
-				out[s] = SampleValue{Type: "Integer", Missing: true}
-			} else {
-				out[s] = SampleValue{Type: "Integer", Ints: ints}
-			}
+			out[s].Type = "Integer"
+			out[s].Ints = ints
+			out[s].Missing = missing && size > 0
 		}
 	case "Float":
 		// Per-type MISSING is signaling NaN `0x7F800001`
@@ -179,7 +189,7 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 			missing := true
 			for i := 0; i < size; i++ {
 				var b [4]byte
-				if _, err := io.ReadFull(d.br, b[:]); err != nil {
+				if err := d.readPending(b[:]); err != nil {
 					return nil, fmt.Errorf("read float32: %w", err)
 				}
 				bits := binary.LittleEndian.Uint32(b[:])
@@ -187,23 +197,24 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 					continue
 				}
 				if bits == bcfFloatMissing && size > 0 {
+					floats = append(floats, math.Float32frombits(bits))
+					out[s].FloatMissing = append(out[s].FloatMissing, true)
 					continue
 				}
 				missing = false
 				floats = append(floats, math.Float32frombits(bits))
+				out[s].FloatMissing = append(out[s].FloatMissing, false)
 			}
-			if missing && size > 0 {
-				out[s] = SampleValue{Type: "Float", Missing: true}
-			} else {
-				out[s] = SampleValue{Type: "Float", Floats: floats}
-			}
+			out[s].Type = "Float"
+			out[s].Floats = floats
+			out[s].Missing = missing && size > 0
 		}
 	case "Character":
 		// Character is a single byte per sample, with
 		// typeMissing used to indicate absence.
 		for s := 0; s < nSamples; s++ {
 			var b [1]byte
-			if _, err := io.ReadFull(d.br, b[:]); err != nil {
+			if err := d.readPending(b[:]); err != nil {
 				return nil, fmt.Errorf("read char: %w", err)
 			}
 			out[s] = SampleValue{Type: "Character", Str: string(b[:])}
@@ -218,7 +229,7 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 			strs := make([]string, 0, size)
 			for i := 0; i < size; i++ {
 				var lb [4]byte
-				if _, err := io.ReadFull(d.br, lb[:]); err != nil {
+				if err := d.readPending(lb[:]); err != nil {
 					return nil, fmt.Errorf("read string len: %w", err)
 				}
 				l := binary.LittleEndian.Uint32(lb[:])
@@ -227,7 +238,7 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 					continue
 				}
 				buf := make([]byte, l)
-				if _, err := io.ReadFull(d.br, buf); err != nil {
+				if err := d.readPending(buf); err != nil {
 					return nil, fmt.Errorf("read string body: %w", err)
 				}
 				strs = append(strs, string(buf))
@@ -400,7 +411,14 @@ func typeByteSize(size, lo uint8) uint8 {
 // field with END_OF_VECTOR (so the stream stays
 // uniform-length across samples).
 func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, version uint8, fieldSize int, present bool) error {
-	if !present || v.Missing {
+	// Whole-field-missing collapses are only emitted
+	// when the caller didn't provide per-slot missing
+	// tracking. If IntMissing/FloatMissing are set,
+	// the missing flags take precedence per slot
+	// (VCF §1.6.2 line 508): a value like "." in a
+	// Number=2 Integer list emits ".,.", not ".".
+	if (!present || v.Missing) &&
+		len(v.IntMissing) == 0 && len(v.FloatMissing) == 0 {
 		switch def.Type {
 		case "Integer":
 			// Per-type MISSING: emit the int32 sentinel
@@ -438,8 +456,15 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, ver
 		if err := checkBcfIntegerRange(fmt.Sprintf("FORMAT/%s", def.ID), int64Slice(v.Ints)); err != nil {
 			return err
 		}
-		// Pad with END_OF_VECTOR for shorter entries.
+		// Pad with END_OF_VECTOR for shorter entries;
+		// emit bcfIntMissingInt32 for per-slot missing.
 		for i := 0; i < fieldSize; i++ {
+			if i < len(v.IntMissing) && v.IntMissing[i] {
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], bcfIntMissingInt32)
+				w.Write(b[:])
+				continue
+			}
 			if i < len(v.Ints) {
 				var b [4]byte
 				binary.LittleEndian.PutUint32(b[:], uint32(v.Ints[i])) //nolint:gosec // wire-format reinterpret
@@ -453,6 +478,12 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, ver
 		return nil
 	case "Float":
 		for i := 0; i < fieldSize; i++ {
+			if i < len(v.FloatMissing) && v.FloatMissing[i] {
+				var b [4]byte
+				binary.LittleEndian.PutUint32(b[:], bcfFloatMissing)
+				w.Write(b[:])
+				continue
+			}
 			if i < len(v.Floats) {
 				var b [4]byte
 				binary.LittleEndian.PutUint32(b[:], math.Float32bits(v.Floats[i]))
