@@ -1603,3 +1603,103 @@ without asking callers to opt into strict mode.
 | §1.7 Tandem repeats | T2.9, T2.10 |
 | General file format | T4.1 |
 | §1.4.4 IUPAC | T4.2 |
+---
+
+## Phase 5 — conformance verified against the spec's own worked examples
+
+The v0.19.x-v0.21.0 audits were a **static read of the code
+against the spec prose**. That method demonstrably misses
+whole classes of defect: on the same pass it found a
+catastrophic BAM CIGAR bit-layout inversion, a Tabix reader
+missing 8 header fields, and a CSI reader missing 3 - none
+of which the prose-level walk surfaced, and all of which
+the existing round-trip tests passed.
+
+The independent check is the spec's own **worked example**
+(§1.6.1, lines 43-68): a complete 24-line VCF with header,
+4 INFO/FILTER/FORMAT declaration groups and 5 records
+covering phased/unphased GT, a Flags INFO pair, `Number=A`
+Float cardinality, a multi-value missing `.,.`, an ALT=`.`
+record, and a 2-allele indel with differing FORMAT widths.
+
+Run against `htsfile check --strict`, `roundtrip`, and
+`vcf2bcf`/`bcf2vcf`, the example surfaces the following.
+
+### T5.1 - `.,.` list-of-missing-values corrupted to `0,0`
+
+**Spec (§1.6.2, line 508):**
+
+> If a field contains a list of missing values, it can be
+> represented either as a single MISSING value (`.') or
+> as a list of missing values (e.g. `.,.,.' if the field
+> was Number=3).
+
+**Defect:** a `Number=2` FORMAT field written `.,.` reads
+back and re-emits as `0,0`. Minimal repro:
+
+```
+in:  20  14370  .  G  A  29  PASS  .  GT:HQ  0|0:.,.
+out: 20  14370  .  G  A  29  PASS  .  GT:HQ  0|0:0,0
+```
+
+Not sample-count dependent - reproduces on a single sample.
+The spec's own example record carries `1/1:43:5:.,.`.
+
+**Status:** open
+
+### T5.2 - BCF round-trip drops FORMAT and all sample columns
+
+**Defect:** `vcf2bcf` then `bcf2vcf` on the spec example
+returns a header with 8 tab-separated fields instead of 12:
+the FORMAT column header and all three sample IDs are
+gone, and every record loses its genotype data.
+
+**Status:** open
+
+### T5.3 - BCF writer output is rejected by our own BCF reader
+
+**Defect:** `htsfile check` on a `.bcf` produced by
+`htsfile vcf2bcf` fails with
+
+```
+parse record: line 0 INFO: Float field has type byte 4
+```
+
+The typed-INFO encoding written by `bcf.writeRecord` is
+not what `bcf.parseAux` expects - a writer/reader
+disagreement inside one package, independent of any
+external tool.
+
+**Status:** open
+
+### T5.4 - BCF header Description strings corrupted
+
+**Defect:** `Description="Allele Frequency"` becomes
+`Description="\""` after a BCF round-trip. Descriptions
+containing a comma (`"dbSNP membership, build 129"`) are
+additionally truncated at the comma to
+`Description="dbSNP membership`.
+
+**Status:** open
+
+### Verified clean against the spec example
+
+- `htsfile check --strict` parses and validates the §1.6.1
+  example with **zero** diagnostics.
+- Single-value and multi-value `Number=2` FORMAT fields
+  round-trip intact when populated (`0|0:51,51` is
+  preserved).
+- Phased (`0|0`, `1|2`), unphased (`1/1`), and
+  mixed-phase GT all round-trip intact.
+- INFO Flag fields (`DB`, `H2`) round-trip intact.
+- `Number=A` Float cardinality (`AF=0.333,0.667` against
+  2 ALTs) validates and round-trips.
+- ALT=`.` (no-variant) record round-trips intact.
+- `md5` on `##contig` gains quotes on output. This is
+  **more** spec-compliant than the spec's own example:
+  §1.4.3 line 126 requires optional structured-line field
+  values to be quoted. Not a defect.
+- INFO key ordering is not preserved. **Spec-allowed:**
+  §1.4.3 line 133 - "Implementations must not rely on the
+  order of the fields within structured lines and are not
+  required to preserve field ordering."
