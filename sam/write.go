@@ -6,6 +6,7 @@ import (
 	"io"
 	"sort"
 	"strconv"
+	"strings"
 )
 
 // Encoder writes a SAM document to an underlying [io.Writer].
@@ -44,6 +45,22 @@ func NewEncoderCRLF(w io.Writer) *Encoder {
 // calls are no-ops (a SAM file has exactly one header section).
 func (e *Encoder) EncodeHeader(h *Header) error {
 	if h == nil {
+		return nil
+	}
+	// A verbatim header text wins over the re-synthesised
+	// lines: it is what the source file actually contained.
+	if h.Raw != "" {
+		for _, line := range strings.Split(h.Raw, "\n") {
+			if line == "" {
+				continue
+			}
+			if _, err := e.w.WriteString(line); err != nil {
+				return err
+			}
+			if _, err := e.w.Write(e.lineEnding); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 	if h.HD != nil {

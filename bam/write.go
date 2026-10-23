@@ -151,25 +151,15 @@ func encodeRecord(r *Record) ([]byte, error) {
 		packed := encodeSeq(r.Seq)
 		rem.Write(packed)
 	}
-	// qual: ASCII bytes, length = l_seq (if l_seq > 0).
-	if lSeq > 0 {
-		switch {
-		case len(r.Qual) == int(lSeq):
-			rem.Write(r.Qual)
-		case len(r.Qual) > int(lSeq):
-			// Spec: qual length must equal l_seq when seq is
-			// present. If the caller gave us a longer qual,
-			// truncate.
-			rem.Write(r.Qual[:lSeq])
-		case len(r.Qual) > 0:
-			// Pad with 'I' (Phred 40) when qual is shorter.
-			rem.Write(r.Qual)
-			rem.Write(bytes.Repeat([]byte{'I'}, int(lSeq)-len(r.Qual)))
-		default:
-			// Default to 'I' (Phred 40) when no qual supplied.
-			rem.Write(bytes.Repeat([]byte{'I'}, int(lSeq)))
-		}
-	}
+	// qual: raw Phred bytes, length = l_seq (if l_seq > 0).
+	//
+	// BAM stores the base quality as a raw Phred score, not as
+	// the ASCII "+33" form SAM uses. Writing the ASCII bytes
+	// verbatim put e.g. 'I' (73) on the wire where 40 belongs;
+	// samtools then re-read it as Phred 73 and printed 'j'.
+	// Verified against `samtools view` on a BAM produced from
+	// sam/testdata/example.sam.
+	rem.Write(encodeQual(r.Qual, int(lSeq)))
 	// aux tags.
 	if aux, err := encodeAuxTags(r.Tags); err != nil {
 		return nil, err
@@ -484,4 +474,36 @@ func isValidBSubType(b TagType) bool {
 		return true
 	}
 	return false
+}
+
+// encodeQual converts a record's ASCII quality (Phred+33) into
+// BAM's raw Phred bytes.
+//
+// BAM represents an unavailable quality as 0xFF, so a "*" (the
+// SAM spelling of "no quality") becomes 0xFF bytes. A short
+// quality is padded with Phred 40, matching the previous
+// behaviour of writing 'I'.
+func encodeQual(qual []byte, lSeq int) []byte {
+	out := make([]byte, lSeq)
+	if len(qual) == 1 && qual[0] == '*' {
+		for i := range out {
+			out[i] = 0xFF
+		}
+		return out
+	}
+	for i := range out {
+		switch {
+		case i < len(qual) && qual[i] == 0xFF:
+			out[i] = 0xFF
+		case i < len(qual):
+			if qual[i] < 33 {
+				out[i] = 0
+			} else {
+				out[i] = qual[i] - 33
+			}
+		default:
+			out[i] = 40 // Phred 40
+		}
+	}
+	return out
 }

@@ -14,8 +14,8 @@ import (
 func TestDecoder_BCF22RoundTrip(t *testing.T) {
 	hdrText := "##fileformat=VCFv4.2\n##contig=<ID=chr1,length=1000>\n"
 	b := newBuilderWithHeader(t, hdrText)
-	payload := make([]byte, 0, len(magic22)+4+len(hdrText))
-	payload = append(payload, magic22[:]...)
+	payload := make([]byte, 0, len(Magic)+4+len(hdrText))
+	payload = append(payload, Magic[:]...)
 	var lt [4]byte
 	binary.LittleEndian.PutUint32(lt[:], uint32(len(hdrText))) //nolint:gosec // test data, length fits
 	payload = append(payload, lt[:]...)

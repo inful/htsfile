@@ -64,6 +64,15 @@ func samToBAMHeader(h *sam.Header) *bam.Header {
 		})
 	}
 	bh.COs = append(bh.COs, h.COs...)
+	// The BAM header embeds the SAM header text verbatim. Use
+	// the original text when we have it: re-synthesising the
+	// lines from the structured fields drops the tags this
+	// package does not model (M5/UR/SP on @SQ, PL/PU/CN on
+	// @RG, VN/CL on @PG).
+	if h.Raw != "" {
+		bh.Raw = h.Raw
+		return bh
+	}
 	// Build bh.Raw by re-serialising the structured fields, so
 	// the BAM file's SAM-text section actually contains the
 	// @HD/@SQ/@RG/@PG/@CO lines. Without this, the BAM file
@@ -129,13 +138,16 @@ func samToBAMHeader(h *sam.Header) *bam.Header {
 // encoder emits a syntactically equivalent header.
 func bamToSAMHeader(h *bam.Header) *sam.Header {
 	sh := &sam.Header{
+		// The BAM header stores the original SAM header text
+		// verbatim; pass it through so nothing is lost.
+		Raw: h.Raw,
 		SQs: bamToSAMSQs(h.SQs),
 		RGs: bamToSAMRGs(h.RGs),
 		PGs: bamToSAMPGs(h.PGs),
 		COs: h.COs,
 	}
 	if h.HD != nil {
-		sh.HD = &sam.HD{VN: h.HD.VN, SO: h.HD.SO, GO: h.HD.GO}
+		sh.HD = &sam.HD{VN: h.HD.VN, SO: h.HD.SO, GO: h.HD.GO, Raw: h.HD.Raw}
 	}
 	return sh
 }
@@ -169,6 +181,7 @@ func bamToSAMRGs(in []*bam.RG) []*sam.RG {
 			ID: rg.ID, SM: rg.SM, LB: rg.LB, DS: rg.DS,
 			PU: rg.PU, PI: rg.PI, CN: rg.CN, DT: rg.DT,
 			PL: rg.PL, PG: rg.PG,
+			Raw: rg.Raw,
 		}
 	}
 	return out
@@ -186,6 +199,7 @@ func bamToSAMPGs(in []*bam.PG) []*sam.PG {
 		}
 		out[i] = &sam.PG{
 			ID: pg.ID, PN: pg.PN, CL: pg.CL, PP: pg.PP, VN: pg.VN,
+			Raw: pg.Raw,
 		}
 	}
 	return out
@@ -200,7 +214,16 @@ func samToBAMRecord(r *sam.Record, hdr *bam.Header) (*bam.Record, error) {
 	if err != nil {
 		return nil, err
 	}
-	nextRefID, err := lookupRefID(r.RNext, hdr)
+	// RNEXT "=" means the mate is on the same reference as
+	// this read. htslib resolves it that way
+	// (sam.c bam_parse1: `if (strcmp(q, "=") == 0) c->mtid =
+	// c->tid;`), and samtools accepts such files. Looking "="
+	// up in the @SQ list made us reject valid SAM.
+	nextName := r.RNext
+	if nextName == "=" {
+		nextName = r.RName
+	}
+	nextRefID, err := lookupRefID(nextName, hdr)
 	if err != nil {
 		return nil, err
 	}
@@ -257,11 +280,11 @@ func bamToSAMRecord(r *bam.Record) *sam.Record {
 		Pos:   r.Pos,
 		MapQ:  int(r.MapQ),
 		Cigar: cigar,
-		RNext: r.NameRNext,
 		PNext: r.NextPos,
 		TLen:  r.TLen,
 		Seq:   r.Seq,
-		Qual:  string(r.Qual),
+		Qual:  bamQualToSAM(r.Qual),
+		RNext: bamNextRefName(r),
 		Tags:  samTags,
 	}
 }
@@ -950,7 +973,12 @@ func vcfSamplesToBCF(samples []vcf.Genotype, bh *bcf.Header, keys []string) []bc
 			}
 			fv, present := gt.Fields[k]
 			if !present {
-				s.Fields[kIdx] = bcf.SampleValue{Type: "Missing"}
+				// An absent FORMAT field is a missing value.
+				// The Missing flag matters: it is what makes
+				// the BCF encoder emit one MISSING element
+				// plus END_OF_VECTOR padding, the way htslib
+				// does, rather than a bare vector end.
+				s.Fields[kIdx] = bcf.SampleValue{Type: "Missing", Missing: true}
 				continue
 			}
 			s.Fields[kIdx] = vcfFieldToBCF(&fv, k, bh)
@@ -1392,4 +1420,28 @@ func populateContig(c *vcf.Contig, line string) {
 			c.Other[k] = v
 		}
 	}
+}
+
+// bamQualToSAM renders a BAM record's quality as the SAM
+// ASCII form. An unavailable quality is stored as 0xFF bytes
+// and is written as the SAM "*" placeholder.
+func bamQualToSAM(qual []byte) string {
+	if len(qual) > 0 && qual[0] == 0xFF {
+		return "*"
+	}
+	return string(qual)
+}
+
+// bamNextRefName renders a BAM record's mate reference as the
+// SAM RNEXT field. When the mate is on the same reference as
+// the read, htslib writes the "=" shorthand
+// (sam_format1: "=" when mtid == tid), so we do too.
+func bamNextRefName(r *bam.Record) string {
+	if r.RefID >= 0 && r.NextRefID == r.RefID {
+		return "="
+	}
+	if r.NameRNext == "" {
+		return "*"
+	}
+	return r.NameRNext
 }

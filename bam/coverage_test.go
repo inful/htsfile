@@ -361,7 +361,10 @@ func (b *builder) writeRecordBArray(r *Record) error {
 		rem.Write(packed)
 	}
 	if lSeq > 0 {
-		rem.Write(r.Qual)
+		// Raw Phred bytes, not the ASCII "+33" form.
+		for _, q := range r.Qual {
+			rem.WriteByte(q - 33)
+		}
 	}
 	// Aux: XB:B:c with [1, 2, -3].
 	rem.WriteString("XB")

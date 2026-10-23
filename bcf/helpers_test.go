@@ -10,6 +10,7 @@ import (
 	"io"
 	"math"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -114,10 +115,12 @@ func (b *builder) finish(t *testing.T) []byte {
 func (b *builder) writeBCFHeader(text string) {
 	var payload bytes.Buffer
 	payload.Write(Magic[:])
+	// l_text counts the NUL terminator (spec BCF2 header).
 	var l [4]byte
-	binary.LittleEndian.PutUint32(l[:], uint32(len(text)))
+	binary.LittleEndian.PutUint32(l[:], uint32(len(text)+1))
 	payload.Write(l[:])
 	payload.WriteString(text)
+	payload.WriteByte(0)
 	b.writeBGZFBlock(payload.Bytes())
 }
 
@@ -137,6 +140,15 @@ type testRecord struct {
 	Info       map[string]InfoValue
 	infoDefs   map[string]*InfoDef
 	infoOrder  []string
+	// formatIdx lists the FORMAT keys present on this record,
+	// as indices into the header's FormatsOrder.
+	formatIdx []uint16
+	// nSample / nFmt are the per-sample block's header counts.
+	nSample int
+	nFmt    uint8
+	// sampleVals holds the per-sample values, keyed by FORMAT
+	// index.
+	sampleVals []map[uint16]SampleValue
 }
 
 // writeRecord encodes one BCF record into a fresh BGZF
@@ -146,7 +158,8 @@ func (b *builder) writeRecord(t *testing.T, r *testRecord) {
 	var shared bytes.Buffer
 	// Spec section 5, BcfSiteEncoding: 24-byte site prefix
 	// CHROM, POS, rlen, QUAL, n_info, n_allele, n_sample,
-	// n_fmt.
+	// n_fmt. n_sample is a uint24 at [20:22] and n_fmt a
+	// uint8 at [23].
 	nInfo := uint16(len(r.Info))
 	nAllele := uint16(1 + len(r.Alt))
 	var prefix [24]byte
@@ -160,8 +173,7 @@ func (b *builder) writeRecord(t *testing.T, r *testRecord) {
 	binary.LittleEndian.PutUint32(prefix[12:16], qualBits)
 	binary.LittleEndian.PutUint16(prefix[16:18], nInfo)
 	binary.LittleEndian.PutUint16(prefix[18:20], nAllele)
-	// n_sample=0 and n_fmt=0 in the shared prefix; the
-	// per-sample block is empty for these fixtures.
+	binary.LittleEndian.PutUint32(prefix[20:24], uint32(r.nSample)<<24|uint32(r.nFmt))
 	shared.Write(prefix[:])
 
 	testWriteTypedString(&shared, r.ID)
@@ -169,65 +181,96 @@ func (b *builder) writeRecord(t *testing.T, r *testRecord) {
 	for _, alt := range r.Alt {
 		testWriteTypedString(&shared, alt)
 	}
-	testWriteTypedFilter(&shared, r.filterIdxs)
+	testWriteTypedFilter(&shared, b.hdr, r.filterIdxs)
 	for _, id := range r.infoOrder {
 		def := r.infoDefs[id]
 		val := r.Info[id]
-		hdrIdx, ok := b.hdr.LookupInfoIndex(id)
-		if !ok {
-			panic(fmt.Sprintf("test bug: %q not in header InfosOrder (have %v)", id, b.hdrOrder))
-		}
-		// INFO key is a typed atomic int, not a bare uint16.
-		shared.WriteByte(typeByteAtomic(typeInt32))
-		var kb [4]byte
-		binary.LittleEndian.PutUint32(kb[:], uint32(hdrIdx))
-		shared.Write(kb[:])
+		// INFO key is a typed atomic int holding the header
+		// dictionary index (spec §"Dictionary of strings").
+		testWriteTypedInt(&shared, int32(b.hdr.IDXFor(id)))
 		testWriteTypedInfoValue(&shared, def, val)
+	}
+
+	// Per-sample block: one triplet per FORMAT field -
+	// fmt_key (typed int dictionary index), fmt_type,
+	// fmt_values.
+	var indiv bytes.Buffer
+	for _, keyIdx := range r.formatIdx {
+		name := ""
+		if int(keyIdx) < len(b.hdr.FormatsOrder) {
+			name = b.hdr.FormatsOrder[keyIdx]
+		}
+		testWriteTypedInt(&indiv, int32(b.hdr.IDXFor(name)))
+		testWriteFormatField(&indiv, b.hdr, r, keyIdx)
 	}
 
 	// l_shared + l_indiv framing.
 	var lens [8]byte
 	binary.LittleEndian.PutUint32(lens[0:4], uint32(shared.Len()))
-	binary.LittleEndian.PutUint32(lens[4:8], 0)
+	binary.LittleEndian.PutUint32(lens[4:8], uint32(indiv.Len()))
 	var rec bytes.Buffer
 	rec.Write(lens[:])
 	rec.Write(shared.Bytes())
+	rec.Write(indiv.Bytes())
 	b.writeBGZFBlock(rec.Bytes())
 }
 
+// testWriteTypedInt emits a typed atomic int32: the descriptor
+// byte (size 1, type int32) followed by the little-endian
+// value.
+func testWriteTypedInt(b *bytes.Buffer, v int32) {
+	b.WriteByte((1 << 4) | typeInt32)
+	var kb [4]byte
+	binary.LittleEndian.PutUint32(kb[:], uint32(v))
+	b.Write(kb[:])
+}
+
+// testWriteTypedString emits a BCF2 string as a char vector,
+// matching the spec (§BcfTypeEncoding, tex line 2276) and
+// `bcftools view -Ob` output: the descriptor nibble carries the
+// length and there is no separate length prefix.
+//
+// This deliberately does NOT call the package's own
+// writeBCFString helper. Fixtures that mirror the code under
+// test cannot catch a change to it - which is exactly how the
+// pre-2026-10-22 string encoding shipped broken.
 func testWriteTypedString(b *bytes.Buffer, s string) {
 	if s == "" {
 		b.WriteByte(typeMissing)
 		return
 	}
-	b.WriteByte(typeString)
-	var l [4]byte
-	binary.LittleEndian.PutUint32(l[:], uint32(len(s)))
-	b.Write(l[:])
+	b.WriteByte(byte(len(s))<<4 | typeString)
 	b.WriteString(s)
 }
 
-func testWriteTypedFilter(b *bytes.Buffer, idxs []int) {
+func testWriteTypedFilter(b *bytes.Buffer, hdr *Header, idxs []int) {
 	if len(idxs) == 0 {
 		b.WriteByte(typeMissing)
 		return
 	}
-	if len(idxs) == 1 {
-		b.WriteByte(typeInt8)
-		var idx [4]byte
-		binary.LittleEndian.PutUint32(idx[:], uint32(idxs[0]))
-		b.Write(idx[:])
-		return
+	// Spec §BcfTypeEncoding: FILTER is a typed *vector* of
+	// dictionary offsets, so the descriptor nibble carries the
+	// element count. Verified byte-for-byte against
+	// `bcftools view -Ob` output.
+	size, overflow := testPickBcfSize(len(idxs), false)
+	b.WriteByte((uint8(size) << 4) | typeInt32)
+	if overflow {
+		b.WriteByte((1 << 4) | typeInt8)
+		b.WriteByte(byte(len(idxs)))
 	}
-	b.WriteByte(typeInt32)
-	var n [4]byte
-	binary.LittleEndian.PutUint32(n[:], uint32(len(idxs)))
-	b.Write(n[:])
-	for _, i := range idxs {
-		var idx [4]byte
-		binary.LittleEndian.PutUint32(idx[:], uint32(i))
-		b.Write(idx[:])
+	// idxs are filter-local (0 = PASS); the wire carries the
+	// header dictionary index.
+	for i, idx := range idxs {
+		var kb [4]byte
+		binary.LittleEndian.PutUint32(kb[:], uint32(filterIDXFor(hdr, i, idx)))
+		b.Write(kb[:])
 	}
+}
+
+// filterIDXFor maps a filter-local index to the BCF dictionary
+// index using the builder's header.
+func filterIDXFor(hdr *Header, _ int, local int) int {
+	return hdr.FilterLocalToIDX(local)
 }
 
 func testWriteTypedInfoValue(b *bytes.Buffer, def *InfoDef, v InfoValue) {
@@ -247,7 +290,10 @@ func testWriteTypedInfoValue(b *bytes.Buffer, def *InfoDef, v InfoValue) {
 	case "Float":
 		count, hasCount = len(v.Floats), true
 	case "String":
-		count, hasCount = len(v.Strs), true
+		// Spec/hstlib: one char run with list elements joined
+		// by commas; the descriptor nibble is the run's total
+		// character count. Matches `bcftools view -Ob`.
+		count, hasCount = len(strings.Join(v.Strs, ",")), true
 	case "Character":
 		count, hasCount = 1, true
 	}
@@ -286,12 +332,7 @@ func testWriteTypedInfoValue(b *bytes.Buffer, def *InfoDef, v InfoValue) {
 			b.Write(x[:])
 		}
 	case "String":
-		for _, st := range v.Strs {
-			var l [4]byte
-			binary.LittleEndian.PutUint32(l[:], uint32(len(st)))
-			b.Write(l[:])
-			b.WriteString(st)
-		}
+		b.WriteString(strings.Join(v.Strs, ","))
 	case "Character":
 		var l [4]byte
 		binary.LittleEndian.PutUint32(l[:], uint32(len(v.Str)))
@@ -343,4 +384,103 @@ func readAll(t *testing.T, data []byte) (*Header, []*Record) {
 // end-of-stream signal from [Decoder.Record]).
 func readAllEOF(err error) bool {
 	return errors.Is(err, io.EOF)
+}
+
+// testWriteFormatField writes one FORMAT field's fmt_type
+// descriptor and fmt_values, following the spec
+// (§GenotypeEncoding) independently of the package's own
+// encoder. Fixtures that call the code under test cannot catch
+// a change to it.
+func testWriteFormatField(b *bytes.Buffer, hdr *Header, r *testRecord, keyIdx uint16) {
+	def, ok := hdr.FormatAt(int(keyIdx))
+	if !ok {
+		panic("test bug: unknown FORMAT index")
+	}
+	// Vector size: max cardinality across samples.
+	fieldSize := 0
+	for _, sv := range r.sampleVals {
+		v, present := sv[keyIdx]
+		if !present || v.Missing {
+			continue
+		}
+		n := 0
+		switch def.Type {
+		case "Integer":
+			n = len(v.Ints)
+		case "Float":
+			n = len(v.Floats)
+		case "Character":
+			n = 1
+		case "String":
+			n = len(strings.Join(v.Strs, ","))
+		}
+		if n > fieldSize {
+			fieldSize = n
+		}
+	}
+	var lowType uint8
+	switch def.Type {
+	case "Integer":
+		lowType = typeInt32
+	case "Float":
+		lowType = typeFloat
+	case "Character", "String":
+		lowType = typeString
+	}
+	if fieldSize >= 15 {
+		b.WriteByte((15 << 4) | lowType)
+		b.WriteByte((1 << 4) | typeInt8)
+		b.WriteByte(byte(fieldSize))
+	} else {
+		b.WriteByte(uint8(fieldSize)<<4 | lowType)
+	}
+	for _, sv := range r.sampleVals {
+		v, present := sv[keyIdx]
+		if !present || v.Missing {
+			// Missing slot: the per-type sentinel.
+			switch def.Type {
+			case "Integer":
+				var x [4]byte
+				binary.LittleEndian.PutUint32(x[:], bcfIntMissingInt32)
+				b.Write(x[:])
+			case "Float":
+				var x [4]byte
+				binary.LittleEndian.PutUint32(x[:], bcfFloatMissing)
+				b.Write(x[:])
+			default:
+				b.WriteByte(typeMissing)
+			}
+			continue
+		}
+		switch def.Type {
+		case "Integer":
+			for i := 0; i < fieldSize; i++ {
+				var x [4]byte
+				if i < len(v.Ints) {
+					binary.LittleEndian.PutUint32(x[:], uint32(v.Ints[i]))
+				} else {
+					binary.LittleEndian.PutUint32(x[:], bcfEndOfVectorInt32)
+				}
+				b.Write(x[:])
+			}
+		case "Float":
+			for i := 0; i < fieldSize; i++ {
+				var x [4]byte
+				if i < len(v.Floats) {
+					binary.LittleEndian.PutUint32(x[:], math.Float32bits(v.Floats[i]))
+				} else {
+					binary.LittleEndian.PutUint32(x[:], bcfEndOfVectorFloat32)
+				}
+				b.Write(x[:])
+			}
+		case "Character":
+			if v.Str != "" {
+				b.WriteByte(v.Str[0])
+			} else {
+				b.WriteByte(typeMissing)
+			}
+		case "String":
+			b.WriteString(strings.Join(v.Strs, ","))
+		}
+	}
 }

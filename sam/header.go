@@ -14,6 +14,19 @@ package sam
 // Free-text @CO comment lines are stored as plain strings in
 // [Header.COs] in source order.
 type Header struct {
+	// Raw is the complete header text, verbatim: one header
+	// line per "\n", with a trailing "\n" after the last
+	// line. When it is set, [Encoder.EncodeHeader] emits it
+	// as-is instead of re-synthesising the lines from the
+	// structured fields.
+	//
+	// This is what a BAM-to-SAM conversion needs: the BAM
+	// header stores the original SAM header text, and
+	// re-synthesising the lines would drop the fields this
+	// package does not model (M5/UR/SP on @SQ, PL/PU/CN on
+	// @RG, VN/CL on @PG).
+	Raw string
+
 	// HD is the file-level @HD line. Nil if absent (the spec
 	// recommends it, but a parser must accept files without it).
 	HD *HD

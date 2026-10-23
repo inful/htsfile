@@ -13,15 +13,27 @@ import (
 	"github.com/inful/htsfile/internal/bgzf"
 )
 
-// Magic is the six-byte BCF file signature. The first
-// three bytes are the ASCII "BCF". Byte 3 is the major
-// version (2). Byte 4 is the minor version (1 for BCF 2.1,
-// 2 for BCF 2.2). Byte 5 is reserved and must be zero.
-var Magic = [6]byte{'B', 'C', 'F', 0x02, 0x01, 0x00}
+// Magic is the five-byte BCF file signature. The first three
+// bytes are the ASCII "BCF". Byte 3 is the major version
+// (always 2) and byte 4 the minor version.
+//
+// The signature is FIVE bytes, not six: the layout is
+// magic(3) + major(1) + minor(1) + l_text(uint32), with
+// l_text starting at offset 5. An earlier version of this
+// package emitted a spurious sixth reserved byte, which
+// shifted l_text by one and made every file we wrote
+// unreadable by htslib 1.24+ ("Invalid BCF2 magic string:
+// only BCFv2.2 is supported"). Verified against
+// `bcftools view -Ob` output.
+//
+// The spec (VCFv4.5/BCFv2.2, tex line 2086) fixes
+// major=2, minor=2; htslib writes minor at byte 3 and
+// major at byte 4, so a 2.2 file is BCF\x02\x02 either way.
+var Magic = [5]byte{'B', 'C', 'F', 0x02, 0x02}
 
-// magic22 is the BCF 2.2 signature. The decoder accepts
-// either 2.1 or 2.2. The encoder emits 2.1.
-var magic22 = [6]byte{'B', 'C', 'F', 0x02, 0x02, 0x00}
+// magic21 is the legacy BCF 2.1 signature. The decoder
+// still accepts it for reading, but nothing we emit uses it.
+var magic21 = [5]byte{'B', 'C', 'F', 0x02, 0x01}
 
 // Decoder reads a BCF v2.1 document incrementally from a
 // BGZF-compressed [io.Reader].
@@ -100,8 +112,8 @@ func (d *Decoder) Header() (*Header, error) {
 		return d.hdr, d.hdrErr
 	}
 	d.hdrRead = true
-	// Magic check.
-	var magic [6]byte
+	// Magic check. Five bytes: "BCF" + major + minor.
+	var magic [5]byte
 	if _, err := io.ReadFull(d.br, magic[:]); err != nil {
 		if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 			d.hdrErr = &ParseError{Field: "magic", Msg: "BCF stream too short for magic"}
@@ -110,12 +122,16 @@ func (d *Decoder) Header() (*Header, error) {
 		d.hdrErr = err
 		return nil, err
 	}
-	if magic != Magic && magic != magic22 {
+	if magic != Magic && magic != magic21 {
 		d.hdrErr = &ParseError{Field: "magic",
 			Msg: fmt.Sprintf("not a BCF file: got %q", magic[:])}
 		return nil, d.hdrErr
 	}
-	d.version = magic[4]
+	// htslib writes minor at byte 3 and major at byte 4.
+	// A 2.2 file has both bytes equal to 2, so the order is
+	// unobservable; we follow htslib so the version we report
+	// matches what a conformant reader would compute.
+	d.version = magic[3]
 	// Length-prefixed header text.
 	var lText uint32
 	if err := d.readLe(&lText); err != nil {
@@ -129,7 +145,11 @@ func (d *Decoder) Header() (*Header, error) {
 			Msg: "failed to read header text: " + err.Error()}
 		return nil, d.hdrErr
 	}
-	d.hdr = ParseHeader(string(textBytes))
+	// The text field is NUL-terminated and l_text counts the
+	// terminator (spec §BCF2 header, tex lines 2086-2091).
+	hdrText := string(textBytes)
+	hdrText = strings.TrimSuffix(hdrText, "\x00")
+	d.hdr = ParseHeader(hdrText)
 	return d.hdr, nil
 }
 
@@ -177,7 +197,20 @@ func (d *Decoder) Record() (*Record, error) {
 	qualBits := binary.LittleEndian.Uint32(shared[12:16])
 	nInfo := binary.LittleEndian.Uint16(shared[16:18])
 	nAllele := binary.LittleEndian.Uint16(shared[18:20])
-	nFmt := uint8(binary.LittleEndian.Uint32(shared[20:24]))
+	// n_sample occupies the low 24 bits, n_fmt the top byte.
+	nSampleFmt := binary.LittleEndian.Uint32(shared[20:24])
+	nSample := nSampleFmt & 0x00FFFFFF
+	nFmt := uint8(nSampleFmt >> 24)
+
+	// Spec: n_sample must equal the header's sample count. A
+	// mismatch means the record and header disagree about the
+	// per-sample block; surface it rather than silently decoding
+	// a shifted stream.
+	if int(nSample) != len(d.hdr.SampleNames) {
+		return nil, &ParseError{Line: d.recordLine, Field: "record",
+			Msg: fmt.Sprintf("n_sample=%d does not match header sample count %d",
+				nSample, len(d.hdr.SampleNames))}
+	}
 
 	// QUAL is a plain float32; the per-type MISSING sentinel
 	// 0x7F800001 means "unknown".
@@ -248,33 +281,16 @@ func (d *Decoder) Record() (*Record, error) {
 				Msg: "failed to read per-sample block: " + err.Error()}
 		}
 		d.pushBack(indiv)
-		formatKeys, err := d.readFormatKeys(nFmt)
+		// Each field is a triplet: fmt_key, fmt_type,
+		// fmt_values, interleaved per field.
+		formatKeys, samples, err := d.readFormatBlockTriplets(nFmt, len(d.hdr.SampleNames))
 		if err != nil {
 			return nil, err
 		}
 		rec.Format = formatKeys
-		samples, err := d.readFormatBlock(formatKeys, len(d.hdr.SampleNames))
-		if err != nil {
-			return nil, err
-		}
 		rec.Samples = samples
 	}
 	return rec, nil
-}
-
-// readFormatKeys reads the n_fmt typed atomic integers that
-// form the per-record FORMAT key list (spec section 5,
-// GenotypeEncoding: "fmt_key typed int").
-func (d *Decoder) readFormatKeys(nFmt uint8) ([]uint16, error) {
-	keys := make([]uint16, nFmt)
-	for i := uint8(0); i < nFmt; i++ {
-		v, err := d.readTypedInt()
-		if err != nil {
-			return nil, fmt.Errorf("bcf: read FORMAT[%d]: %w", i, err)
-		}
-		keys[i] = uint16(v)
-	}
-	return keys, nil
 }
 
 // readLe reads a little-endian value of any fixed width,
@@ -353,26 +369,61 @@ func (d *Decoder) readTypedString() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	switch t {
-	case typeMissing:
+	if t == typeMissing {
 		return "", nil
-	case typeString, typeLong:
-		var l uint32
-		if err := d.readLe(&l); err != nil {
-			return "", err
-		}
-		if l == bcfInt32Missing {
-			return "", nil
-		}
-		buf := make([]byte, l)
-		if err := d.readPending(buf); err != nil {
-			return "", err
-		}
-		return string(buf), nil
-	default:
-		return "", &ParseError{Field: "string",
-			Msg: fmt.Sprintf("unexpected type byte %d for string field", t)}
 	}
+	if t&0x0F != typeString {
+		return "", &ParseError{Field: "string",
+			Msg: fmt.Sprintf("expected type 7 (string), got type byte 0x%02x", t)}
+	}
+	// t == 0x07 is both "missing ID" (spec line 2196) and the
+	// descriptor for a zero-length char vector.
+	// A BCF2 string is a char vector: the length lives in the
+	// descriptor's high nibble, with no separate length prefix.
+	size := int(t >> 4)
+	if size == 15 {
+		n, err := d.readTypedLen()
+		if err != nil {
+			return "", err
+		}
+		size = n
+	}
+	buf := make([]byte, size)
+	if err := d.readPending(buf); err != nil {
+		return "", err
+	}
+	return string(buf), nil
+}
+
+// readTypedLen reads the typed-Integer vector length that
+// follows an overflow (size nibble 15) type descriptor.
+func (d *Decoder) readTypedLen() (int, error) {
+	t, err := d.readByte()
+	if err != nil {
+		return 0, err
+	}
+	switch t & 0x0F {
+	case typeInt8:
+		b, err := d.readByte()
+		if err != nil {
+			return 0, err
+		}
+		return int(b), nil
+	case typeInt16:
+		var b [2]byte
+		if err := d.readPending(b[:]); err != nil {
+			return 0, err
+		}
+		return int(binary.LittleEndian.Uint16(b[:])), nil
+	case typeInt32:
+		var b [4]byte
+		if err := d.readPending(b[:]); err != nil {
+			return 0, err
+		}
+		return int(binary.LittleEndian.Uint32(b[:])), nil
+	}
+	return 0, &ParseError{Field: "string",
+		Msg: fmt.Sprintf("bad overflow length type byte 0x%02x", t)}
 }
 
 // readTypedFilter reads the FILTER typed array. BCF FILTER
@@ -385,59 +436,64 @@ func (d *Decoder) readTypedFilter() ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	switch t {
-	case typeMissing:
+	if t == typeMissing {
 		return nil, nil
-	case typeInt8:
-		// Spec says "single int8" — but the filter list is
-		// indexed by int32; in practice the type is 1 (int8
-		// per the type-tag spec) for the single-filter case
-		// and the int32 follows. We treat type 1 as "single
-		// int32" for compatibility with real-world files.
+	}
+	typeCode := t & 0x0F
+	count := int(t >> 4)
+	if count == 15 {
+		n, err := d.readTypedLen()
+		if err != nil {
+			return nil, err
+		}
+		count = n
+	}
+	if count == 0 {
+		return nil, nil
+	}
+	if typeCode != typeInt8 && typeCode != typeInt16 && typeCode != typeInt32 {
+		return nil, &ParseError{Field: "FILTER",
+			Msg: fmt.Sprintf("unexpected FILTER type code %d", typeCode)}
+	}
+	out := make([]string, 0, count)
+	for i := 0; i < count; i++ {
 		var idx uint32
-		if err := d.readLe(&idx); err != nil {
-			return nil, err
-		}
-		if idx == bcfFilterMissing {
-			return nil, nil
-		}
-		// LookupFilter encodes the implicit PASS at 0,
-		// so we don't need a special case here.
-		name := d.hdr.LookupFilter(int(idx))
-		if name == "" {
-			return []string{fmt.Sprintf("FILTER#%d", idx)}, nil
-		}
-		return []string{name}, nil
-	case typeInt32:
-		// Array form: int32 length + that many int32 indices.
-		var n uint32
-		if err := d.readLe(&n); err != nil {
-			return nil, err
-		}
-		if n == 0 {
-			return nil, nil
-		}
-		out := make([]string, 0, n)
-		for i := uint32(0); i < n; i++ {
-			var idx uint32
-			if err := d.readLe(&idx); err != nil {
+		switch typeCode {
+		case typeInt8:
+			b, err := d.readByte()
+			if err != nil {
 				return nil, err
 			}
-			if idx == bcfFilterMissing {
-				continue
+			idx = uint32(b)
+		case typeInt16:
+			var b [2]byte
+			if err := d.readPending(b[:]); err != nil {
+				return nil, err
 			}
-			name := d.hdr.LookupFilter(int(idx))
-			if name == "" {
-				out = append(out, fmt.Sprintf("FILTER#%d", idx))
-				continue
+			idx = uint32(binary.LittleEndian.Uint16(b[:]))
+		default:
+			var b [4]byte
+			if err := d.readPending(b[:]); err != nil {
+				return nil, err
 			}
-			out = append(out, name)
+			idx = binary.LittleEndian.Uint32(b[:])
 		}
-		return out, nil
-	default:
-		return nil, &ParseError{Field: "FILTER",
-			Msg: fmt.Sprintf("unexpected FILTER type byte %d", t)}
+		if idx == bcfFilterMissing {
+			continue
+		}
+		if idx == 0 {
+			// PASS is implicitly dictionary index 0.
+			out = append(out, "PASS")
+			continue
+		}
+		name, ok := d.hdr.IDAt(int(idx))
+		if !ok || name == "" {
+			out = append(out, fmt.Sprintf("FILTER#%d", idx))
+			continue
+		}
+		out = append(out, name)
 	}
+	return out, nil
 }
 
 // readTypedInfo reads the n_info typed INFO entries and
@@ -456,7 +512,20 @@ func (d *Decoder) readTypedInfo(n uint32) (map[string]InfoValue, error) {
 		if err != nil {
 			return nil, err
 		}
-		keyIdx := int(keyVal)
+		// The key is a header *dictionary* index (spec
+		// §"Dictionary of strings"), not a position in
+		// InfosOrder. Resolve it to the ID first.
+		keyName, ok := d.hdr.IDAt(int(keyVal))
+		if !ok {
+			keyName = ""
+		}
+		keyIdx := -1
+		for i, n := range d.hdr.InfosOrder {
+			if n == keyName {
+				keyIdx = i
+				break
+			}
+		}
 		def, ok := d.hdr.InfoAt(keyIdx)
 		if !ok {
 			// Unknown INFO key — read past the typed value
@@ -494,13 +563,13 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 
 	// Flag has no vector body; one type byte.
 	if def.Type == "Flag" {
-		t, err := d.readByte()
-		if err != nil {
+		if _, err := d.readByte(); err != nil {
 			return v, err
 		}
-		if t != typeMissing {
-			v.Flag = true
-		}
+		// htslib writes 0x00 for a present Flag, so the
+		// byte's value carries no information - the entry's
+		// presence does.
+		v.Flag = true
 		return v, nil
 	}
 
@@ -518,38 +587,18 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 	}
 	size := int(t >> 4)
 	typeCode := t & 0x0F
+	// The descriptor carries the actual element count, which
+	// is how htslib encodes variable-length fields (e.g. an
+	// AF=0.5 with Number=A is size 1, not the overflow
+	// marker). Use it rather than the header's Number.
 	count := size
 	if size == 15 {
-		// Overflow: typed Integer giving the true count.
-		// Read the int's type byte (typically 0x11=int8) and
-		// its value.
-		ct, err := d.readByte()
+		// Overflow: a typed Integer gives the true count.
+		n, err := d.readTypedLen()
 		if err != nil {
 			return v, err
 		}
-		switch ct & 0x0F {
-		case typeInt8:
-			b, err := d.readByte()
-			if err != nil {
-				return v, err
-			}
-			count = int(int8(b))
-		case typeInt16:
-			var x uint16
-			if err := d.readLe(&x); err != nil {
-				return v, err
-			}
-			count = int(int16(x))
-		case typeInt32:
-			var x uint32
-			if err := d.readLe(&x); err != nil {
-				return v, err
-			}
-			count = int(int32(x))
-		default:
-			return v, &ParseError{Field: "INFO",
-				Msg: fmt.Sprintf("overflow Integer type byte %d", ct)}
-		}
+		count = n
 	}
 	if count == 0 {
 		return v, nil
@@ -601,35 +650,24 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 			v.Floats[i] = float64(math.Float32frombits(bits))
 		}
 	case "String":
-		v.Strs = make([]string, count)
 		if typeCode != typeString {
 			return InfoValue{}, &ParseError{Field: "INFO",
 				Msg: fmt.Sprintf("String field has type byte %d", t)}
 		}
-		for i := 0; i < count; i++ {
-			var l uint32
-			if err := d.readLe(&l); err != nil {
-				return InfoValue{}, err
-			}
-			if l == bcfIntMissingInt32 {
-				continue
-			}
-			buf := make([]byte, l)
-			if err := d.readPending(buf); err != nil {
-				return InfoValue{}, err
-			}
-			v.Strs[i] = string(buf)
+		// count is the total character count of a single char
+		// run whose list elements are comma-joined; split it
+		// back on commas.
+		buf := make([]byte, count)
+		if err := d.readPending(buf); err != nil {
+			return InfoValue{}, err
 		}
+		v.Strs = strings.Split(string(buf), ",")
 	case "Character":
-		if typeCode != typeString || count != 1 {
+		if typeCode != typeString {
 			return InfoValue{}, &ParseError{Field: "INFO",
 				Msg: fmt.Sprintf("Character field has type byte %d", t)}
 		}
-		var l uint32
-		if err := d.readLe(&l); err != nil {
-			return InfoValue{}, err
-		}
-		buf := make([]byte, l)
+		buf := make([]byte, count)
 		if err := d.readPending(buf); err != nil {
 			return InfoValue{}, err
 		}

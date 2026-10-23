@@ -208,7 +208,14 @@ func (wr *Writer) writeEOF() error {
 	eof[2] = 0x08
 	eof[3] = 0x04 // FEXTRA
 	// MTIME = 0 (bytes 4-7).
-	// XFL = 0 (bytes 8-9).
+	// XFL = 0 (byte 8).
+	eof[8] = 0
+	// OS = 0xff "unknown" (byte 9). This byte is load-bearing:
+	// htslib's bgzf_check_EOF() does a byte-exact memcmp against
+	// its hardcoded 28-byte marker, so writing 0x00 here makes
+	// samtools/bcftools report "No BGZF EOF marker; file may be
+	// truncated" on a perfectly complete file.
+	eof[9] = 0xff
 	// XLEN = 6 (uint16 LE → bytes 10-11).
 	eof[10] = 6
 	eof[11] = 0

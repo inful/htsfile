@@ -59,6 +59,9 @@ type Header struct {
 	// SampleNames is the list of sample IDs from the #CHROM
 	// header line. Empty if no FORMAT column.
 	SampleNames []string
+
+	// dictCache memoises the dictionary order derived from Raw.
+	dictCache []string
 }
 
 // InfoDef describes an INFO field declaration (`##INFO=<ID,…>`).
@@ -281,4 +284,141 @@ func splitStructuredFields(s, sep string) []string {
 	}
 	out = append(out, string(cur))
 	return out
+}
+
+// dictOrder returns the ordered list of FILTER / INFO / FORMAT
+// IDs that form the BCF header dictionary, in header-text order.
+//
+// The spec (§"Dictionary of strings", tex line 2124) defines
+// the dictionary as the relative position of each header line:
+// "ASP=1, RSPOS=2, dbSNPBuildID=3, and PASS implicitly encoded
+// in the first offset PASS=0". The counter is 1-based and spans
+// FILTER, INFO and FORMAT lines together; ##contig lines do
+// NOT consume an index (contigs are referenced by their own
+// 0-based position instead).
+//
+// Verified against `bcftools view -Ob` output for the spec
+// example and for synthetic headers with 0, 1 and 2 contigs.
+func (h *Header) dictOrder() []string {
+	if h == nil {
+		return nil
+	}
+	if h.dictCache == nil {
+		h.dictCache = h.buildDictOrder()
+	}
+	return h.dictCache
+}
+
+// buildDictOrder scans the header text for structured lines.
+//
+// The index is per *distinct* ID, first occurrence wins: an ID
+// used as both an INFO and a FORMAT key shares one index. This
+// is what htslib does - for the spec example header it assigns
+// NS=1, DP=2, AF=3, AA=4, DB=5, H2=6, q10=7, s50=8, GT=9,
+// GQ=10, DP(reuse)=2, HQ=11, so the FORMAT block references DP
+// as 2 and HQ as 11.
+//
+// Verified byte-for-byte against `bcftools view -Ob` output for
+// the spec example and for synthetic headers with 0, 1 and 2
+// contigs.
+func (h *Header) buildDictOrder() []string {
+	out := []string{}
+	seen := map[string]bool{}
+	add := func(id string) {
+		if id == "" || seen[id] {
+			return
+		}
+		seen[id] = true
+		out = append(out, id)
+	}
+	if h.Raw != "" {
+		for _, line := range strings.Split(h.Raw, "\n") {
+			var id string
+			switch {
+			case strings.HasPrefix(line, "##FILTER="):
+				id = extractIDFromAngleField(line, "##FILTER=")
+				if id == "PASS" {
+					// PASS is implicitly IDX 0 and does not
+					// consume a dictionary slot, even when the
+					// header declares it explicitly. Verified
+					// against `bcftools view -Ob`.
+					id = ""
+				}
+			case strings.HasPrefix(line, "##INFO="):
+				id = extractIDFromAngleField(line, "##INFO=")
+			case strings.HasPrefix(line, "##FORMAT="):
+				id = extractIDFromAngleField(line, "##FORMAT=")
+			default:
+				continue
+			}
+			add(id)
+		}
+		if len(out) > 0 {
+			return out
+		}
+	}
+	// Fallback for hand-built headers with no Raw text: use the
+	// structured fields in a deterministic order.
+	for _, f := range h.Filters {
+		if f != "PASS" {
+			add(f)
+		}
+	}
+	for _, f := range h.InfosOrder {
+		add(f)
+	}
+	for _, f := range h.FormatsOrder {
+		add(f)
+	}
+	return out
+}
+
+// IDXFor returns the 1-based BCF dictionary index of a
+// FILTER / INFO / FORMAT ID. "PASS" is implicitly 0.
+//
+// This is the value the BCF wire format stores for INFO keys,
+// FORMAT keys and FILTER offsets.
+func (h *Header) IDXFor(id string) int {
+	if id == "PASS" {
+		return 0
+	}
+	for i, v := range h.dictOrder() {
+		if v == id {
+			return i + 1
+		}
+	}
+	return 0
+}
+
+// IDAt returns the FILTER / INFO / FORMAT ID with the given
+// 1-based dictionary index.
+func (h *Header) IDAt(idx int) (string, bool) {
+	if idx <= 0 {
+		return "", false
+	}
+	order := h.dictOrder()
+	if idx > len(order) {
+		return "", false
+	}
+	return order[idx-1], true
+}
+
+// FilterLocalToIDX maps a filter-local index (0 = PASS, 1 =
+// the first declared filter) to the BCF dictionary index.
+// The two differ because PASS is implicitly 0 and does not
+// consume a dictionary slot.
+func (h *Header) FilterLocalToIDX(local int) int {
+	if local == 0 {
+		return 0
+	}
+	declared := make([]string, 0, len(h.Filters))
+	for _, f := range h.Filters {
+		if f != "PASS" {
+			declared = append(declared, f)
+		}
+	}
+	if local-1 >= len(declared) {
+		return 0
+	}
+	return h.IDXFor(declared[local-1])
 }

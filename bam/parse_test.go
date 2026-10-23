@@ -141,14 +141,18 @@ func (b *builder) writeRecord(r *Record) error {
 		}
 		rem.Write(packed)
 	}
-	// qual: ASCII bytes, length = lSeq.
+	// qual: raw Phred bytes, length = lSeq. BAM stores the
+	// quality as a raw score, not as the ASCII "+33" form
+	// SAM uses.
 	if lSeq > 0 {
 		if len(r.Qual) == int(lSeq) {
-			rem.Write(r.Qual)
+			for _, q := range r.Qual {
+				rem.WriteByte(q - 33)
+			}
 		} else {
-			// pad with 'I' (Phred+33 = 40 = 'I') if the test
-			// didn't supply qual bytes.
-			rem.Write(bytes.Repeat([]byte{'I'}, int(lSeq)))
+			// pad with Phred 40 if the test didn't supply qual
+			// bytes.
+			rem.Write(bytes.Repeat([]byte{40}, int(lSeq)))
 		}
 	}
 	// aux tags.

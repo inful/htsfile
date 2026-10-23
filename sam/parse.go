@@ -245,6 +245,16 @@ func (d *Decoder) parseHeader(raw []byte, lineNo int) error {
 	rest := strings.TrimPrefix(string(raw[3:]), "\t")
 	pairs := parseTagPairs(rest)
 	hdr := d.hdr
+	// Accumulate the original header text so a re-encode (or
+	// a SAM-to-BAM conversion) can reproduce it verbatim
+	// instead of re-synthesising the lines from the
+	// structured fields.
+	defer func() {
+		if d.hdr == nil {
+			return
+		}
+		d.hdr.Raw += string(raw) + "\n"
+	}()
 	switch tag {
 	case "HD":
 		if hdr == nil {

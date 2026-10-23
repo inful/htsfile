@@ -329,14 +329,18 @@ func TestReader_AcceptsInlineSizeTypeByte(t *testing.T) {
 	}
 	// Decode the BGZF stream once to inspect the
 	// uncompressed bytes — the Writer must emit the
-	// type byte 0x13 (atomic int32 with size 1 in the
-	// high nibble) for the single INFO Integer, followed
-	// by 4 bytes little-endian for the value 7.
+	// type byte 0x11 (atomic int8 with size 1 in the high
+	// nibble) for the single INFO Integer, followed by one
+	// byte for the value 7. The integer width is the
+	// narrowest that fits, which is what htslib does and
+	// what the spec allows ("It is up to the encoder to
+	// determine the appropriate ranged value to use",
+	// §BcfTypeEncoding line 2266).
 	raw, err := io.ReadAll(bgzf.NewReader(bytes.NewReader(buf.Bytes())))
 	if err != nil {
 		t.Fatalf("decompress: %v", err)
 	}
-	want := []byte{typeByteAtomic(typeInt32), 0x07, 0x00, 0x00, 0x00}
+	want := []byte{typeByteAtomic(typeInt8), 0x07}
 	if !bytes.Contains(raw, want) {
 		t.Errorf("uncompressed wire bytes missing %x; got %x", want, raw)
 	}

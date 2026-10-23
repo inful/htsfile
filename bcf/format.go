@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 )
 
 // Sample is one row of the per-sample FORMAT table. Fields
@@ -62,38 +63,121 @@ type SampleValue struct {
 	FloatMissing []bool
 }
 
-// readFormatBlock consumes the per-field FORMAT block (§5
-// line 2208–2255) for a record given the format-key
-// header indices in record order. The wire shape is, for
-// each FORMAT key:
-//
-//	uint16 key index  (header offset)
-//	type byte         (vector size in high nibble; type in low)
-//	typed values      (one value per sample)
-//
-// Variable-length vectors are padded with END_OF_VECTOR for
-// shorter samples; we strip those on read so each sample
-// sees only its own cardinality.
-func (d *Decoder) readFormatBlock(formatKeys []uint16, sampleCount int) ([]Sample, error) {
+// readFormatBlockTriplets consumes the per-field FORMAT block
+// (spec §GenotypeEncoding, tex line 2233). Each field is a
+// triplet: fmt_key (typed int, the header dictionary index),
+// fmt_type (a descriptor byte, optionally followed by a typed
+// Integer vector length), then fmt_values (one value per
+// sample).
+func (d *Decoder) readFormatBlockTriplets(nFmt uint8, sampleCount int) ([]uint16, []Sample, error) {
 	samples := make([]Sample, sampleCount)
 	for i := range samples {
-		samples[i].Fields = make(map[uint16]SampleValue, len(formatKeys))
+		samples[i].Fields = make(map[uint16]SampleValue, int(nFmt))
 	}
-
-	for _, keyIdx := range formatKeys {
+	keys := make([]uint16, 0, nFmt)
+	for i := uint8(0); i < nFmt; i++ {
+		keyIdx, err := d.readFormatKey()
+		if err != nil {
+			return nil, nil, err
+		}
+		keys = append(keys, keyIdx)
 		def, ok := d.hdr.FormatAt(int(keyIdx))
 		if !ok {
-			return nil, fmt.Errorf("bcf: FORMAT key index %d not in header", keyIdx)
+			return nil, nil, fmt.Errorf("bcf: FORMAT key index %d not in header", keyIdx)
 		}
 		vals, err := d.readFieldForAllSamples(def, sampleCount)
 		if err != nil {
-			return nil, fmt.Errorf("bcf: FORMAT key %d (%s): %w", keyIdx, def.ID, err)
+			return nil, nil, fmt.Errorf("bcf: FORMAT key %d (%s): %w", keyIdx, def.ID, err)
 		}
 		for sIdx := range vals {
 			samples[sIdx].Fields[keyIdx] = vals[sIdx]
 		}
 	}
-	return samples, nil
+	return keys, samples, nil
+}
+
+// intWidthMask returns the bit mask for an integer width, used
+// to compare raw wire bits against the sentinel constants
+// without sign extension getting in the way.
+func intWidthMask(width uint8) uint32 {
+	switch width {
+	case typeInt8:
+		return 0xFF
+	case typeInt16:
+		return 0xFFFF
+	default:
+		return 0xFFFFFFFF
+	}
+}
+
+// given integer width. The spec (tex line 2304) defines them
+// per width: 0x80, 0x8000, 0x80000000.
+func intMissingFor(width uint8) uint32 {
+	switch width {
+	case typeInt8:
+		return 0x80
+	case typeInt16:
+		return 0x8000
+	default:
+		return 0x80000000
+	}
+}
+
+// intEndOfVectorFor returns the per-type END_OF_VECTOR sentinel
+// for the given integer width: 0x81, 0x8001, 0x80000001.
+func intEndOfVectorFor(width uint8) uint32 {
+	switch width {
+	case typeInt8:
+		return 0x81
+	case typeInt16:
+		return 0x8001
+	default:
+		return 0x80000001
+	}
+}
+
+// readIntValue reads one integer in the width named by the
+// descriptor's type nibble (int8, int16 or int32).
+func (d *Decoder) readIntValue(width uint8) (int32, error) {
+	switch width {
+	case typeInt8:
+		b, err := d.readByte()
+		if err != nil {
+			return 0, err
+		}
+		return int32(int8(b)), nil
+	case typeInt16:
+		var b [2]byte
+		if err := d.readPending(b[:]); err != nil {
+			return 0, err
+		}
+		return int32(int16(binary.LittleEndian.Uint16(b[:]))), nil
+	default:
+		var b [4]byte
+		if err := d.readPending(b[:]); err != nil {
+			return 0, err
+		}
+		return int32(binary.LittleEndian.Uint32(b[:])), nil
+	}
+}
+
+// readFormatKey reads one fmt_key: a typed atomic integer
+// holding the header dictionary index of the FORMAT key.
+func (d *Decoder) readFormatKey() (uint16, error) {
+	idx, err := d.readTypedInt()
+	if err != nil {
+		return 0, err
+	}
+	name, ok := d.hdr.IDAt(int(idx))
+	if !ok {
+		return 0, fmt.Errorf("bcf: FORMAT dictionary index %d out of range", idx)
+	}
+	for i, n := range d.hdr.FormatsOrder {
+		if n == name {
+			return uint16(i), nil
+		}
+	}
+	return 0, fmt.Errorf("bcf: FORMAT key %q not declared in header", name)
 }
 
 // readFieldForAllSamples decodes one FORMAT field across N
@@ -125,23 +209,35 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 	// as a typed INT8.
 	size := int((t >> 4) & 0x0F)
 	if size == 15 {
-		ot, err := d.readByte()
+		n, err := d.readTypedLen()
 		if err != nil {
 			return nil, err
 		}
-		if ot != typeInt8 {
-			return nil, fmt.Errorf("bcf: overflow size marker: got type byte %d, want INT8", ot)
-		}
-		var b [1]byte
-		if err := d.readPending(b[:]); err != nil {
-			return nil, err
-		}
-		size = int(b[0])
+		size = n
 	}
 	typeLo := t & 0x0F
 
 	out := make([]SampleValue, nSamples)
 
+	if def.ID == "GT" {
+		// GT is an integer allele vector; rebuild the VCF
+		// genotype string from it.
+		for s := 0; s < nSamples; s++ {
+			alleles := make([]int32, 0, size)
+			for i := 0; i < size; i++ {
+				v, err := d.readIntValue(typeLo)
+				if err != nil {
+					return nil, fmt.Errorf("read GT allele: %w", err)
+				}
+				if uint32(v)&intWidthMask(typeLo) == intEndOfVectorFor(typeLo) {
+					break
+				}
+				alleles = append(alleles, v)
+			}
+			out[s] = SampleValue{Type: "String", Strs: []string{decodeGenotype(alleles)}}
+		}
+		return out, nil
+	}
 	switch def.Type {
 	case "Integer":
 		// Per-sample int32 values, with END_OF_VECTOR
@@ -153,25 +249,30 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 		// eight reserved values just above MinInt32
 		// (T4.22). When all values for a sample slot read
 		// the sentinel, the slot is treated as Missing.
+		// The integer width comes from the descriptor's type
+		// nibble: int8, int16 or int32. htslib picks the
+		// narrowest that fits, and so do we.
+		missingU := intMissingFor(typeLo)
+		endU := intEndOfVectorFor(typeLo)
 		for s := 0; s < nSamples; s++ {
 			ints := make([]int32, 0, size)
 			missing := true
 			for i := 0; i < size; i++ {
-				var b [4]byte
-				if err := d.readPending(b[:]); err != nil {
-					return nil, fmt.Errorf("read int32: %w", err)
+				v, err := d.readIntValue(typeLo)
+				if err != nil {
+					return nil, fmt.Errorf("read int: %w", err)
 				}
-				u := binary.LittleEndian.Uint32(b[:])
-				if u == bcfEndOfVectorInt32 && size > 0 {
+				raw := uint32(v) & intWidthMask(typeLo)
+				if raw == endU && size > 0 {
 					continue
 				}
-				if u == bcfIntMissingInt32 {
-					ints = append(ints, int32(u)) //nolint:gosec // wire-format sentinel
+				if raw == missingU {
+					ints = append(ints, v)
 					out[s].IntMissing = append(out[s].IntMissing, true)
 					continue
 				}
 				missing = false
-				ints = append(ints, int32(u)) //nolint:gosec // wire-format reinterpret
+				ints = append(ints, v)
 				out[s].IntMissing = append(out[s].IntMissing, false)
 			}
 			out[s].Type = "Integer"
@@ -220,30 +321,24 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 			out[s] = SampleValue{Type: "Character", Str: string(b[:])}
 		}
 	case "String":
-		// Per the spec, strings at the FORMAT level are
-		// stored as vectors of char: each sample slot
-		// holds a length-prefixed body. We accept size
-		// as the number of strings per sample, with each
-		// entry being a length-prefixed string.
+		// FORMAT strings are char vectors: the descriptor's
+		// size nibble gives the per-sample character count and
+		// the bytes follow directly (no length prefix). Shorter
+		// samples are padded with END_OF_VECTOR bytes, which we
+		// drop.
 		for s := 0; s < nSamples; s++ {
-			strs := make([]string, 0, size)
-			for i := 0; i < size; i++ {
-				var lb [4]byte
-				if err := d.readPending(lb[:]); err != nil {
-					return nil, fmt.Errorf("read string len: %w", err)
-				}
-				l := binary.LittleEndian.Uint32(lb[:])
-				if l == bcfInt32Missing {
-					strs = append(strs, "")
+			buf := make([]byte, size)
+			if err := d.readPending(buf); err != nil {
+				return nil, fmt.Errorf("read string body: %w", err)
+			}
+			body := make([]byte, 0, size)
+			for _, c := range buf {
+				if c == typeMissing {
 					continue
 				}
-				buf := make([]byte, l)
-				if err := d.readPending(buf); err != nil {
-					return nil, fmt.Errorf("read string body: %w", err)
-				}
-				strs = append(strs, string(buf))
+				body = append(body, c)
 			}
-			out[s] = SampleValue{Type: "String", Strs: strs}
+			out[s] = SampleValue{Type: "String", Strs: []string{string(body)}}
 		}
 	default:
 		return nil, fmt.Errorf("unsupported FORMAT type %q", def.Type)
@@ -276,36 +371,60 @@ func int64Slice(xs []int32) []int64 {
 //
 // When all samples are missing for a field, the whole
 // field collapses to a single typeMissing byte.
-func writeFormatBlock(w *bytes.Buffer, rec *Record, hdr *Header, version uint8) error {
+// writeFormatField emits one FORMAT field's fmt_type descriptor
+// followed by its fmt_values (one value per sample). The
+// fmt_key that precedes it is written by encodeIndivid.
+func writeFormatField(w *bytes.Buffer, rec *Record, hdr *Header, version uint8, keyIdx uint16) error {
 	nSamples := len(rec.Samples)
-	for _, keyIdx := range rec.Format {
-		def, ok := hdr.FormatAt(int(keyIdx))
-		if !ok {
-			return fmt.Errorf("bcf: FORMAT key index %d not in header", keyIdx)
-		}
-		// All-missing fields collapse to typeMissing.
-		if nSamples > 0 && allSamplesMissing(rec, keyIdx) {
-			w.WriteByte(typeMissing)
-			continue
-		}
+	def, ok := hdr.FormatAt(int(keyIdx))
+	if !ok {
+		return fmt.Errorf("bcf: FORMAT key index %d not in header", keyIdx)
+	}
+	// All-missing fields collapse to typeMissing.
+	if nSamples > 0 && allSamplesMissing(rec, keyIdx) {
+		w.WriteByte(typeMissing)
+		return nil
+	}
 
-		// Vector size = max cardinality across samples
-		// for this field. Atomic fields (Number=1) →
-		// size 1. Variable-length fields (Number=.,
-		// A, R, G) → max across samples.
-		fieldSize, hasValues := fieldMaxSize(def, rec, keyIdx)
-		// Emit the type byte (size in high nibble). We
-		// always emit at least size 0 even when nothing
-		// is present so the decoder can read past the
-		// field cleanly.
-		tb := formatTypeByte(def, version, hasValues)
-		w.WriteByte(typeByteSize(uint8(fieldSize), tb)) //nolint:gosec // fieldSize is always 0..14 in the encoder path
-
-		for s := 0; s < nSamples; s++ {
+	// Vector size = max cardinality across samples
+	// for this field. Atomic fields (Number=1) →
+	// size 1. Variable-length fields (Number=.,
+	// A, R, G) → max across samples.
+	fieldSize, hasValues := fieldMaxSize(def, rec, keyIdx)
+	// Emit the type byte (size in high nibble). We
+	// always emit at least size 0 even when nothing
+	// is present so the decoder can read past the
+	// field cleanly.
+	tb := formatTypeByte(def, version, hasValues)
+	if def.Type == "Integer" && def.ID != "GT" {
+		// The descriptor's type nibble must match the width
+		// the values are actually written in.
+		var vals []int32
+		for s := range rec.Samples {
 			v, present := rec.Samples[s].Fields[keyIdx]
-			if err := writeFormatSampleValue(w, &v, def, version, fieldSize, present); err != nil {
-				return fmt.Errorf("bcf: FORMAT key %d (%s) sample %d: %w", keyIdx, def.ID, s, err)
+			if present && !v.Missing {
+				vals = v.Ints
+				break
 			}
+		}
+		tb = intWidthFor32(vals)
+	}
+	if fieldSize >= 15 {
+		// Overflow: descriptor nibble 15 followed by a
+		// typed Integer holding the true vector length
+		// (spec §BcfTypeEncoding). Without this the reader
+		// cannot tell a 15+ element vector from a short one.
+		w.WriteByte(typeByteSize(15, tb))
+		w.WriteByte(typeByteSize(1, typeInt8))
+		w.WriteByte(byte(fieldSize)) //nolint:gosec // fieldSize < 256 here
+	} else {
+		w.WriteByte(typeByteSize(uint8(fieldSize), tb)) //nolint:gosec // guarded by fieldSize < 15
+	}
+
+	for s := 0; s < nSamples; s++ {
+		v, present := rec.Samples[s].Fields[keyIdx]
+		if err := writeFormatSampleValue(w, &v, def, version, fieldSize, present, tb); err != nil {
+			return fmt.Errorf("bcf: FORMAT key %d (%s) sample %d: %w", keyIdx, def.ID, s, err)
 		}
 	}
 	return nil
@@ -331,18 +450,38 @@ func allSamplesMissing(rec *Record, keyIdx uint16) bool {
 // use each sample's Strs length.
 func fieldMaxSize(def *FormatDef, rec *Record, keyIdx uint16) (int, bool) {
 	count, isVar := ParseNumber(def.Number)
-	if !isVar {
+	// GT is an allele vector on the wire; its size is the
+	// ploidy, so it must not take the String/Character path
+	// below (which measures characters).
+	if def.ID != "GT" && !isVar {
 		// Atomic (Number=N) or Character/String with a
 		// fixed declared count.
 		switch def.Type {
 		case "Character":
 			return 1, true
 		case "String":
-			// String fields declared Number=1 always
-			// have at least one string; use the count
-			// from the header for atomic fixed length.
+			// A String FORMAT field is a *char vector*, so the
+			// size nibble carries the character count, not the
+			// element count. A Number=1 String holding 31
+			// characters needs size 31.
+			hasStr := false
+			maxChars := 0
+			for s := range rec.Samples {
+				v, present := rec.Samples[s].Fields[keyIdx]
+				if !present || v.Missing {
+					continue
+				}
+				n := len(strings.Join(v.Strs, ","))
+				if n > maxChars {
+					maxChars = n
+				}
+				hasStr = true
+			}
+			if hasStr {
+				return maxChars, true
+			}
 			if count == 1 {
-				return 1, true
+				return 0, false
 			}
 		}
 	}
@@ -355,15 +494,23 @@ func fieldMaxSize(def *FormatDef, rec *Record, keyIdx uint16) (int, bool) {
 		}
 		has = true
 		var n int
-		switch def.Type {
-		case "Integer":
+		switch {
+		case def.ID == "GT":
+			// GT is an allele vector on the wire; its size is
+			// the ploidy, not the character count.
+			if len(v.Ints) > 0 {
+				n = len(v.Ints)
+			} else if len(v.Strs) > 0 {
+				n = len(encodeGenotype(v.Strs[0]))
+			}
+		case def.Type == "Integer":
 			n = len(v.Ints)
-		case "Float":
+		case def.Type == "Float":
 			n = len(v.Floats)
-		case "Character":
+		case def.Type == "Character":
 			n = 1
-		case "String":
-			n = len(v.Strs)
+		case def.Type == "String":
+			n = len(strings.Join(v.Strs, ","))
 		}
 		if n > fieldMax {
 			fieldMax = n
@@ -380,6 +527,13 @@ func fieldMaxSize(def *FormatDef, rec *Record, keyIdx uint16) (int, bool) {
 // string promotion is handled inside writeFormatBlock
 // rather than here.
 func formatTypeByte(def *FormatDef, _ uint8, _ bool) uint8 {
+	// GT is stored in BCF as an integer allele vector even
+	// though the VCF header declares it Type=String (spec
+	// §GenotypeEncoding; htslib's bcf_format_gt_v2 rejects
+	// any other type).
+	if def.ID == "GT" {
+		return typeInt8
+	}
 	switch def.Type {
 	case "Integer":
 		return typeInt32
@@ -410,7 +564,7 @@ func typeByteSize(size, lo uint8) uint8 {
 // entries. A missing-or-absent sample pads the whole
 // field with END_OF_VECTOR (so the stream stays
 // uniform-length across samples).
-func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, version uint8, fieldSize int, present bool) error {
+func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, _ uint8, fieldSize int, present bool, width uint8) error {
 	// Whole-field-missing collapses are only emitted
 	// when the caller didn't provide per-slot missing
 	// tracking. If IntMissing/FloatMissing are set,
@@ -421,22 +575,38 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, ver
 		len(v.IntMissing) == 0 && len(v.FloatMissing) == 0 {
 		switch def.Type {
 		case "Integer":
-			// Per-type MISSING: emit the int32 sentinel
-			// 0x80000000 (T4.24 / line 2304). Matches the
-			// size declared by the field type byte so
-			// the reader's value loop stays aligned.
+			// Per-type MISSING: emit the sentinel for the
+			// field's integer width (T4.24 / line 2304:
+			// 0x80, 0x8000, 0x80000000). Matches the width
+			// declared by the field type byte so the
+			// reader's value loop stays aligned.
+			//
+			// An absent value is ONE missing element
+			// followed by END_OF_VECTOR padding, which is
+			// what htslib writes. An explicit ".,." is a
+			// missing element per slot and is handled by
+			// the per-slot path below.
 			for i := 0; i < fieldSize; i++ {
-				var b [4]byte
-				binary.LittleEndian.PutUint32(b[:], bcfIntMissingInt32)
-				w.Write(b[:])
+				if i == 0 {
+					writeIntValue(w, int32(intMissingFor(width)), width)
+					continue
+				}
+				writeIntValue(w, int32(intEndOfVectorFor(width)), width)
 			}
 			return nil
 		case "Float":
 			// Per-type MISSING: emit the float32 signaling
-			// NaN 0x7F800001 (T4.24 / line 2333).
+			// NaN 0x7F800001 (T4.24 / line 2333), then
+			// END_OF_VECTOR padding.
 			for i := 0; i < fieldSize; i++ {
+				if i == 0 {
+					var b [4]byte
+					binary.LittleEndian.PutUint32(b[:], bcfFloatMissing)
+					w.Write(b[:])
+					continue
+				}
 				var b [4]byte
-				binary.LittleEndian.PutUint32(b[:], bcfFloatMissing)
+				binary.LittleEndian.PutUint32(b[:], bcfEndOfVectorFloat32)
 				w.Write(b[:])
 			}
 			return nil
@@ -451,6 +621,22 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, ver
 		}
 		return errors.New("unreachable")
 	}
+	if def.ID == "GT" {
+		// GT is an integer allele vector on the wire, encoded
+		// as int8 (htslib's bcf_int8).
+		alleles := v.Ints
+		if len(alleles) == 0 && len(v.Strs) > 0 {
+			alleles = encodeGenotype(v.Strs[0])
+		}
+		for i := 0; i < fieldSize; i++ {
+			if i < len(alleles) {
+				w.WriteByte(byte(alleles[i]))
+			} else {
+				w.WriteByte(bcfEndOfVectorInt8)
+			}
+		}
+		return nil
+	}
 	switch def.Type {
 	case "Integer":
 		if err := checkBcfIntegerRange(fmt.Sprintf("FORMAT/%s", def.ID), int64Slice(v.Ints)); err != nil {
@@ -458,21 +644,23 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, ver
 		}
 		// Pad with END_OF_VECTOR for shorter entries;
 		// emit bcfIntMissingInt32 for per-slot missing.
+		width := intWidthFor32(v.Ints)
+		// Route through variables: these are untyped constants
+		// whose high bit would overflow a constant int32
+		// conversion at compile time.
+		missingU := intMissingFor(width)
+		endU := intEndOfVectorFor(width)
+		missingVal := int32(missingU)
+		endVal := int32(endU)
 		for i := 0; i < fieldSize; i++ {
 			if i < len(v.IntMissing) && v.IntMissing[i] {
-				var b [4]byte
-				binary.LittleEndian.PutUint32(b[:], bcfIntMissingInt32)
-				w.Write(b[:])
+				writeIntValue(w, missingVal, width)
 				continue
 			}
 			if i < len(v.Ints) {
-				var b [4]byte
-				binary.LittleEndian.PutUint32(b[:], uint32(v.Ints[i])) //nolint:gosec // wire-format reinterpret
-				w.Write(b[:])
+				writeIntValue(w, v.Ints[i], width)
 			} else {
-				var b [4]byte
-				binary.LittleEndian.PutUint32(b[:], bcfEndOfVectorInt32)
-				w.Write(b[:])
+				writeIntValue(w, endVal, width)
 			}
 		}
 		return nil
@@ -503,38 +691,20 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, ver
 		w.Write(b[:])
 		return nil
 	case "String":
-		// Strings at the FORMAT level are vectors of
-		// character: each entry is a length-prefixed
-		// string body. We write the sample's strings
-		// and pad missing slots with typeMissing.
-		strType := typeString
-		if version == 2 {
-			for _, s := range v.Strs {
-				if len(s) >= 15 {
-					strType = typeLong
-					break
-				}
-			}
+		// FORMAT strings are also char vectors (spec
+		// §GenotypeEncoding: "a string is stored as a vector
+		// of char"). There is no per-element length prefix;
+		// shorter entries are padded with END_OF_VECTOR bytes.
+		pad := 0
+		for i := range v.Strs {
+			pad += len(v.Strs[i])
 		}
-		// (strType here applies across the per-sample
-		// block, but per BCF 2.2 the type byte is set
-		// once per field — we accept the simple case
-		// where every sample's strings fit.)
-		_ = strType
-		for i := 0; i < fieldSize; i++ {
-			if i < len(v.Strs) {
-				s := v.Strs[i]
-				var lb [4]byte
-				if s == "" {
-					binary.LittleEndian.PutUint32(lb[:], bcfInt32Missing)
-				} else {
-					binary.LittleEndian.PutUint32(lb[:], uint32(len(s))) //nolint:gosec // length fits in uint32
-				}
-				w.Write(lb[:])
-				w.WriteString(s)
-			} else {
-				w.WriteByte(typeMissing)
-			}
+		pad = fieldSize - pad
+		for _, s := range v.Strs {
+			w.WriteString(s)
+		}
+		for i := 0; i < pad; i++ {
+			w.WriteByte(typeMissing)
 		}
 		return nil
 	}

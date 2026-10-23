@@ -1,6 +1,8 @@
 package bcf
 
 import (
+	"bytes"
+	"encoding/binary"
 	"fmt"
 	"strconv"
 )
@@ -24,28 +26,22 @@ const (
 	// width is field-dependent: QUAL uses float64, INFO
 	// fields use float32).
 	typeFloat uint8 = 5
-	// typeString marks a string payload (length-prefixed,
-	// uint32 length). For BCF 2.1 the length is the only
-	// prefix. For BCF 2.2 strings whose length exceeds 14
-	// characters use typeLong (0xF) instead, with a uint32
-	// length prefix.
+	// typeString marks a BCF2 string, which is encoded as a
+	// *vector of chars*: the type descriptor byte carries the
+	// length in its high nibble and there is no separate length
+	// prefix. A 9-character ID is therefore 0x97 followed by the
+	// 9 bytes - NOT 0x07 followed by a uint32 length, which a
+	// conformant reader decodes as size 0 (MISSING).
+	//
+	// Spec §BcfTypeEncoding, tex line 2276: "In BCF2 strings are
+	// type=7 with an appropriate length. Single characters are
+	// represented as strings with length=1."
 	typeString uint8 = 7
-	// typeLong marks a long string (BCF 2.2). The payload
-	// is a uint32 length followed by that many bytes; this
-	// form is required for strings whose length is 15 or
-	// more, where the type 7 + length encoding runs out of
-	// space in the type-byte's high nibble.
-	typeLong uint8 = 0xF
 
 	// bcfFilterMissing is the sentinel value stored in the
 	// FILTER typed array when no filter applies (PASS or
 	// unspecified).
 	bcfFilterMissing uint32 = 0xFFFFFFFF
-
-	// bcfInt32Missing is the sentinel value stored in
-	// length-prefixed string fields when the string is
-	// missing.
-	bcfInt32Missing uint32 = 0xFFFFFFFF
 )
 
 // Record is one BCF alignment record. The shared per-record
@@ -164,3 +160,46 @@ func (v InfoValue) String() string {
 // _ keeps the fmt import used (the parser calls
 // fmt.Errorf in several places).
 var _ = fmt.Errorf
+
+// writeBCFString emits a BCF2 string as a char vector: the type
+// descriptor byte carries the length in its high nibble
+// (spec §BcfTypeEncoding, tex line 2276), followed by the raw
+// bytes with no separate length prefix. Lengths of 15 or more
+// use the overflow form - descriptor nibble 15 followed by a
+// typed Integer holding the true length.
+//
+// This is the single correct place to encode a BCF string. The
+// earlier implementation wrote `0x07` + a uint32 length, which a
+// conformant reader decodes as size 0 (MISSING) followed by
+// garbage; bcftools rejected such records with "Invalid REF/ALT
+// type 9".
+func writeBCFString(w *bytes.Buffer, s string) {
+	n := len(s)
+	if n == 0 {
+		w.WriteByte(typeMissing)
+		return
+	}
+	if n <= 14 {
+		w.WriteByte(byte(n)<<4 | typeString)
+		w.WriteString(s)
+		return
+	}
+	// Overflow: size nibble 15, then a typed Integer length.
+	w.WriteByte(15<<4 | typeString)
+	switch {
+	case n <= 0xFF:
+		w.WriteByte(1<<4 | typeInt8)
+		w.WriteByte(byte(n))
+	case n <= 0xFFFF:
+		w.WriteByte(1<<4 | typeInt16)
+		var b [2]byte
+		binary.LittleEndian.PutUint16(b[:], uint16(n))
+		w.Write(b[:])
+	default:
+		w.WriteByte(1<<4 | typeInt32)
+		var b [4]byte
+		binary.LittleEndian.PutUint32(b[:], uint32(n)) //nolint:gosec // n <= 0xFFFF
+		w.Write(b[:])
+	}
+	w.WriteString(s)
+}

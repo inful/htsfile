@@ -257,6 +257,14 @@ func (d *Decoder) Record() (*Record, error) {
 	if lSeq > 0 {
 		qual = make([]byte, seqLen)
 		copy(qual, rem[off:off+seqLen])
+		// BAM stores raw Phred scores; the Record API exposes
+		// the ASCII "+33" form that SAM uses. 0xFF marks an
+		// unavailable quality and is kept as-is.
+		for i := range qual {
+			if qual[i] != 0xFF {
+				qual[i] += 33
+			}
+		}
 		off += seqLen
 	}
 	// aux: remainder.
