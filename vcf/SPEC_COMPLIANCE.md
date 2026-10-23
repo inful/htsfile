@@ -2377,3 +2377,72 @@ tools are not installed.
 ### Status
 
 Shipped in v0.24.0.
+
+### The remaining items
+
+Three items were left over from the audit of v0.23.1. None of
+them turned out to be a defect in the code, except one small
+one; what they needed was a decision, a fixture and a guard.
+
+#### The spec's gVCF example
+
+The spec's own gVCF example (VCFv4.5 §1.7, tex lines
+1862-1874) has a typo: five of its seven rows separate the
+last two FORMAT values with a semicolon where a colon belongs,
+so `PL;LEN` arrives as the single value `900;14`, which is not
+an Integer. The LEN value never arrives, and the END check
+fails with it, because a reference block's END is POS+LEN-1.
+
+The diagnostics are right and the example is wrong. The
+corrected example is shipped as
+`vcf/testdata/gvcf_example.vcf` and must validate clean; the
+example exactly as printed must produce exactly the nine
+issues its typos cause (five FORMAT values that are not
+Integers, and the four END checks that fail because the LEN
+value never arrived). Both are pinned by
+`vcf/gvcf_example_test.go`.
+
+#### A BCF 2.1 file
+
+htslib 1.24 writes BCF 2.2 only and rejects a 2.1 file
+outright, and no 2.1 file can be produced with the tools
+available here. The spec's list of changes between BCFv2.1 and
+BCFv2.2 (tex lines 2818-2825) is about the header's optional
+IDX field, the END_OF_VECTOR byte and where PASS sits in the
+dictionary - none of which changes the record layout - so a 2.1
+file is a 2.2 file with a different minor-version byte.
+
+We read one: `bcf/bcf21_test.go` patches the minor-version byte
+of a file it builds and reads it back. That test found a small
+defect: the decoder reported the *major* version (always 2)
+rather than the minor one, because it read the wrong byte of the
+magic. The spec fixes magic[3] = major_version and magic[4] =
+minor_version, and htslib writes the literal `BCF\x02\x02`, so
+the two bytes are indistinguishable in a 2.2 file - which is how
+the mistake survived. Fixed in `bcf/parse.go`.
+
+#### The `##dictionary=` pragma
+
+The spec's BCF2 header section mentions a string-dictionary
+pragma (tex line 2100):
+
+> BCF2 supports encoding values in a dictionary of strings. The
+> string map is provided by the keyword
+> `##dictionary=S0,S1,...,SN` as a comma-separate ordered list of
+> strings.
+
+The "Dictionary of strings" section that follows (tex lines
+2103-2143) then describes the *header* dictionary: the position
+of each FILTER / INFO / FORMAT key in the header, which is what
+a BCF2 record's typed integers refer to. The `s0`, `s1` in that
+section's example are a visual guide - the spec says so
+explicitly - not the wire format. That encoding is the one we
+implement (T6.11).
+
+So in VCFv4.5 the pragma has no wire encoding of its own: the
+header dictionary does that job. A header line carrying it is
+still valid, so it must be accepted and preserved rather than
+rejected. It is: the VCF parser takes it, the encoder replays
+it, and it survives a round trip through BCF (htslib's
+`bcftools` keeps it too). Pinned by
+`vcf/dictionary_test.go`.
