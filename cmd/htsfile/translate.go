@@ -269,7 +269,7 @@ func bamToSAMRecord(r *bam.Record) *sam.Record {
 	for i, t := range r.Tags {
 		samTags[i] = sam.Tag{
 			Key:   t.Key,
-			Type:  sam.TagType(t.Type),
+			Type:  bamTagTypeToSAM(t.Type),
 			Value: t.Value,
 		}
 	}
@@ -538,9 +538,11 @@ func vcfToBCFHeader(h *vcf.Header) *bcf.Header {
 	// from h.SampleNames when the input header omitted one.
 	if len(h.SampleNames) > 0 {
 		sb.WriteString("#CHROM\tPOS\tID\tREF\tALT\tQUAL\tFILTER\tINFO")
-		if len(h.Formats) > 0 {
-			sb.WriteString("\tFORMAT")
-		}
+		// The FORMAT column is always present when there are
+		// samples: the sample names start in column 10, so
+		// omitting it would shift them into the INFO column
+		// and the BCF header would declare zero samples.
+		sb.WriteString("\tFORMAT")
 		for _, sn := range h.SampleNames {
 			sb.WriteByte('\t')
 			sb.WriteString(sn)
@@ -883,11 +885,13 @@ func vcfToBCFRecord(r *vcf.Record, bh *bcf.Header) *bcf.Record {
 	info := make(map[string]bcf.InfoValue, len(r.Info))
 	for k, v := range r.Info { //nolint:gocritic // rangeValCopy: InfoValue is a value type by design
 		bv := bcf.InfoValue{
-			Type:   v.Type.String(),
-			Ints:   append([]int64(nil), v.Ints...),
-			Floats: append([]float64(nil), v.Floats...),
-			Strs:   append([]string(nil), v.Strs...),
-			Flag:   v.Flag,
+			Type:         v.Type.String(),
+			Ints:         append([]int64(nil), v.Ints...),
+			Floats:       append([]float64(nil), v.Floats...),
+			Strs:         append([]string(nil), v.Strs...),
+			Flag:         v.Flag,
+			IntMissing:   append([]bool(nil), v.IntMissing...),
+			FloatMissing: append([]bool(nil), v.FloatMissing...),
 		}
 		// Character fields carry a single byte in vcf.InfoValue.Chars.
 		if len(v.Chars) > 0 {
@@ -1007,11 +1011,19 @@ func vcfFieldToBCF(fv *vcf.FieldValue, key string, bh *bcf.Header) bcf.SampleVal
 			typeName = "Character"
 		case vcf.TypeString:
 			typeName = "String"
+		default:
+			// An undeclared key: the value is kept as raw
+			// text, so carry it over as a string.
+			typeName = "String"
 		}
 	}
 	sv := bcf.SampleValue{
 		Type:    typeName,
 		Missing: fv.Missing,
+	}
+	if len(fv.Strs) == 0 && len(fv.Raw) > 0 {
+		// An undeclared key keeps its value in Raw.
+		sv.Strs = append([]string(nil), fv.Raw...)
 	}
 	if len(fv.Ints) > 0 {
 		sv.Ints = make([]int32, len(fv.Ints))
@@ -1059,7 +1071,7 @@ func bcfToVCFRecord(r *bcf.Record, vh *vcf.Header) *vcf.Record {
 		idList = strings.Split(r.ID, ",")
 	}
 	info := make(map[string]vcf.InfoValue, len(r.Info))
-	for k, v := range r.Info {
+	for k, v := range r.Info { //nolint:gocritic // rangeValCopy: InfoValue is a value type by design
 		t, err := vcf.ParseFieldType(v.Type)
 		if err != nil {
 			t = vcf.TypeUnknown
@@ -1069,6 +1081,8 @@ func bcfToVCFRecord(r *bcf.Record, vh *vcf.Header) *vcf.Record {
 		vv.Ints = append([]int64(nil), v.Ints...)
 		vv.Floats = append([]float64(nil), v.Floats...)
 		vv.Strs = append([]string(nil), v.Strs...)
+		vv.IntMissing = append([]bool(nil), v.IntMissing...)
+		vv.FloatMissing = append([]bool(nil), v.FloatMissing...)
 		// Character (single character) is stored as a 1-byte
 		// Chars slice on the VCF side; treat any TypeChar
 		// value with Str as such.
@@ -1259,13 +1273,26 @@ func runVCFToBCF(src io.Reader, dst io.Writer) error {
 	extraText := strings.Builder{}
 	for _, rec := range records {
 		for _, k := range rec.Format {
-			if !lookupHeaderKey(bh.FormatsOrder, k) {
+			if lookupHeaderKey(bh.FormatsOrder, k) {
+				continue
+			}
+			{
 				bh.FormatsOrder = append(bh.FormatsOrder, k)
 				if bh.Formats == nil {
 					bh.Formats = map[string]*bcf.FormatDef{}
 				}
-				bh.Formats[k] = &bcf.FormatDef{ID: k, Number: "1", Type: "Integer"}
-				extraText.WriteString("##FORMAT=<ID=" + k + ",Number=1,Type=Integer>\n")
+				// A reserved key keeps the spec's own Number and
+				// Type; anything else is a string, which is how
+				// htslib treats a key the header does not
+				// declare. Registering an undeclared key as an
+				// Integer silently dropped a GT value like
+				// "0|0".
+				number, ftype := ".", "String"
+				if n, t, ok := vcf.ReservedFormatDef(k); ok {
+					number, ftype = n, t.String()
+				}
+				bh.Formats[k] = &bcf.FormatDef{ID: k, Number: number, Type: ftype}
+				extraText.WriteString("##FORMAT=<ID=" + k + ",Number=" + number + ",Type=" + ftype + ">\n")
 			}
 		}
 		for k := range rec.Info {
@@ -1281,7 +1308,17 @@ func runVCFToBCF(src io.Reader, dst io.Writer) error {
 	}
 	// Splice the extra ##FORMAT / ##INFO lines into bh.Raw
 	// before the sample line so the BCF file is complete.
-	bh.Raw += extraText.String()
+	// The synthesised ##FORMAT / ##INFO lines must come
+	// *before* the #CHROM line: the #CHROM line ends the
+	// header, and htslib rejects a header that continues
+	// after it ("Invalid FORMAT id 1").
+	if extra := extraText.String(); extra != "" {
+		if i := strings.Index(bh.Raw, "#CHROM\t"); i >= 0 {
+			bh.Raw = bh.Raw[:i] + extra + bh.Raw[i:]
+		} else {
+			bh.Raw += extra
+		}
+	}
 	if err := enc.WriteHeader(bh); err != nil {
 		return fmt.Errorf("write header: %w", err)
 	}
@@ -1444,4 +1481,22 @@ func bamNextRefName(r *bam.Record) string {
 		return "*"
 	}
 	return r.NameRNext
+}
+
+// bamTagTypeToSAM maps a BAM aux type byte to the SAM tag
+// type letter.
+//
+// BAM stores an integer aux value with a width-specific subtype
+// byte (c, C, s, S, i, I); SAM has a single integer type, "i".
+// htslib always writes "i" on the SAM side, and its SAM parser
+// treats any other integer subtype letter as the character type
+// - so emitting "C" would silently turn the integer 1 into the
+// character '1'.
+func bamTagTypeToSAM(t bam.TagType) sam.TagType {
+	switch t {
+	case bam.Tagc, bam.TagC, bam.Tags, bam.TagS, bam.Tagi, bam.TagI:
+		return sam.Tagi
+	default:
+		return sam.TagType(t)
+	}
 }

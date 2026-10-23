@@ -7,6 +7,77 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.1] — 2026-10-23
+
+A second pass with the external oracle, prompted by asking
+whether v0.23.0 was ready for release. The question exposed a
+gap in the verification itself: v0.23.0 proved that htslib can
+read *our* files, but never that we can read *htslib's*. It
+also only exercised one input file - the spec's own worked
+example - which does not reach the String, Character, Float or
+variable-cardinality code paths.
+
+Eight more defects, including one that silently corrupted data:
+**`DBL=.,.` was written to the BCF as `DBL=0,0`.** Every test
+in the suite passed while that happened, because the writer and
+the reader agreed with each other.
+
+See [vcf/SPEC_COMPLIANCE.md](vcf/SPEC_COMPLIANCE.md) Phase 6
+(`T6.21` - `T6.28`).
+
+### Added
+
+- `vcf/testdata/type_coverage.vcf` and
+  `cmd/htsfile/type_coverage_test.go`: a fixture covering the
+  INFO and FORMAT types the spec's example never reaches -
+  String (single and multi-element), Character, Float,
+  Number=R / G / . variable cardinality, a String longer than
+  the 15-byte descriptor nibble, and a missing value in every
+  position - pinned to the bytes `bcftools view -Ob` produces.
+- `vcf.ReservedFormatDef`: the spec's own Number and Type for
+  a reserved FORMAT key.
+
+### Fixed
+
+- A missing INFO value was written as zero instead of the
+  per-type MISSING sentinel (spec line 2304). `DBL=.,.` became
+  `DBL=0,0`.
+- An empty INFO String or Character was written as typeMissing
+  instead of a zero-length char vector (`0x07`).
+- A FORMAT field whose samples were all missing collapsed to
+  the whole-field typeMissing form; htslib writes a per-sample
+  value instead.
+- A multi-element FORMAT String dropped the commas between its
+  elements, so the element boundaries were lost.
+- A FORMAT Character was one byte per sample; htslib stores the
+  character plus a NUL.
+- A BAM integer tag became the invalid SAM type `C` when
+  converted back to SAM. htslib reads `NM:C:1` as the character
+  `1`, so the value silently changed from the integer 1 to the
+  character '1'.
+- A VCF with samples but no `##FORMAT` declarations was
+  rejected: the BCF header's `#CHROM` line dropped the FORMAT
+  column, the synthesised `##FORMAT` lines were written after
+  the `#CHROM` line, and an undeclared FORMAT key was
+  registered as an Integer, which silently dropped a `GT` value
+  like `0|0`.
+- The gVCF reference-block END rule: the validator now accepts
+  both `POS+LEN-1` and `POS+LEN`, because the spec's own §1.7
+  example uses both.
+
+### Verified
+
+- Our BCF records are byte-identical to `bcftools view -Ob` for
+  both the spec's worked example (5/5) and the type-coverage
+  fixture (2/2).
+- `bcftools view / query / index / sort` and `htsfile` read our
+  BCF with zero output on stderr, and **our reader reads
+  bcftools' BCF** with the same result.
+- `samtools view / quickcheck / idxstats` read our BAM cleanly,
+  and **our reader reads samtools' BAM** with the same result.
+- A 20,000-record VCF (multi-block BGZF) round-trips through
+  BCF with identical data in both directions.
+
 ## [0.23.0] — 2026-10-23
 
 The BCF writer now produces files that htslib reads, and the

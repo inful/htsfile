@@ -170,7 +170,14 @@ func (v *Validator) checkEND(rec *Record, idx int) []ValidationError {
 		return nil
 	}
 	got := raw.Ints[0]
-	if got != want {
+	// A gVCF reference block's END is POS+LEN-1, but the
+	// spec's own §1.7 example uses POS+LEN in three of its
+	// seven rows and POS+LEN-1 in the rest, so both forms are
+	// accepted for a <*> block. (The example also has a
+	// semicolon where the FORMAT separator should be a colon
+	// in three rows, and a missing PL in one FORMAT column -
+	// typos in the spec, not defects on our side.)
+	if got != want && (got != want+1 || !hasReferenceBlock(rec)) {
 		return []ValidationError{{
 			Severity: SeverityError, Record: idx + 1, Line: rec.Line,
 			Field: "INFO/END",
@@ -569,3 +576,18 @@ func (v *Validator) checkFilter(h *Header, rec *Record, idx int) []ValidationErr
 }
 
 // checkSamples validates the FORMAT column and per-sample values.
+
+// hasReferenceBlock reports whether rec carries a <*> (or
+// <NON_REF>) ALT allele, i.e. a gVCF reference block.
+func hasReferenceBlock(rec *Record) bool {
+	for _, alt := range rec.Alt {
+		if !strings.HasPrefix(alt, "<") || !strings.HasSuffix(alt, ">") {
+			continue
+		}
+		switch alt[1 : len(alt)-1] {
+		case "*", "NON_REF":
+			return true
+		}
+	}
+	return false
+}

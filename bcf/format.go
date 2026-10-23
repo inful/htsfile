@@ -3,7 +3,6 @@ package bcf
 import (
 	"bytes"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"math"
 	"strings"
@@ -311,34 +310,32 @@ func (d *Decoder) readFieldForAllSamples(def *FormatDef, nSamples int) ([]Sample
 			out[s].Missing = missing && size > 0
 		}
 	case "Character":
-		// Character is a single byte per sample, with
-		// typeMissing used to indicate absence.
+		// A Character FORMAT value is the raw character, NUL
+		// padded to the field size.
 		for s := 0; s < nSamples; s++ {
-			var b [1]byte
-			if err := d.readPending(b[:]); err != nil {
+			buf := make([]byte, size)
+			if err := d.readPending(buf); err != nil {
 				return nil, fmt.Errorf("read char: %w", err)
 			}
-			out[s] = SampleValue{Type: "Character", Str: string(b[:])}
+			text := strings.TrimRight(string(buf), "\x00")
+			out[s] = SampleValue{Type: "Character", Str: text}
 		}
 	case "String":
-		// FORMAT strings are char vectors: the descriptor's
-		// size nibble gives the per-sample character count and
-		// the bytes follow directly (no length prefix). Shorter
-		// samples are padded with END_OF_VECTOR bytes, which we
-		// drop.
+		// A FORMAT string is the raw field text - the
+		// comma-joined elements - NUL padded to the field
+		// size. The commas are part of the text, so the
+		// element boundaries survive the round trip.
 		for s := 0; s < nSamples; s++ {
 			buf := make([]byte, size)
 			if err := d.readPending(buf); err != nil {
 				return nil, fmt.Errorf("read string body: %w", err)
 			}
-			body := make([]byte, 0, size)
-			for _, c := range buf {
-				if c == typeMissing {
-					continue
-				}
-				body = append(body, c)
+			text := strings.TrimRight(string(buf), "\x00")
+			var strs []string
+			if text != "" {
+				strs = strings.Split(text, ",")
 			}
-			out[s] = SampleValue{Type: "String", Strs: []string{string(body)}}
+			out[s] = SampleValue{Type: "String", Strs: strs}
 		}
 	default:
 		return nil, fmt.Errorf("unsupported FORMAT type %q", def.Type)
@@ -374,23 +371,30 @@ func int64Slice(xs []int32) []int64 {
 // writeFormatField emits one FORMAT field's fmt_type descriptor
 // followed by its fmt_values (one value per sample). The
 // fmt_key that precedes it is written by encodeIndivid.
-func writeFormatField(w *bytes.Buffer, rec *Record, hdr *Header, version uint8, keyIdx uint16) error {
+func writeFormatField(w *bytes.Buffer, rec *Record, hdr *Header, version uint8, keyIdx uint16, pos int) error {
 	nSamples := len(rec.Samples)
 	def, ok := hdr.FormatAt(int(keyIdx))
 	if !ok {
 		return fmt.Errorf("bcf: FORMAT key index %d not in header", keyIdx)
 	}
-	// All-missing fields collapse to typeMissing.
-	if nSamples > 0 && allSamplesMissing(rec, keyIdx) {
-		w.WriteByte(typeMissing)
-		return nil
-	}
-
 	// Vector size = max cardinality across samples
 	// for this field. Atomic fields (Number=1) →
 	// size 1. Variable-length fields (Number=.,
 	// A, R, G) → max across samples.
 	fieldSize, hasValues := fieldMaxSize(def, rec, keyIdx)
+	if def.Type == "String" || def.Type == "Character" {
+		// htslib leaves room for a NUL terminator in every
+		// FORMAT field except the first one in the record
+		// (vcf.c vcf_parse_format_max3 counts the field
+		// length from the preceding delimiter, so every
+		// field but the first is one byte longer). This is
+		// an htslib implementation detail rather than a
+		// spec requirement, but matching it keeps our
+		// output byte-identical to the reference.
+		if pos > 0 {
+			fieldSize++
+		}
+	}
 	// Emit the type byte (size in high nibble). We
 	// always emit at least size 0 even when nothing
 	// is present so the decoder can read past the
@@ -428,18 +432,6 @@ func writeFormatField(w *bytes.Buffer, rec *Record, hdr *Header, version uint8, 
 		}
 	}
 	return nil
-}
-
-// allSamplesMissing reports whether every sample in the
-// record is missing for the given FORMAT key.
-func allSamplesMissing(rec *Record, keyIdx uint16) bool {
-	for s := range rec.Samples {
-		v, present := rec.Samples[s].Fields[keyIdx]
-		if !present || !v.Missing {
-			return false
-		}
-	}
-	return true
 }
 
 // fieldMaxSize returns the maximum cardinality observed
@@ -490,6 +482,14 @@ func fieldMaxSize(def *FormatDef, rec *Record, keyIdx uint16) (int, bool) {
 	for s := range rec.Samples {
 		v, present := rec.Samples[s].Fields[keyIdx]
 		if !present || v.Missing {
+			// htslib still writes a slot for a sample with no
+			// value: the per-type MISSING sentinel for
+			// numbers, the literal "." text for strings and
+			// characters.
+			if !has {
+				fieldMax = 1
+				has = true
+			}
 			continue
 		}
 		has = true
@@ -508,9 +508,15 @@ func fieldMaxSize(def *FormatDef, rec *Record, keyIdx uint16) (int, bool) {
 		case def.Type == "Float":
 			n = len(v.Floats)
 		case def.Type == "Character":
-			n = 1
+			n = len(v.Str)
+			if n == 0 {
+				n = 1
+			}
 		case def.Type == "String":
 			n = len(strings.Join(v.Strs, ","))
+			if n == 0 {
+				n = 1
+			}
 		}
 		if n > fieldMax {
 			fieldMax = n
@@ -610,16 +616,10 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, _ u
 				w.Write(b[:])
 			}
 			return nil
-		case "Character":
-			w.WriteByte(typeMissing)
-			return nil
-		case "String":
-			for i := 0; i < fieldSize; i++ {
-				w.WriteByte(typeMissing)
-			}
-			return nil
 		}
-		return errors.New("unreachable")
+		// Character and String fall through: htslib writes the
+		// literal "." text for a sample with no value, not a
+		// MISSING sentinel.
 	}
 	if def.ID == "GT" {
 		// GT is an integer allele vector on the wire, encoded
@@ -684,29 +684,39 @@ func writeFormatSampleValue(w *bytes.Buffer, v *SampleValue, def *FormatDef, _ u
 		}
 		return nil
 	case "Character":
-		var b [1]byte
-		if v.Str != "" {
-			b[0] = v.Str[0]
+		// A Character FORMAT value is the raw character, NUL
+		// padded to the field size. A sample with no value
+		// gets the literal "." text, as htslib writes.
+		text := "."
+		if present && !v.Missing && v.Str != "" {
+			text = v.Str[:1]
 		}
-		w.Write(b[:])
+		w.WriteString(text)
+		writeNulPad(w, fieldSize-len(text))
 		return nil
 	case "String":
-		// FORMAT strings are also char vectors (spec
-		// §GenotypeEncoding: "a string is stored as a vector
-		// of char"). There is no per-element length prefix;
-		// shorter entries are padded with END_OF_VECTOR bytes.
-		pad := 0
-		for i := range v.Strs {
-			pad += len(v.Strs[i])
+		// A FORMAT string is the raw field text - the
+		// comma-joined elements - NUL padded to the field
+		// size. htslib copies the text verbatim, commas
+		// included, so the element boundaries survive. A
+		// sample with no value gets the literal ".".
+		text := "."
+		if present && !v.Missing {
+			text = strings.Join(v.Strs, ",")
+			if text == "" {
+				text = "."
+			}
 		}
-		pad = fieldSize - pad
-		for _, s := range v.Strs {
-			w.WriteString(s)
-		}
-		for i := 0; i < pad; i++ {
-			w.WriteByte(typeMissing)
-		}
+		w.WriteString(text)
+		writeNulPad(w, fieldSize-len(text))
 		return nil
 	}
 	return fmt.Errorf("bcf: unknown FORMAT type %q", def.Type)
+}
+
+// writeNulPad writes n NUL bytes.
+func writeNulPad(w *bytes.Buffer, n int) {
+	for i := 0; i < n; i++ {
+		w.WriteByte(0)
+	}
 }

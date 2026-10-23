@@ -2082,6 +2082,141 @@ After the fixes above:
   BAM exactly.
 - `sam -> bam -> sam` is byte-identical to the input SAM.
 
+### The second oracle pass
+
+The v0.23.0 release was verified against one input file: the
+spec's own worked example. Asking "would you consider this ready
+for release?" prompted the obvious question that had not been
+asked - **can we read htslib's files?** - and a second pass that
+built a fixture covering the types the spec example never
+reaches.
+
+That pass found **8 more defects**, including one that silently
+corrupted data:
+
+> `DBL=.,.` was written to the BCF as `DBL=0,0`.
+
+Every test in the suite passed while that happened, because the
+writer and the reader agreed with each other: the reader read
+the zero back and the round trip looked fine.
+
+### T6.21 - a missing INFO value was written as zero
+
+**Spec (§BcfTypeEncoding, tex line 2304):** the values
+`0x80000000`, `0x8000` and `0x80` are the per-type MISSING
+sentinels for 32-, 16- and 8-bit integers.
+
+**Defect.** A missing INFO element was written as the number 0.
+htslib writes the per-type sentinel. `DBL=.,.` became
+`DBL=0,0`; `VR=` became `VR=0`.
+
+**Fix.** `bcf.InfoValue` gained `IntMissing` / `FloatMissing`
+parallel slices (mirroring the `vcf` side added in v0.22.0), the
+writer emits the sentinel, and the reader recognises it. An
+INFO key with an empty value list is one missing element, which
+is what htslib writes.
+
+**Status:** shipped in v0.23.1
+
+### T6.22 - a missing or empty INFO String was written as typeMissing
+
+**Defect.** An empty String INFO was written as `0x00`
+(typeMissing). htslib writes `0x07` - a zero-length char
+vector, the same form the spec gives for a missing ID.
+
+**Fix.** The empty char vector.
+
+**Status:** shipped in v0.23.1
+
+### T6.23 - an empty Character INFO was written as typeMissing
+
+**Defect.** Same as T6.22, for the Character type.
+
+**Fix.** The empty char vector.
+
+**Status:** shipped in v0.23.1
+
+### T6.24 - a FORMAT field collapsed to the whole-field typeMissing form
+
+**Defect.** When every sample of a FORMAT field was missing, we
+wrote a single `0x00` for the whole field. htslib always writes
+the field with a per-sample value: the per-type MISSING
+sentinel for numbers, and the literal `.` text for strings and
+characters.
+
+**Fix.** The per-sample model.
+
+**Status:** shipped in v0.23.1
+
+### T6.25 - a FORMAT String dropped the commas between its elements
+
+**Defect.** A multi-element FORMAT String was written as
+`aabb` - the element boundaries were lost, so the value could
+not be read back. htslib copies the field text verbatim,
+commas included (`aa,bb`).
+
+**Fix.** The raw field text, NUL padded to the field size.
+
+**Status:** shipped in v0.23.1
+
+### T6.26 - a FORMAT Character was one byte per sample
+
+**Defect.** htslib stores a FORMAT Character as the character
+plus a NUL, so two bytes per sample and a size nibble of 2. We
+wrote one byte.
+
+**Fix.** The character plus NUL padding.
+
+**Status:** shipped in v0.23.1
+
+### T6.27 - a BAM integer tag became an invalid SAM type
+
+**Defect.** BAM stores an integer aux value with a
+width-specific subtype byte (c, C, s, S, i, I). Converting a BAM
+back to SAM, we emitted the subtype letter - `NM:C:1`. SAM has no
+`C` type: the valid set is A, i, f, Z, H, B. htslib reads
+`NM:C:1` as the *character* `1`, so the value silently changed
+from the integer 1 to the character '1'.
+
+**Fix.** All six integer subtypes map to the SAM letter `i`,
+which is what htslib writes.
+
+**Status:** shipped in v0.23.1
+
+### T6.28 - a VCF with samples but no `##FORMAT` declarations was rejected
+
+**Defect.** Three separate problems: the BCF header's `#CHROM`
+line omitted the FORMAT column when the header declared no
+FORMAT keys, so the sample names landed in the wrong column and
+the BCF header declared zero samples; the synthesised
+`##FORMAT` lines were appended *after* the `#CHROM` line, which
+htslib rejects; and an undeclared FORMAT key was registered as
+`Number=1,Type=Integer`, which silently dropped a `GT` value
+like `0|0`.
+
+htslib accepts such a file - a VCF with samples must declare
+GT, but htslib tolerates its absence.
+
+**Fix.** The FORMAT column is always written when there are
+samples; the synthesised header lines go before the `#CHROM`
+line; an undeclared key is registered as a String (htslib's
+rule), and a reserved key keeps the spec's own Number and Type.
+
+**Status:** shipped in v0.23.1
+
+### The gVCF END rule
+
+The spec's own gVCF example (§1.7, tex lines 1878-1886)
+triggered five diagnostics from `check --strict`. Two of them
+are typos in the spec's example - a semicolon where the FORMAT
+separator should be a colon in three rows, and a missing `PL`
+in one FORMAT column - and the rest were our END rule.
+
+The rule is that a gVCF reference block's END is `POS+LEN-1`.
+The spec's example uses `POS+LEN` in three of its seven rows and
+`POS+LEN-1` in the rest, so the validator now accepts either
+form for a `<*>` block (`vcf/validate_record.go`, `checkEND`).
+
 ### The guard
 
 `bcf/spec_wire_test.go` holds the reference bytes as literal
@@ -2093,3 +2228,12 @@ The guard is mutation-tested: each of the six defects above
 that changes the record layout (T6.3, T6.4, T6.9, T6.10 and
 the two halves of T6.11) was reintroduced and the guard
 failed for every one of them.
+
+`cmd/htsfile/type_coverage_test.go` pins the type-coverage
+fixture to the bytes `bcftools view -Ob` produces for it, so
+T6.21 - T6.26 cannot regress.
+
+`vcf/testdata/type_coverage.vcf` exercises String (single and
+multi-element), Character, Float, Number=R / G / . variable
+cardinality, a String longer than the 15-byte descriptor
+nibble, and a missing value in every position.

@@ -349,13 +349,13 @@ func encodeIndivid(r *Record, hdr *Header, version uint8) ([]byte, error) {
 	// An earlier layout wrote every fmt_key first and then
 	// every fmt_type/fmt_values pair. htslib rejected that
 	// with "individuals section malformed or too short".
-	for _, keyIdx := range r.Format {
+	for pos, keyIdx := range r.Format {
 		name := ""
 		if hdr != nil && int(keyIdx) < len(hdr.FormatsOrder) {
 			name = hdr.FormatsOrder[keyIdx]
 		}
 		writeTypedInt(&buf, int32(hdr.IDXFor(name)))
-		if err := writeFormatField(&buf, r, hdr, version, keyIdx); err != nil {
+		if err := writeFormatField(&buf, r, hdr, version, keyIdx, pos); err != nil {
 			return nil, err
 		}
 	}
@@ -505,32 +505,55 @@ func writeTypedInfoValue(w *bytes.Buffer, val *InfoValue) error {
 			w.WriteByte(typeMissing)
 		}
 	case "Integer":
-		count := len(val.Ints)
+		ints, missing := val.Ints, val.IntMissing
+		if len(ints) == 0 {
+			// An INFO key with an empty value list is a single
+			// missing element, which is what htslib writes
+			// (`bcftools view -Ob` on "VR=" gives "11 06 11 80").
+			ints = []int64{0}
+			missing = []bool{true}
+		}
+		count := len(ints)
 		size, overflow := pickBcfSize(count)
-		if err := checkBcfIntegerRange("INFO", val.Ints); err != nil {
+		if err := checkBcfIntegerRange("INFO", ints); err != nil {
 			return err
 		}
-		width := intWidthFor(val.Ints)
+		width := intWidthFor(ints)
 		w.WriteByte(typeByteSize(uint8(size), width))
 		if overflow {
 			// Typed Integer overflow: type byte + value.
 			w.WriteByte(typeByteAtomic(typeInt8))
 			w.WriteByte(byte(count))
 		}
-		for _, n := range val.Ints {
+		for i, n := range ints {
+			if i < len(missing) && missing[i] {
+				writeIntValue(w, int32(intMissingFor(width)), width)
+				continue
+			}
 			writeIntValue(w, int32(n), width)
 		}
 	case "Float":
-		count := len(val.Floats)
+		floats, missing := val.Floats, val.FloatMissing
+		if len(floats) == 0 {
+			floats = []float64{0}
+			missing = []bool{true}
+		}
+		count := len(floats)
 		size, overflow := pickBcfSize(count)
 		w.WriteByte(typeByteSize(uint8(size), typeFloat))
 		if overflow {
 			w.WriteByte(typeByteAtomic(typeInt8))
 			w.WriteByte(byte(count))
 		}
-		for _, f := range val.Floats {
+		for i, f := range floats {
 			var b [4]byte
-			binary.LittleEndian.PutUint32(b[:], math.Float32bits(float32(f)))
+			if i < len(missing) && missing[i] {
+				// Per-type MISSING: the float32 signaling NaN
+				// 0x7F800001 (T4.24 / line 2333).
+				binary.LittleEndian.PutUint32(b[:], bcfFloatMissing)
+			} else {
+				binary.LittleEndian.PutUint32(b[:], math.Float32bits(float32(f)))
+			}
 			w.Write(b[:])
 		}
 	case "String":
@@ -543,7 +566,10 @@ func writeTypedInfoValue(w *bytes.Buffer, val *InfoValue) error {
 		// f7 11 10 "alpha,beta,gamma".
 		run := strings.Join(val.Strs, ",")
 		if run == "" {
-			w.WriteByte(typeMissing)
+			// An absent or empty String is a zero-length char
+			// vector (0x07), the same form as a missing ID
+			// (spec line 2196) - not typeMissing.
+			w.WriteByte(typeString)
 			return nil
 		}
 		size, overflow := pickBcfSize(len(run))

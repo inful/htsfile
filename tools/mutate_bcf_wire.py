@@ -45,7 +45,7 @@ MUTATIONS = [
         "all fmt_keys written first instead of one triplet per field",
         "bcf/write.go",
         "\t\twriteTypedInt(&buf, int32(hdr.IDXFor(name)))\n"
-        "\t\tif err := writeFormatField(&buf, r, hdr, version, keyIdx); err != nil {\n"
+        "\t\tif err := writeFormatField(&buf, r, hdr, version, keyIdx, pos); err != nil {\n"
         "\t\t\treturn nil, err\n\t\t}\n\t}",
         "\t\t_ = name\n"
         "\t\twriteTypedInt(&buf, int32(hdr.IDXFor(name)))\n\t}\n"

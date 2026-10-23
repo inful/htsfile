@@ -1,0 +1,17 @@
+##fileformat=VCFv4.5
+##contig=<ID=20,length=100000>
+##INFO=<ID=STR,Number=1,Type=String,Description="s">
+##INFO=<ID=STRM,Number=.,Type=String,Description="m">
+##INFO=<ID=CH,Number=1,Type=Character,Description="c">
+##INFO=<ID=LONGSTR,Number=1,Type=String,Description="long">
+##INFO=<ID=DBL,Number=2,Type=Float,Description="f">
+##INFO=<ID=VR,Number=R,Type=Integer,Description="r">
+##INFO=<ID=VG,Number=G,Type=Integer,Description="g">
+##INFO=<ID=VALL,Number=.,Type=Integer,Description="v">
+##FORMAT=<ID=FS,Number=1,Type=Float,Description="ff">
+##FORMAT=<ID=FC,Number=1,Type=Character,Description="cc">
+##FORMAT=<ID=FSTR,Number=2,Type=String,Description="fs">
+##FORMAT=<ID=FL,Number=2,Type=Integer,Description="fi">
+#CHROM	POS	ID	REF	ALT	QUAL	FILTER	INFO	FORMAT	S1	S2
+20	100	.	G	A	30	PASS	STR=hello;STRM=a,b,c;CH=x;LONGSTR=abcdefghijklmnopqrstuvwxyz0123456789;DBL=1.5,2.5;VR=1,2;VG=1,2,3;VALL=7,8,9	FS:FC:FSTR:FL	1.5:x:aa,bb:1,2	2.5:y:cc,dd:3,4
+20	200	.	G	<A>,<D>	30	PASS	STR=;STRM=;CH=;LONGSTR=x;DBL=.,.;VR=;VG=;VALL=	FS:FC:FSTR:FL	.:.:.:.,.	.:.:.:.,.

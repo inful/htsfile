@@ -154,6 +154,20 @@ func IsReservedFormatKey(key string) bool {
 	return ok
 }
 
+// ReservedFormatDef returns the reserved Number and Type of a
+// v4.5-reserved FORMAT key, and whether the key is reserved.
+// It lets a consumer that has to synthesise a header
+// declaration (the BCF writer, which must declare every key a
+// record uses) use the spec's own definitions instead of
+// guessing.
+func ReservedFormatDef(key string) (number string, fieldType FieldType, ok bool) {
+	r, ok := reservedFormatKeys[key]
+	if !ok {
+		return "", TypeUnknown, false
+	}
+	return r.Number, r.Type, true
+}
+
 // MFamily returns the family prefix for a v4.5 base-modification
 // FORMAT key: "M" for the fraction field, "DPM" for the
 // total-read-depth field, "ADM" for the modified-read-depth

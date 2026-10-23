@@ -607,37 +607,44 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 	switch def.Type {
 	case "Integer":
 		v.Ints = make([]int64, count)
-		switch typeCode {
-		case typeInt8:
-			for i := 0; i < count; i++ {
+		v.IntMissing = make([]bool, count)
+		missingSentinel := intMissingFor(typeCode)
+		for i := 0; i < count; i++ {
+			var raw uint32
+			switch typeCode {
+			case typeInt8:
 				b, err := d.readByte()
 				if err != nil {
 					return InfoValue{}, err
 				}
+				raw = uint32(b)
 				v.Ints[i] = int64(int8(b))
-			}
-		case typeInt16:
-			for i := 0; i < count; i++ {
+			case typeInt16:
 				var x uint16
 				if err := d.readLe(&x); err != nil {
 					return InfoValue{}, err
 				}
+				raw = uint32(x)
 				v.Ints[i] = int64(int16(x))
-			}
-		case typeInt32:
-			for i := 0; i < count; i++ {
+			case typeInt32:
 				var x uint32
 				if err := d.readLe(&x); err != nil {
 					return InfoValue{}, err
 				}
+				raw = x
 				v.Ints[i] = int64(int32(x))
+			default:
+				return InfoValue{}, &ParseError{Field: "INFO",
+					Msg: fmt.Sprintf("Integer field has type byte %d", t)}
 			}
-		default:
-			return InfoValue{}, &ParseError{Field: "INFO",
-				Msg: fmt.Sprintf("Integer field has type byte %d", t)}
+			if raw&intWidthMask(typeCode) == missingSentinel {
+				v.IntMissing[i] = true
+				v.Ints[i] = 0
+			}
 		}
 	case "Float":
 		v.Floats = make([]float64, count)
+		v.FloatMissing = make([]bool, count)
 		if typeCode != typeFloat {
 			return InfoValue{}, &ParseError{Field: "INFO",
 				Msg: fmt.Sprintf("Float field has type byte %d", t)}
@@ -646,6 +653,11 @@ func (d *Decoder) readTypedInfoValue(def *InfoDef) (InfoValue, error) {
 			var bits uint32
 			if err := d.readLe(&bits); err != nil {
 				return InfoValue{}, err
+			}
+			if bits == bcfFloatMissing {
+				v.FloatMissing[i] = true
+				v.Floats[i] = 0
+				continue
 			}
 			v.Floats[i] = float64(math.Float32frombits(bits))
 		}

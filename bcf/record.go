@@ -122,6 +122,17 @@ type InfoValue struct {
 	Strs   []string // for String type (one per Number element)
 	Str    string   // for Character type (single value)
 	Flag   bool     // true when Type == "Flag" and the field is present
+
+	// IntMissing parallels Ints slot-by-slot: IntMissing[i] is
+	// true when the slot holds a missing value rather than the
+	// number in Ints[i]. BCF stores a missing element with the
+	// per-type MISSING sentinel (0x80, 0x8000, 0x80000000),
+	// not as a zero - writing zero would silently turn "."
+	// into 0.
+	IntMissing []bool
+	// FloatMissing parallels Floats slot-by-slot, the same way.
+	// The sentinel is the float32 signaling NaN 0x7F800001.
+	FloatMissing []bool
 }
 
 // String returns a SAM/VCF-style textual representation of
@@ -176,7 +187,10 @@ var _ = fmt.Errorf
 func writeBCFString(w *bytes.Buffer, s string) {
 	n := len(s)
 	if n == 0 {
-		w.WriteByte(typeMissing)
+		// A zero-length char vector (0x07). This is also the
+		// form the spec gives for a missing ID (line 2196);
+		// htslib writes it for an empty Character INFO too.
+		w.WriteByte(typeString)
 		return
 	}
 	if n <= 14 {
