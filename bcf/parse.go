@@ -26,9 +26,10 @@ import (
 // only BCFv2.2 is supported"). Verified against
 // `bcftools view -Ob` output.
 //
-// The spec (VCFv4.5/BCFv2.2, tex line 2086) fixes
-// major=2, minor=2; htslib writes minor at byte 3 and
-// major at byte 4, so a 2.2 file is BCF\x02\x02 either way.
+// The spec (VCFv4.5/BCFv2.2, tex lines 2086-2091) fixes
+// major=2, minor=2. htslib writes the literal "BCF\x02\x02",
+// so the two version bytes are indistinguishable in a 2.2 file;
+// the spec's order is the one used here.
 var Magic = [5]byte{'B', 'C', 'F', 0x02, 0x02}
 
 // magic21 is the legacy BCF 2.1 signature. The decoder
@@ -127,11 +128,9 @@ func (d *Decoder) Header() (*Header, error) {
 			Msg: fmt.Sprintf("not a BCF file: got %q", magic[:])}
 		return nil, d.hdrErr
 	}
-	// htslib writes minor at byte 3 and major at byte 4.
-	// A 2.2 file has both bytes equal to 2, so the order is
-	// unobservable; we follow htslib so the version we report
-	// matches what a conformant reader would compute.
-	d.version = magic[3]
+	// The minor version is byte 4: the spec's header is
+	// magic(3) + major_version(1) + minor_version(1).
+	d.version = magic[4]
 	// Length-prefixed header text.
 	var lText uint32
 	if err := d.readLe(&lText); err != nil {

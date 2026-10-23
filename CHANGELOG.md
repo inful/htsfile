@@ -7,6 +7,40 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.25.0] — 2026-10-23
+
+The three items left over from the v0.23.1 audit: the spec's
+gVCF example, reading a BCF 2.1 file, and the `##dictionary=`
+pragma. Two of them were not defects; the third was a small
+one - the BCF decoder reported the major version instead of the
+minor one.
+
+See [vcf/SPEC_COMPLIANCE.md](vcf/SPEC_COMPLIANCE.md) Phase 7,
+"The remaining items".
+
+### Fixed
+
+- The BCF decoder reported the *major* version instead of the
+  minor one. It read byte 3 of the magic, which is always 2;
+  the spec fixes magic[3] = major_version and magic[4] =
+  minor_version. htslib writes the literal `BCF\x02\x02`, so
+  the two bytes are indistinguishable in a 2.2 file - which is
+  how the mistake survived.
+
+### Added
+
+- `vcf/testdata/gvcf_example.vcf` and
+  `vcf/gvcf_example_test.go`: the spec's own gVCF example
+  (§1.7), with its semicolon typos corrected, pinned to
+  validate clean - and the example exactly as printed, pinned to
+  produce exactly the nine issues its typos cause.
+- `bcf/bcf21_test.go`: reads a file whose minor-version byte has
+  been patched to 1. htslib 1.24 writes 2.2 only, so this is
+  the only way to exercise the 2.1 path.
+- `vcf/dictionary_test.go`: the `##dictionary=` pragma is
+  accepted, kept in the header and replayed when the header is
+  written out again.
+
 ## [0.24.0] — 2026-10-23
 
 The tabix and CSI index code had never been run against
