@@ -164,7 +164,7 @@ func buildTabixWithEnd(b *testing.B, vcfPath string, chunkEnd uint64) {
 	}
 	idx := &tabix.Index{
 		References: []*tabix.Reference{{
-			Bins:      map[uint32][]tabix.Chunk{0: {{Beg: 0, End: tabix.VirtualOffset(chunkEnd)}}},
+			Bins:      map[uint32][]tabix.Chunk{0: {{Beg: tabix.VirtualOffset(93), End: tabix.VirtualOffset(chunkEnd)}}},
 			Intervals: []tabix.VirtualOffset{tabix.VirtualOffset(0)},
 		}},
 	}

@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/inful/htsfile/internal/bgzf"
 	"io"
 	"sort"
 )
@@ -43,13 +44,17 @@ type Reference struct {
 	// Bins maps bin number to chunks.
 	Bins map[uint32][]Chunk
 
-	// Intervals is the linear index: one BGZF virtual offset
-	// per (2^MinShift)-bp window.
-	Intervals []VirtualOffset
+	// Loffsets maps bin number to the bin's loffset: the
+	// virtual offset of the first record in the bin. A CSI
+	// has no linear index, so the loffset is what tells a
+	// reader where the bin's records start.
+	Loffsets map[uint32]VirtualOffset
 
-	// NoCoor is the count of unmapped unplaced reads (RNAME *).
-	// Zero when the field is absent from the file.
-	NoCoor uint64
+	// Intervals is the linear index: one BGZF virtual offset
+	// per (2^MinShift)-bp window. A CSI written by htslib
+	// has none - the loffset replaces it - so this is empty
+	// for htslib's files.
+	Intervals []VirtualOffset
 }
 
 // Index is the parsed CSI file.
@@ -57,6 +62,10 @@ type Index struct {
 	MinShift int32
 	Depth    int32
 	Aux      []byte
+
+	// NoCoor is the count of unmapped unplaced reads (RNAME *).
+	// It is written once, at the end of the file.
+	NoCoor uint64
 
 	References []*Reference
 }
@@ -71,7 +80,13 @@ func (idx *Index) WindowSize() int64 {
 // index ((2^((depth+1)*3) - 1) / 7). For the canonical
 // (min_shift=14, depth=5) configuration this is 37448.
 func (idx *Index) BinLimit() int {
-	return (1<<((idx.Depth+1)*3) - 1) / 7
+	return BinLimit(idx.Depth)
+}
+
+// BinLimit returns the largest valid bin number for a given
+// number of bin levels: (1 << ((depth+1)*3) - 1) / 7.
+func BinLimit(depth int32) int {
+	return (1<<((depth+1)*3) - 1) / 7
 }
 
 // Reader parses a CSI index from an underlying [io.Reader].
@@ -97,7 +112,11 @@ func NewReader(r io.Reader) *Reader {
 }
 
 // Read parses the entire CSI file from r.
+//
+// The index may be BGZF-compressed - htslib writes it that way -
+// or raw. A compressed index is inflated transparently.
 func (r *Reader) Read() (*Index, error) {
+	r.r = bgzf.InflateIfBGZF(r.r)
 	var magic [4]byte
 	if _, err := io.ReadFull(r.r, magic[:]); err != nil {
 		if errors.Is(err, io.EOF) {
@@ -140,6 +159,17 @@ func (r *Reader) Read() (*Index, error) {
 		}
 		idx.References = append(idx.References, ref)
 	}
+	// n_no_coor: written once, at the end of the file. A short
+	// read means the field is absent, which means zero.
+	var noCoor uint64
+	err := binary.Read(r.r, binary.LittleEndian, &noCoor)
+	switch {
+	case err == nil:
+		idx.NoCoor = noCoor
+	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
+	default:
+		return nil, &ReadError{Err: fmt.Errorf("reading n_no_coor: %w", err)}
+	}
 	return idx, nil
 }
 
@@ -153,16 +183,16 @@ func (r *Reader) readReference(minShift, depth int32) (*Reference, error) {
 		return nil, &ReadError{Err: fmt.Errorf("reading n_bin: %w", err)}
 	}
 	bins := make(map[uint32][]Chunk, nBin)
+	loffsets := make(map[uint32]VirtualOffset, nBin)
 	for i := uint32(0); i < nBin; i++ {
 		var bin uint32
 		if err := binary.Read(r.r, binary.LittleEndian, &bin); err != nil {
 			return nil, fmt.Errorf("bin[%d].number: %w", i, err)
 		}
-		// Per-bin loffset: virtual file offset of the first
-		// overlapping record. The spec requires it; this reader
-		// discards the value (the linear index already covers
-		// the lookup path) but must consume the bytes or the
-		// stream misaligns.
+		// Per-bin loffset: the virtual file offset of the
+		// first record in the bin. A CSI has no linear index,
+		// so this is what tells a reader where the bin's
+		// records start.
 		var loffset uint64
 		if err := binary.Read(r.r, binary.LittleEndian, &loffset); err != nil {
 			return nil, fmt.Errorf("bin[%d].loffset: %w", i, err)
@@ -183,37 +213,14 @@ func (r *Reader) readReference(minShift, depth int32) (*Reference, error) {
 			chunks[j] = Chunk{Beg: beg, End: end}
 		}
 		bins[bin] = chunks
-		_ = loffset
+		loffsets[bin] = loffset
 	}
-	var nIntv uint32
-	if err := binary.Read(r.r, binary.LittleEndian, &nIntv); err != nil {
-		return nil, &ReadError{Err: fmt.Errorf("reading n_intv: %w", err)}
-	}
-	intervals := make([]VirtualOffset, nIntv)
-	for i := uint32(0); i < nIntv; i++ {
-		var ioff uint64
-		if err := binary.Read(r.r, binary.LittleEndian, &ioff); err != nil {
-			return nil, fmt.Errorf("interval[%d]: %w", i, err)
-		}
-		intervals[i] = ioff
-	}
-	ref := &Reference{Bins: bins, Intervals: intervals}
-	// Optional n_no_coor: EOF on the trailing uint64 is treated
-	// as zero in legacy files. This branch only matters on the
-	// very last reference; the next reference's loop will see
-	// a short read and error out cleanly.
-	var noCoor uint64
-	err := binary.Read(r.r, binary.LittleEndian, &noCoor)
-	switch {
-	case err == nil:
-		ref.NoCoor = noCoor
-	case errors.Is(err, io.EOF), errors.Is(err, io.ErrUnexpectedEOF):
-	default:
-		return nil, fmt.Errorf("reading n_no_coor: %w", err)
-	}
+	// A CSI has no linear index: the per-bin loffset replaces
+	// it. htslib frees the linear index once the loffsets are
+	// computed.
 	_ = minShift
 	_ = depth
-	return ref, nil
+	return &Reference{Bins: bins, Loffsets: loffsets}, nil
 }
 
 // ReadError describes a failure to parse a CSI index.
@@ -240,6 +247,24 @@ func (e *ReadError) Unwrap() error { return e.Err }
 // beg and end are 0-based half-open.
 func BinFromRange(beg, end int64) []uint32 {
 	return reg2bins(beg, end, 14, 5)
+}
+
+// BinsForRange returns the bins that may hold records in the
+// half-open range [beg, end), for the index's own min_shift
+// and depth.
+//
+// The bins come back in ascending order; the last one is the
+// finest bin that covers the range's start, the one a record
+// at that position is filed under.
+func (idx *Index) BinsForRange(beg, end int64) []uint32 {
+	return reg2bins(beg, end, idx.MinShift, idx.Depth)
+}
+
+// BinFromRangeWith returns the bins that may hold records in
+// the half-open range [beg, end), for the given min_shift and
+// depth.
+func BinFromRangeWith(beg, end int64, minShift, depth int32) []uint32 {
+	return reg2bins(beg, end, minShift, depth)
 }
 
 // reg2bins implements the samtools CSI reg2bins algorithm

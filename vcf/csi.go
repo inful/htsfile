@@ -126,7 +126,10 @@ func (r *CSIReader) Query(chrom string, start, end int64) ([]*Record, error) {
 	if ref == nil {
 		return nil, nil
 	}
-	refBins := csi.BinFromRange(start, end)
+	// The bins come from the index's own min_shift and
+	// depth: a CSI numbers its bins by its level count, so
+	// the tabix defaults would look in the wrong place.
+	refBins := r.idx.BinsForRange(start, end)
 	chunks := ref.LookupChunks(refBins)
 	if len(chunks) == 0 {
 		return nil, nil
@@ -178,7 +181,13 @@ func (r *CSIReader) decodeChunk(virtualOff, chunkEndOff uint64) ([]*Record, erro
 	if err := r.seek.Seek(virtualOff); err != nil {
 		return nil, fmt.Errorf("vcf: seek chunk: %w", err)
 	}
-	dec := NewDecoder(r.seek)
+	// The chunk points at a record, not at the start of the
+	// file, so the header cannot be read again from there.
+	dec := NewDecoderWithHeader(r.seek, r.hdr)
+	// Exact reads: the chunk's end offset is compared with
+	// the reader's position, so nothing may be read ahead of
+	// the record being decoded.
+	dec.SetExactReads(true)
 	var recs []*Record
 	for {
 		off := r.seek.VirtualOffset()

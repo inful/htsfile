@@ -221,7 +221,13 @@ func (r *TabixReader) decodeChunk(virtualOff, chunkEndOff uint64) ([]*Record, er
 	if err := r.seek.Seek(virtualOff); err != nil {
 		return nil, fmt.Errorf("vcf: seek chunk: %w", err)
 	}
-	dec := NewDecoder(r.seek)
+	// The chunk points at a record, not at the start of the
+	// file, so the header cannot be read again from there.
+	dec := NewDecoderWithHeader(r.seek, r.hdr)
+	// Exact reads: the chunk's end offset is compared with
+	// the reader's position, so nothing may be read ahead of
+	// the record being decoded.
+	dec.SetExactReads(true)
 	var recs []*Record
 	for {
 		// Capture the BGZF virtual offset before

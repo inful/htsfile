@@ -31,10 +31,11 @@ func makeIndex(minShift int32, refs []*Reference) []byte {
 			var bBytes [4]byte
 			binary.LittleEndian.PutUint32(bBytes[:], bin)
 			buf.Write(bBytes[:])
-			// Per-bin loffset (uint64), written as 0 — the
-			// reader discards the value but must consume it.
-			var zero [8]byte
-			buf.Write(zero[:])
+			// Per-bin loffset (uint64): the virtual offset of
+			// the first record in the bin.
+			var loBytes [8]byte
+			binary.LittleEndian.PutUint64(loBytes[:], ref.Loffsets[bin])
+			buf.Write(loBytes[:])
 			var nChunk [4]byte
 			binary.LittleEndian.PutUint32(nChunk[:], uint32(len(chunks)))
 			buf.Write(nChunk[:])
@@ -47,19 +48,11 @@ func makeIndex(minShift int32, refs []*Reference) []byte {
 				buf.Write(endBytes[:])
 			}
 		}
-		var nIntv [4]byte
-		binary.LittleEndian.PutUint32(nIntv[:], uint32(len(ref.Intervals)))
-		buf.Write(nIntv[:])
-		for _, iv := range ref.Intervals {
-			var ivBytes [8]byte
-			binary.LittleEndian.PutUint64(ivBytes[:], iv)
-			buf.Write(ivBytes[:])
-		}
-		// n_no_coor (uint64) per CSI spec.
-		var ncBytes [8]byte
-		binary.LittleEndian.PutUint64(ncBytes[:], ref.NoCoor)
-		buf.Write(ncBytes[:])
 	}
+	// n_no_coor (uint64), written once at the end of the file.
+	var ncBytes [8]byte
+	binary.LittleEndian.PutUint64(ncBytes[:], 0)
+	buf.Write(ncBytes[:])
 	return buf.Bytes()
 }
 

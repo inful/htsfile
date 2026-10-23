@@ -25,7 +25,6 @@
 package bgzf
 
 import (
-	"bufio"
 	"bytes"
 	"compress/flate"
 	"encoding/binary"
@@ -59,7 +58,6 @@ const (
 
 	// ioBufSize is the internal buffer used by the read-ahead
 	// bufio.Reader. 64 KiB is one full BGZF block.
-	ioBufSize = 64 * 1024
 )
 
 // Errors returned by the reader.
@@ -135,16 +133,16 @@ func (c *countingReader) Absolute() int64 {
 
 // A Reader is not safe for concurrent use.
 type Reader struct {
-	// br reads the compressed stream. We use a 64 KiB buffer
-	// because each BGZF block is at most that size, so a single
-	// block always fits in one fill.
-	br *bufio.Reader
-
 	// cr is the counting wrapper around the underlying
-	// io.Reader that br consumes from. It tracks how many
-	// bytes have been pulled from the file, which lets us
-	// recover the BGZF block-start offset for the
-	// currently-decoded block.
+	// io.Reader. It tracks how many bytes have been pulled
+	// from the file, which lets us recover the BGZF
+	// block-start offset for the currently-decoded block.
+	//
+	// The block header and payload are read straight from it
+	// rather than through a bufio: a bufio reads ahead, so the
+	// counting reader's position would no longer mark the
+	// block boundary and every virtual offset after the first
+	// block would be wrong.
 	cr *countingReader
 
 	// blockStart is the byte offset in the underlying file
@@ -175,8 +173,13 @@ type Reader struct {
 // The Reader buffers one block at a time; no Read on the
 // underlying r happens until the first call to Read.
 func NewReader(r io.Reader) *Reader {
+	// The block header and payload are read straight from the
+	// counting reader rather than through a bufio: a bufio
+	// reads ahead, so the counting reader's position would no
+	// longer mark the block boundary and every virtual offset
+	// after the first block would be wrong.
 	cr := newCountingReader(r)
-	return &Reader{br: bufio.NewReaderSize(cr, ioBufSize), cr: cr}
+	return &Reader{cr: cr}
 }
 
 // VirtualOffset returns the BGZF virtual offset (high 48
@@ -208,6 +211,16 @@ func (r *Reader) Read(p []byte) (int, error) {
 	if r.offset < len(r.buf) {
 		n := copy(p, r.buf[r.offset:])
 		r.offset += n
+		if r.offset >= len(r.buf) {
+			// The block is exhausted: the next byte to
+			// return lives in the next block, so load it
+			// now. Otherwise VirtualOffset would still
+			// point at the end of the block just drained
+			// instead of at the start of the next one -
+			// which is what a tabix index records as a
+			// record's position.
+			r.loadNextBlock()
+		}
 		return n, nil
 	}
 	// Buffer is empty; load the next block.
@@ -225,6 +238,24 @@ func (r *Reader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
+// loadNextBlock reads the next block into the buffer. It is
+// called when the current block is exhausted so that the
+// virtual offset of the next byte to return points at the next
+// block. A failure is remembered but not returned here: the
+// bytes already in hand are still valid, and the error
+// surfaces on the next Read.
+func (r *Reader) loadNextBlock() {
+	if r.endOfStream || r.err != nil {
+		return
+	}
+	if err := r.nextBlock(); err != nil {
+		if !errors.Is(err, io.EOF) {
+			r.err = err
+		}
+		r.endOfStream = true
+	}
+}
+
 // nextBlock reads one BGZF block from the underlying reader,
 // decompresses its CDATA, and validates CRC32 + ISIZE. The EOF
 // marker is recognised and recorded; once seen, the next call
@@ -238,7 +269,7 @@ func (r *Reader) nextBlock() error {
 	// in the high 48 bits.
 	r.blockStart = r.cr.Absolute()
 	hdr := make([]byte, headerSize)
-	n, err := io.ReadFull(r.br, hdr)
+	n, err := io.ReadFull(r.cr, hdr)
 	if err != nil {
 		if errors.Is(err, io.EOF) {
 			// io.ReadFull only returns plain io.EOF when zero
@@ -291,7 +322,7 @@ func (r *Reader) nextBlock() error {
 
 	// Read CDATA + trailer.
 	tail := make([]byte, cdataLen+trailerSize)
-	if _, err := io.ReadFull(r.br, tail); err != nil {
+	if _, err := io.ReadFull(r.cr, tail); err != nil {
 		if errors.Is(err, io.EOF) {
 			return io.ErrUnexpectedEOF
 		}

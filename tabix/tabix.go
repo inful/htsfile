@@ -41,6 +41,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"github.com/inful/htsfile/internal/bgzf"
 	"io"
 	"sort"
 	"strings"
@@ -48,6 +49,12 @@ import (
 
 // Magic is the four-byte Tabix index signature: "TBI\x01".
 var Magic = [4]byte{'T', 'B', 'I', 0x01}
+
+// MetaBin is the tabix meta bin: the bin that holds the file's
+// byte range and the mapped / unmapped record counts rather
+// than records. Its number is fixed by the tabix format, which
+// always has five bin levels.
+const MetaBin uint32 = 37450
 
 // Format constants for the per-file format field.
 const (
@@ -102,7 +109,11 @@ func NewReader(r io.Reader) *Reader {
 }
 
 // Read parses the entire Tabix file from r.
+//
+// The index may be BGZF-compressed - htslib writes it that way -
+// or raw. A compressed index is inflated transparently.
 func (r *Reader) Read() (*Index, error) {
+	r.r = bgzf.InflateIfBGZF(r.r)
 	var magic [4]byte
 	if _, err := io.ReadFull(r.r, magic[:]); err != nil {
 		if errors.Is(err, io.EOF) {

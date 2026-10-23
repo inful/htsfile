@@ -40,14 +40,18 @@ func makeVCFQueryFixture(t *testing.T) string {
 		t.Fatalf("f.Close: %v", err)
 	}
 
-	// Tabix index with one chunk covering the whole file.
+	// Tabix index with one chunk covering the whole file. A
+	// chunk starts at the first record it covers, which is
+	// htslib's convention.
+	firstRecordAt := strings.Index(content, "chr1\t")
+	firstRecordOff := tabix.VirtualOffset(firstRecordAt) //nolint:gosec // the offset is a small positive number
 	idx := &tabix.Index{
 		References: []*tabix.Reference{
 			{
 				Bins: map[uint32][]tabix.Chunk{
-					0: {{Beg: 0, End: 0x10000}},
+					0: {{Beg: firstRecordOff, End: 0x10000}},
 				},
-				Intervals: []tabix.VirtualOffset{0, 0x10000},
+				Intervals: []tabix.VirtualOffset{firstRecordOff, 0x10000},
 			},
 		},
 	}

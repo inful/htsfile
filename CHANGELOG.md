@@ -7,6 +7,80 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.24.0] — 2026-10-23
+
+The tabix and CSI index code had never been run against
+htslib's. Doing so found **nine defects**, all invisible to the
+suite, and all of them in the part of the code that decides
+*where in a file a record is*.
+
+The worst of them was not in the index at all: the BGZF reader
+reported a stale virtual offset once a block was exhausted, so
+every offset after the first block was wrong. A tabix index is
+built entirely from those offsets.
+
+See [vcf/SPEC_COMPLIANCE.md](vcf/SPEC_COMPLIANCE.md) Phase 7
+(`T7.1` - `T7.9`).
+
+### Fixed
+
+- The tabix and CSI readers could not open htslib's indexes at
+  all: they are BGZF-compressed, and we read the raw bytes.
+  Both readers now inflate a compressed index transparently and
+  still accept a raw one.
+- The tabix and CSI writers wrote an uncompressed index.
+  htslib rejects an uncompressed `.csi` outright (`Invalid index
+  header`); both writers now frame the index with BGZF.
+- A `.tbi` carried no reference names and no VCF preset, so a
+  region query could not resolve a reference.
+- A `.csi` recorded the tabix depth instead of the level count
+  (5 instead of 6) and carried no aux field. The aux field now
+  holds the tabix preset and the name table, byte for byte as
+  htslib writes it.
+- A `.csi` used the tabix bin numbering (4681+) instead of the
+  CSI's (37449+), so every bin was in the wrong place.
+- A `.csi` carried a linear index that a CSI does not have: the
+  per-bin `loffset` replaces it. htslib's reader mis-parsed our
+  file from that point on, and its region queries came back
+  wrong. `n_no_coor` is now written once, at the end of the
+  file, as htslib does.
+- The BGZF reader reported a stale virtual offset after a block
+  was exhausted, and read blocks through a `bufio.Reader` that
+  read ahead. Every virtual offset after the first block was
+  wrong.
+- The index builder took each record's position from a reader
+  that had read ahead, so the position was past the start of
+  the record. The chunk boundaries now follow htslib's
+  convention exactly: a chunk runs from the start of the first
+  record in its bin to the start of the first record in the
+  next, and the linear index points at the first record at or
+  after each window.
+
+### Added
+
+- `vcf/index_oracle_test.go`: builds an index over the spec
+  example with our code and with htslib's `tabix`, and asserts
+  that the two hold the same bins, chunks, linear index,
+  per-bin loffsets and aux bytes - and that htslib's own
+  `tabix` answers the same region queries with either index.
+  The test is skipped when htslib's tools are not installed.
+- `vcf.Decoder.SetExactReads`: read lines one byte at a time so
+  that the reader's position stays exactly at the end of the
+  line just read. An index needs that.
+- `vcf.NewDecoderWithHeader`: decode records at a position
+  where the header cannot be read again.
+- `csi.Index.BinsForRange`, `csi.BinFromRangeWith`: the bins of
+  a range for a given min_shift and depth.
+
+### Changed
+
+- `csi.Reference.NoCoor` moved to `csi.Index.NoCoor`: a CSI
+  writes the field once, at the end of the file, not per
+  reference.
+- `csi.Reference.Intervals` is always empty for an htslib CSI:
+  a CSI has no linear index. The per-bin `Loffsets` map
+  replaces it.
+
 ## [0.23.1] — 2026-10-23
 
 A second pass with the external oracle, prompted by asking

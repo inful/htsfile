@@ -1,8 +1,11 @@
 package csi
 
 import (
+	"io"
+
 	"bytes"
 	"errors"
+	"github.com/inful/htsfile/internal/bgzf"
 	"testing"
 )
 
@@ -15,7 +18,7 @@ func TestWriter_RoundTrip_Basic(t *testing.T) {
 				Bins: map[uint32][]Chunk{
 					4681: {{Beg: 0x1000, End: 0x2000}},
 				},
-				Intervals: []VirtualOffset{0x1000, 0x2000, 0x3000},
+				Loffsets: map[uint32]VirtualOffset{4681: 0x1000},
 			},
 		},
 	}
@@ -38,8 +41,10 @@ func TestWriter_RoundTrip_Basic(t *testing.T) {
 	if got := ref.Bins[4681]; len(got) != 1 || got[0].Beg != 0x1000 || got[0].End != 0x2000 {
 		t.Errorf("Bins[4681]: got %+v", got)
 	}
-	if len(ref.Intervals) != 3 {
-		t.Errorf("Intervals: got %v", ref.Intervals)
+	// A CSI has no linear index: the per-bin loffset is what
+	// says where the bin's records start.
+	if got := ref.Loffsets[4681]; got != 0x1000 {
+		t.Errorf("Loffsets[4681]: got %#x want 0x1000", got)
 	}
 }
 
@@ -130,7 +135,14 @@ func TestWriter_MagicAndHeaderBytes(t *testing.T) {
 	if err := NewWriter(&buf).Write(&Index{MinShift: 14, Depth: 5}); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
-	if got := buf.Bytes()[:4]; !bytes.Equal(got, Magic[:]) {
+	// The index is BGZF-compressed, the way htslib writes
+	// it, so the magic sits inside the compressed stream.
+	zr := bgzf.NewReader(bytes.NewReader(buf.Bytes()))
+	got := make([]byte, 4)
+	if _, err := io.ReadFull(zr, got); err != nil {
+		t.Fatalf("read magic: %v", err)
+	}
+	if !bytes.Equal(got, Magic[:]) {
 		t.Errorf("magic: got %q want %q", got, Magic[:])
 	}
 }

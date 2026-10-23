@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/inful/htsfile/internal/bgzf"
@@ -48,19 +49,24 @@ func makeIndexedVCF(t *testing.T) (vcfPath string) {
 
 	// Step 2: compute the BGZF virtual offset for each
 	// line. Tabix chunk Beg/End are virtual offsets.
-	// For a one-chunk-per-record index, we use a single
-	// chunk that covers the whole file (offset 0 to EOF).
+	//
+	// A chunk starts at the first *record* it covers, which is
+	// htslib's convention: the three header lines above are 93
+	// bytes, so the first record starts at offset 93 of the
+	// first block.
 	//
 	// The EOF marker of a BGZF file is at virtual offset
 	// (block_count << 16) | 0. For a file with one block,
 	// that's 0x10000 | 0 = 65536.
+	firstRecordAt := strings.Index(content, "chr1\t")
+	firstRecordOff := tabix.VirtualOffset(firstRecordAt) //nolint:gosec // the offset is a small positive number
 	idx := &tabix.Index{
 		References: []*tabix.Reference{
 			{
 				Bins: map[uint32][]tabix.Chunk{
-					0: {{Beg: 0, End: 0x10000}},
+					0: {{Beg: firstRecordOff, End: 0x10000}},
 				},
-				Intervals: []tabix.VirtualOffset{0, 0x10000},
+				Intervals: []tabix.VirtualOffset{firstRecordOff, 0x10000},
 			},
 		},
 	}
@@ -319,10 +325,14 @@ func TestTabixReader_ChunkEndStop(t *testing.T) {
 	}
 	var boundaries []boundary
 	dec := NewDecoder(r.seek)
+	// Exact reads: the offsets captured below are the records'
+	// positions, and a buffered scanner would read ahead.
+	dec.SetExactReads(true)
 	if _, err := dec.Header(); err != nil {
 		t.Fatalf("Header: %v", err)
 	}
 	var prevBlockOff int64
+	var firstRecordOff tabix.VirtualOffset
 	for {
 		// Capture the BGZF virtual offset BEFORE
 		// reading the next record. If its high 48
@@ -331,6 +341,9 @@ func TestTabixReader_ChunkEndStop(t *testing.T) {
 		// a new block — and that block's start
 		// offset is the chunk End we want.
 		prevOff := r.seek.VirtualOffset()
+		if firstRecordOff == 0 {
+			firstRecordOff = tabix.VirtualOffset(prevOff)
+		}
 		rec, err := dec.Record()
 		if errors.Is(err, io.EOF) {
 			break
@@ -366,9 +379,9 @@ func TestTabixReader_ChunkEndStop(t *testing.T) {
 		References: []*tabix.Reference{
 			{
 				Bins: map[uint32][]tabix.Chunk{
-					0: {{Beg: 0, End: tabix.VirtualOffset(block2End)}},
+					0: {{Beg: firstRecordOff, End: tabix.VirtualOffset(block2End)}},
 				},
-				Intervals: []tabix.VirtualOffset{0, tabix.VirtualOffset(block2End)},
+				Intervals: []tabix.VirtualOffset{firstRecordOff, tabix.VirtualOffset(block2End)},
 			},
 		},
 	}
@@ -417,9 +430,9 @@ func TestTabixReader_ChunkEndStop(t *testing.T) {
 		References: []*tabix.Reference{
 			{
 				Bins: map[uint32][]tabix.Chunk{
-					0: {{Beg: 0, End: tabix.VirtualOffset(0xFFFFFFFFFFFFFFFF)}},
+					0: {{Beg: firstRecordOff, End: tabix.VirtualOffset(0xFFFFFFFFFFFFFFFF)}},
 				},
-				Intervals: []tabix.VirtualOffset{0, tabix.VirtualOffset(0xFFFFFFFFFFFFFFFF)},
+				Intervals: []tabix.VirtualOffset{firstRecordOff, tabix.VirtualOffset(0xFFFFFFFFFFFFFFFF)},
 			},
 		},
 	}

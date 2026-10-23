@@ -3,6 +3,7 @@ package tabix
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/inful/htsfile/internal/bgzf"
 	"io"
 	"sort"
 )
@@ -38,6 +39,25 @@ func (wr *Writer) Write(idx *Index) error {
 	if idx == nil {
 		return fmt.Errorf("tabix: Write: nil index")
 	}
+	// htslib writes the index BGZF-compressed. An uncompressed
+	// .csi is rejected by htslib outright ("Invalid index
+	// header"), so the framing is not optional.
+	zw := bgzf.NewWriter(wr.w)
+	orig := wr.w
+	wr.w = zw
+	defer func() { wr.w = orig }()
+	if err := wr.writeIndex(idx); err != nil {
+		_ = zw.Close()
+		return err
+	}
+	if err := zw.Close(); err != nil {
+		return fmt.Errorf("tabix: closing bgzf stream: %w", err)
+	}
+	return nil
+}
+
+// writeIndex serialises idx to the writer's current target.
+func (wr *Writer) writeIndex(idx *Index) error {
 	if _, err := wr.w.Write(Magic[:]); err != nil {
 		return fmt.Errorf("writing magic: %w", err)
 	}
@@ -131,9 +151,14 @@ func (wr *Writer) writeReference(ref *Reference) error {
 		chunks := ref.Bins[bin]
 		sorted := make([]Chunk, len(chunks))
 		copy(sorted, chunks)
-		sort.Slice(sorted, func(i, j int) bool {
-			return sorted[i].Beg < sorted[j].Beg
-		})
+		if bin != MetaBin {
+			// The meta bin holds two pseudo-chunks - the
+			// file's byte range and the record counts -
+			// whose order is fixed by the format.
+			sort.Slice(sorted, func(i, j int) bool {
+				return sorted[i].Beg < sorted[j].Beg
+			})
+		}
 		if err := wr.writeInt32(int32(bin)); err != nil {
 			return fmt.Errorf("writing bin %d number: %w", bin, err)
 		}

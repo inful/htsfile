@@ -35,6 +35,18 @@ type Decoder struct {
 	// exceeds this; readLine translates that into a *ParseError.
 	maxLineLength int
 
+	// raw is the reader the scanner was built over. It is used
+	// directly in exact mode (see SetExactReads).
+	raw io.Reader
+
+	// exact makes readLine read straight from raw, one byte at
+	// a time, instead of through the scanner. The scanner reads
+	// ahead, so with it the underlying reader's position is past
+	// the start of the next line; without it the position stays
+	// exactly at the end of the line just read. A tabix or CSI
+	// index needs the exact offset of every record.
+	exact bool
+
 	// line is the 1-based line number of the most recently read line.
 	line int
 
@@ -78,7 +90,35 @@ func NewDecoderWithMaxLine(r io.Reader, maxLineLength int) *Decoder {
 	// the limit; otherwise the Scanner silently grows the buffer
 	// up to cap(buf) regardless of max.
 	sc.Buffer(make([]byte, 0, maxLineLength), maxLineLength)
-	return &Decoder{scanner: sc, maxLineLength: maxLineLength}
+	return &Decoder{scanner: sc, raw: r, maxLineLength: maxLineLength}
+}
+
+// SetExactReads makes the decoder read lines straight from the
+// underlying reader instead of through its buffered scanner, so
+// that the reader's position stays exactly at the end of the
+// line just read.
+//
+// This is what an index builder needs: the position of a record
+// in the file is only meaningful if nothing has been read ahead
+// of it. It costs one Read call per byte, so it is off by
+// default.
+func (d *Decoder) SetExactReads(exact bool) {
+	d.exact = exact
+}
+
+// NewDecoderWithHeader returns a Decoder that reads records from r
+// with a header that has already been parsed.
+//
+// A tabix or CSI chunk points at a record, not at the start of
+// the file, so the decoder cannot read the header again from
+// there. This constructor takes the header from the caller.
+func NewDecoderWithHeader(r io.Reader, h *Header) *Decoder {
+	d := NewDecoder(r)
+	if h != nil {
+		d.hdr = h
+		d.hdrParsed = true
+	}
+	return d
 }
 
 // Header parses the VCF header. The first call reads ##meta lines until the
@@ -138,6 +178,9 @@ func (d *Decoder) readLine() (raw []byte, lineNo int, err error) {
 		return nil, d.line, io.EOF
 	}
 	lineNo = d.line + 1
+	if d.exact {
+		return d.readLineExact(lineNo)
+	}
 	if !d.scanner.Scan() {
 		if scanErr := d.scanner.Err(); scanErr != nil {
 			if errors.Is(scanErr, bufio.ErrTooLong) {
@@ -1491,4 +1534,37 @@ func decodeFieldValue(def *FormatDef, raw []string) FieldValue {
 		v.Chars = []byte{raw[0][0]}
 	}
 	return v
+}
+
+// readLineExact reads one line straight from the underlying
+// reader, one byte at a time, so that the reader's position
+// stays exactly at the end of the line.
+func (d *Decoder) readLineExact(lineNo int) (raw []byte, _ int, err error) {
+	var buf []byte
+	var b [1]byte
+	for {
+		n, readErr := d.raw.Read(b[:])
+		if n == 1 {
+			if b[0] == '\n' {
+				d.line = lineNo
+				return buf, lineNo, nil
+			}
+			if len(buf) >= d.maxLineLength {
+				d.line = lineNo
+				return nil, lineNo, &ParseError{Line: lineNo,
+					Msg: fmt.Sprintf("line exceeds max length %d", d.maxLineLength)}
+			}
+			buf = append(buf, b[0])
+			continue
+		}
+		if readErr != nil {
+			if len(buf) > 0 {
+				d.line = lineNo
+				return buf, lineNo, nil
+			}
+			d.eof = true
+			d.line = lineNo
+			return nil, lineNo, io.EOF
+		}
+	}
 }

@@ -49,9 +49,9 @@ func makeIndexedCSI(t *testing.T) (vcfPath string) {
 		References: []*csi.Reference{
 			{
 				Bins: map[uint32][]csi.Chunk{
-					0: {{Beg: 0, End: 0x10000}},
+					0: {{Beg: csi.VirtualOffset(93), End: 0x10000}},
 				},
-				Intervals: []csi.VirtualOffset{0, 0x10000},
+				Intervals: []csi.VirtualOffset{93, 0x10000},
 			},
 		},
 	}
