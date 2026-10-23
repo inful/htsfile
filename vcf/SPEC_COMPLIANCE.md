@@ -2237,3 +2237,143 @@ T6.21 - T6.26 cannot regress.
 multi-element), Character, Float, Number=R / G / . variable
 cardinality, a String longer than the 15-byte descriptor
 nibble, and a missing value in every position.
+
+## Phase 7 — the tabix / CSI index, verified against the oracle
+
+The tabix and CSI index code was written by reading the
+format descriptions, not by consulting an implementation, and
+it had never been run against htslib's. Doing so found **nine
+defects**, all of them invisible to the suite.
+
+### T7.1 - the readers could not open htslib's index at all
+
+htslib writes `.tbi` and `.csi` files BGZF-compressed. Our
+readers read the raw bytes, so every index htslib produced
+was rejected:
+
+```
+tabix: not a Tabix file: got "\x1f\x8b\b\x04"
+```
+
+**Fix.** `internal/bgzf.InflateIfBGZF` sniffs the gzip magic
+and inflates the index transparently; a raw index is still
+accepted (`tabix/tabix.go`, `csi/csi.go`).
+
+### T7.2 - the writers wrote an uncompressed index
+
+htslib rejects an uncompressed `.csi` outright:
+
+```
+[E::index_load] Invalid index header for x.vcf.gz
+```
+
+**Fix.** Both writers now frame the index with BGZF, the way
+htslib does (`tabix/write.go`, `csi/write.go`).
+
+### T7.3 - the `.tbi` had no reference names
+
+The index carried no name table, so a region query could not
+resolve a reference and htslib's `tabix` fell back to
+scanning the file.
+
+**Fix.** The names come from the header's contigs and go into
+the `.tbi`'s name table and the `.csi`'s aux field
+(`vcf/index_writer.go`).
+
+### T7.4 - the `.tbi` had no VCF preset
+
+`format`, `col_seq`, `col_beg`, `col_end` and `meta` were all
+zero. htslib's preset is `format=2` (VCF), `col_seq=1`,
+`col_beg=2`, `col_end=0`, `meta='#'`.
+
+**Fix.** The writer sets the preset (`vcf/index_writer.go`).
+
+### T7.5 - the `.csi` had the wrong depth and no aux
+
+A CSI records the number of bin *levels*, which is one more
+than the tabix depth: htslib writes 6 for the tabix depth of
+5. Ours wrote 5, and the aux field - which carries the tabix
+preset and the reference names - was empty.
+
+**Fix.** `Depth: b.depth + 1`, and the aux field holds the
+tabix preset followed by the name table, byte for byte as
+htslib writes it.
+
+### T7.6 - a CSI was written with the tabix bin numbering
+
+The bin numbers depend on the number of levels: a tabix index
+files a record under bin 4681+, a CSI under 37449+. We used
+the tabix numbering for both, so every CSI bin was in the
+wrong place.
+
+**Fix.** The builder picks the leaf bin with the format's own
+level count (`csi.BinFromRangeWith`).
+
+### T7.7 - a CSI carried a linear index it should not have
+
+A CSI has no linear index: the per-bin `loffset` replaces it.
+htslib frees the linear index once the loffsets are computed.
+Our `.csi` wrote one anyway, so htslib's reader mis-parsed
+the file from that point on - which is why its region queries
+came back wrong.
+
+**Fix.** The CSI writer emits no linear index, and writes
+`n_no_coor` once at the end of the file rather than per
+reference. The reader was changed to match.
+
+### T7.8 - the chunks pointed at the wrong offsets
+
+Two bugs stacked here.
+
+The BGZF reader reported a stale virtual offset once a block
+was exhausted: the offset stayed at the end of the block just
+read instead of moving to the start of the next one. The
+reader also read blocks through a `bufio.Reader`, so the
+counting reader's position no longer marked the block
+boundary, and every offset after the first block was wrong.
+
+**Fix.** The blocks are read straight from the counting
+reader, and the next block is loaded as soon as the current
+one is drained, so the virtual offset of the next byte to
+return is always right (`internal/bgzf/bgzf.go`).
+
+The second bug was in the index builder: it took the record's
+position from the VCF decoder's reader, but the decoder reads
+lines through a `bufio.Scanner` that reads ahead, so the
+position was past the start of the next record.
+
+**Fix.** `Decoder.SetExactReads` makes the decoder read lines
+one byte at a time, so the reader's position stays exactly at
+the end of the line just read. The index builder and the
+chunk decoder use it.
+
+### T7.9 - the chunking did not follow htslib's convention
+
+htslib's chunk runs from the start of the first record in the
+bin to the start of the first record in the next bin, and the
+linear index entry for a window is the start of the first
+record at or after that window, with an empty window
+inheriting the entry of the window after it. Ours used
+block-granular chunks and a linear index that was mostly
+zeroes, so a query that started mid-file scanned from the
+beginning of the file - correct, but far too slow, and not
+the index htslib writes.
+
+**Fix.** The builder follows htslib's rules. Our `.tbi` is now
+byte-identical to htslib's apart from the order the bins are
+written in, which is an artefact of htslib's hash table and
+carries no meaning.
+
+### The guard
+
+`vcf/index_oracle_test.go` builds an index over the spec
+example with our code and with htslib's `tabix`, and asserts
+that the two hold the same bins, the same chunks, the same
+linear index, the same per-bin loffsets and the same aux
+bytes - and that htslib's own `tabix` answers the same region
+queries with either index. The test is skipped when htslib's
+tools are not installed.
+
+### Status
+
+Shipped in v0.24.0.
