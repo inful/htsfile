@@ -1757,3 +1757,339 @@ preserves Descriptions and `##contig=length,md5,species,...`.
   §1.4.3 line 133 - "Implementations must not rely on the
   order of the fields within structured lines and are not
   required to preserve field ordering."
+
+## Phase 6 — conformance verified against an external oracle
+
+Phases 4 and 5 were verified against the spec's own worked
+examples and against our own reader/writer pair. That is not
+enough: a writer and a reader that agree with each other and
+with nobody else pass every round-trip test in the suite.
+
+So the reference implementation was installed as an oracle
+(htslib 1.24.1 / samtools 1.24 / bcftools 1.24, via Homebrew)
+and our output was fed to it. **Every defect below was
+invisible to the 600+ green tests in this repository** and
+was found in minutes by a tool that does not share a line of
+code with us.
+
+The v0.22.0 BCF output was unreadable by *any* modern htslib
+tool:
+
+```
+[E::bcf_hdr_read] Invalid BCF2 magic string: only BCFv2.2 is supported
+[W::bcf_sr_add_hreader] No BGZF EOF marker; file 'x.bcf' may be truncated
+[W::bcf_record_check] Bad BCF record at 20:14370: Invalid REF/ALT type 9 (unknown)
+[E::bcf_record_check] Bad BCF record at 20:14370 - shared section malformed or too short
+[W::bcf_record_check] Bad BCF record at 20:17330: Invalid FORMAT id 12
+[E::bcf_format_gt_v2] Unexpected type 7
+```
+
+A mutation experiment confirmed the blind spot. Swapping
+POS and rlen in the writer *and* the reader together — a
+spec-breaking change that both sides agree on — was caught by
+**1 of 633 test functions**.
+
+### The BCF defects
+
+### T6.1 - BCF magic was 6 bytes with `l_text` at offset 6
+
+**Spec (§BCF2 header, tex lines 2086-2091):**
+
+> magic char[3] — File format identifier, `BCF`.
+> major_version uint8 — Version of the specification.
+> minor_version uint8 — Version of the specification.
+> l_text uint32_t — Length of the 'text' field.
+
+**Defect.** We wrote `BCF\x02\x01\x00` (6 bytes) and put
+`l_text` at offset 6. The magic is 5 bytes: `BCF` plus the
+major and minor version. BCF 2.2 is `BCF\x02\x02`.
+
+**Fix.** `Magic = [5]byte{'B','C','F',0x02,0x02}`; `l_text`
+at offset 5. The 2.1 magic is kept for *reading* only.
+
+**Status:** shipped in v0.23.0
+
+### T6.2 - BGZF EOF marker had the wrong OS byte
+
+**Defect.** htslib's `bgzf_check_EOF` is a byte-exact
+`memcmp` against the 28-byte EOF block. We wrote `0x00` in
+the OS-byte position; the marker requires `0xff`.
+
+**Fix.** The EOF block is now byte-identical to htslib's.
+
+**Status:** shipped in v0.23.0
+
+### T6.3 - `n_sample` / `n_fmt` were packed in the wrong byte order
+
+**Spec (§BcfSiteEncoding, tex lines 2191-2196):**
+
+> n_sample uint24 - Number of samples in this record.
+> n_fmt uint8 - Number of FORMAT fields.
+
+**Defect.** We packed `n_sample<<8 | n_fmt`. The spec puts
+`n_sample` in bytes [20:22] as a uint24 and `n_fmt` in byte
+[23].
+
+**Fix.** `n_sample | n_fmt<<24`. The reader also cross-checks
+`n_sample` against the header's sample count.
+
+**Status:** shipped in v0.23.0
+
+### T6.4 - strings were not char vectors
+
+**Spec (§BcfTypeEncoding, tex line 2276):** a string is a
+character vector whose length is carried in the descriptor's
+high nibble.
+
+**Defect.** We wrote type `0x07` followed by a `uint32`
+length and then the bytes. htslib read the length as the
+vector size and desynchronised the stream.
+
+**Fix.** `writeBCFString` emits the descriptor with the
+character count in the high nibble and the raw characters
+after it.
+
+**Status:** shipped in v0.23.0
+
+### T6.5 - FILTER wrote a bare type code
+
+**Defect.** FILTER wrote `0x01` (a bare type code) instead of
+a `(size<<4)|type` descriptor, which declares a vector of
+size 0.
+
+**Fix.** `pickBcfSize` + `typeByteSize`; `readTypedFilter`
+reads the descriptor.
+
+**Status:** shipped in v0.23.0
+
+### T6.6 - multi-element String INFO lost its commas
+
+**Defect.** We wrote the elements as separate strings.
+htslib keeps the commas inside the character run:
+`CSQ=alpha,beta,gamma` becomes one 16-byte run.
+
+**Fix.** The writer comma-joins; the reader splits on commas.
+
+**Status:** shipped in v0.23.0
+
+### T6.7 - FORMAT String size was the element count, not the character count
+
+**Defect.** A FORMAT String field's size nibble must carry
+the character count, not the number of elements.
+
+**Fix.** `fieldMaxSize` counts the joined characters.
+
+**Status:** shipped in v0.23.0
+
+### T6.8 - the FORMAT overflow length was not a typed integer
+
+**Defect.** For a vector of 15 or more elements the
+descriptor's nibble is 15 and the true length follows as a
+typed Integer. We wrote a bare byte.
+
+**Fix.** The overflow length is a typed `int8`.
+
+**Status:** shipped in v0.23.0
+
+### T6.9 - the per-sample block was not the spec's triplet layout
+
+**Spec (§GenotypeEncoding, tex line 2233):**
+
+> Suppose there are i genotype fields in a specific record.
+> Each i is encoded by a triplet
+
+**Defect.** We wrote every `fmt_key` first and then every
+`(fmt_type, fmt_values)` pair. htslib rejected the record
+with *"individuals section malformed or too short"*.
+
+**Fix.** `encodeIndivid` writes `fmt_key`, `fmt_type`,
+`fmt_values` per field, interleaved.
+
+**Status:** shipped in v0.23.0
+
+### T6.10 - GT was written as a string
+
+**Defect.** The VCF header declares `GT` as
+`Number=1,Type=String`, and we wrote it that way. BCF
+requires an **integer allele vector**; htslib's
+`bcf_format_gt_v2` rejects any other type
+(*"Unexpected type 7"*).
+
+**Fix.** `bcf/gt_wire.go` transcribes htslib's encoding
+(htslib 1.24 `vcf.c`, `vcf_parse_format`'s GT branch): each
+allele is `(allele+1)<<1 | phased`, a missing allele is 0,
+and the phased bit of an allele describes the separator
+*before* it. The first allele's bit is the "prefixed
+phasing" flag. Verified byte-for-byte against
+`bcftools view -Ob` for `0|1`, `0/1`, `1|0`, `1/0`, `./.`,
+`0`, `0|1/2` and `0/1|2`.
+
+**Status:** shipped in v0.23.0
+
+### T6.11 - keys used positional indices instead of the header dictionary index
+
+**Spec (§"Dictionary of strings", tex line 2124):**
+
+> ASP=1, RSPOS=2, dbSNPBuildID=3, and PASS implicitly
+> encoded in the first offset PASS=0
+
+**Defect.** We wrote the position of a key in `InfosOrder` /
+`FormatsOrder` and the position of a filter in `Filters`.
+htslib's `BCF_DT_ID` is a *single* dictionary shared by
+FILTER, INFO and FORMAT, so `DP` used as both an INFO and a
+FORMAT key has one index.
+
+**Fix.** `Header.IDXFor` / `Header.IDAt` implement the
+dictionary: 1-based, per *distinct* ID (first occurrence
+wins), in header-text order; `##contig` lines do not consume
+an index; an explicit `##FILTER=<ID=PASS>` line does not
+either (PASS is implicitly 0). Verified against
+`bcftools view -Ob` for the spec example and for synthetic
+headers with 0, 1 and 2 contigs.
+
+**Status:** shipped in v0.23.0
+
+### T6.12 - the header text was not NUL-terminated
+
+**Spec (§BCF2 header, tex lines 2086-2091):** `l_text` is the
+length of the text field *including* the terminating NUL.
+
+**Defect.** We wrote `l_text = len(text)` and no terminator.
+
+**Fix.** The writer emits `len(text)+1` and a NUL; the
+reader strips it.
+
+**Status:** shipped in v0.23.0
+
+### T6.13 - a missing ID was written as typeMissing
+
+**Spec (§BcfSiteEncoding, tex line 2196):**
+
+> ID - typed string - Variant identifier; 0x07 for a missing
+> value
+
+**Defect.** We wrote `0x00`, which htslib rejects with
+*"Invalid ID type 0 (null)"*.
+
+**Fix.** A missing ID is `0x07` (also the descriptor for a
+zero-length character vector).
+
+**Status:** shipped in v0.23.0
+
+### T6.14 - integers were always int32
+
+**Spec (§BcfTypeEncoding, tex line 2266):** *"It is up to the
+encoder to determine the appropriate ranged value to use"* -
+8, 16 or 32 bit values are all legal.
+
+**Defect.** Not a defect, but htslib picks the narrowest width
+that fits and our int32-only output was 4x larger.
+
+**Fix.** `intWidthFor` picks int8, then int16, then int32.
+Our output is now byte-identical to htslib's.
+
+**Status:** shipped in v0.23.0
+
+### T6.15 - a present Flag wrote `0x01`
+
+**Defect.** htslib writes a single `0x00` byte for a present
+Flag; the INFO entry's presence carries the information.
+
+**Fix.** Writer and reader both follow htslib.
+
+**Status:** shipped in v0.23.0
+
+### T6.16 - an absent FORMAT value padded with MISSING instead of END_OF_VECTOR
+
+**Defect.** For a fixed-size field with no value for a sample
+we wrote a MISSING sentinel in every slot. htslib writes one
+MISSING element and then pads with END_OF_VECTOR.
+
+**Fix.** Matched. An explicit `.,.` still writes one MISSING
+element per slot, which is a different thing.
+
+**Status:** shipped in v0.23.0
+
+### The SAM/BAM defects
+
+The same oracle sweep found three defects in the BAM path.
+
+### T6.17 - BAM wrote ASCII quality bytes instead of raw Phred values
+
+**Defect.** BAM stores the base quality as a raw Phred score
+(0-93). We wrote the ASCII `+33` form, so a Phred 40 became
+the byte `73` on the wire; samtools read it as Phred 73 and
+printed `j` instead of `I`.
+
+**Fix.** `encodeQual` converts on write; the decoder converts
+back. `0xFF` (an unavailable quality) is preserved and
+renders as `*`.
+
+**Status:** shipped in v0.23.0
+
+### T6.18 - `RNEXT "="` was rejected
+
+**Spec (SAMv1 §1.4.1):** `RNEXT` may be `=`, meaning the mate
+is on the same reference as the read. htslib
+(`sam.c`, `bam_parse1`) resolves it as `mtid = tid`.
+
+**Defect.** We looked `=` up in the `@SQ` list and failed with
+*"unknown reference "=" (not in header @SQ list)"*.
+
+**Fix.** The SAM-to-BAM translator resolves `=` to the
+record's own `RNAME`. The BAM-to-SAM translator writes `=`
+when the mate is on the same reference, as htslib does.
+
+**Status:** shipped in v0.23.0
+
+### T6.19 - the BAM-to-SAM header was re-synthesised
+
+**Defect.** Converting a BAM back to SAM rebuilt the header
+lines from the parsed structures, dropping every tag the
+package does not model (`M5`, `UR`, `SP` on `@SQ`; `PL`,
+`PU`, `CN` on `@RG`; `VN`, `CL` on `@PG`).
+
+**Fix.** The BAM header stores the SAM header text verbatim,
+so the original text is now carried through the conversion
+(`sam.Header.Raw`).
+
+**Status:** shipped in v0.23.0
+
+### T6.20 - the BAM header text lacked a trailing newline
+
+**Defect.** htslib warned *"Missing trailing newline on SAM
+header. Possibly truncated"*.
+
+**Fix.** The header text ends with a newline, as htslib's
+does.
+
+**Status:** shipped in v0.23.0
+
+### Verified against the oracle
+
+After the fixes above:
+
+- `bcftools view`, `bcftools query`, `bcftools index`,
+  `bcftools sort` and `htsfile` all read our BCF with
+  **zero** output on stderr.
+- The BCF records we write are **byte-identical** to
+  `bcftools view -Ob` output for the spec's own worked
+  example - all 5 records, both the shared and the
+  per-sample block.
+- `samtools view`, `samtools quickcheck` and `samtools
+  idxstats` all read our BAM with zero output on stderr, and
+  the records match `samtools view` of a samtools-produced
+  BAM exactly.
+- `sam -> bam -> sam` is byte-identical to the input SAM.
+
+### The guard
+
+`bcf/spec_wire_test.go` holds the reference bytes as literal
+hex strings and asserts that our encoder emits exactly them.
+A fixture built by the code under test cannot catch a change
+to it; these bytes come from `bcftools view -Ob`.
+
+The guard is mutation-tested: each of the six defects above
+that changes the record layout (T6.3, T6.4, T6.9, T6.10 and
+the two halves of T6.11) was reintroduced and the guard
+failed for every one of them.

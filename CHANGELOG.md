@@ -7,6 +7,109 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-10-23
+
+The BCF writer now produces files that htslib reads, and the
+BCF records it writes are **byte-identical** to
+`bcftools view -Ob` output for the VCFv4.5 spec's own worked
+example. Sixteen BCF defects and three SAM/BAM defects were
+found by installing htslib 1.24 (samtools / bcftools) as an
+external oracle and feeding it our output. **Every one of
+them was invisible to this repository's 600+ green tests** -
+the writer and the reader agreed with each other and with
+nobody else.
+
+See [vcf/SPEC_COMPLIANCE.md](vcf/SPEC_COMPLIANCE.md) Phase 6
+for the full list (`T6.1` - `T6.20`).
+
+### Added
+
+- `bcf/gt_wire.go`: the BCF GT allele encoding, transcribed
+  from htslib's `vcf_parse_format` GT branch - each allele is
+  `(allele+1)<<1 | phased`, a missing allele is 0, and the
+  phased bit of an allele describes the separator *before* it.
+  BCF requires an integer allele vector; the VCF header
+  declares `GT` as `Type=String`.
+- `bcf.Header.IDXFor` / `bcf.Header.IDAt`: the BCF header
+  dictionary - 1-based, per distinct ID, shared by FILTER,
+  INFO and FORMAT, with `PASS` implicitly 0.
+- `bcf/spec_wire_test.go`: a literal-byte guard that asserts
+  our encoder emits exactly the bytes `bcftools view -Ob`
+  produces for the spec example. Mutation-tested: six
+  reintroduced layout defects, six failures.
+- `cmd/htsfile/spec_example_test.go`: a CLI regression test
+  that runs `vcf2bcf | bcf2vcf` on the spec's worked example
+  and compares the result with a checked-in expectation, plus
+  a field-for-field check that no record data is lost.
+- `vcf/testdata/spec_example.roundtrip.vcf`: the expected
+  round-trip output.
+- `sam.Header.Raw`: the original header text, so a BAM-to-SAM
+  conversion reproduces the source header instead of
+  re-synthesising it.
+- `bam.encodeQual`: converts the ASCII `+33` quality form to
+  BAM's raw Phred bytes.
+
+### Fixed
+
+- BCF magic is 5 bytes (`BCF\x02\x02`, BCF 2.2) with
+  `l_text` at offset 5, not 6 bytes with `l_text` at offset 6.
+- The BGZF EOF marker's OS byte is `0xff`; htslib's
+  `bgzf_check_EOF` is a byte-exact `memcmp` and rejected the
+  old `0x00`.
+- `n_sample` / `n_fmt` are packed as `n_sample | n_fmt<<24`
+  (a uint24 and a uint8), not `n_sample<<8 | n_fmt`.
+- Strings are character vectors: the length lives in the
+  descriptor's high nibble. We wrote type 7 plus a uint32
+  length, which desynchronised htslib's reader.
+- FILTER writes a `(size<<4)|type` descriptor, not a bare
+  type code (which declares a zero-length vector).
+- A multi-element String INFO keeps its commas inside the
+  character run, as htslib does.
+- A FORMAT String field's size nibble carries the character
+  count, not the element count.
+- The FORMAT overflow length (for 15+ elements) is a typed
+  Integer, not a bare byte.
+- The per-sample block is the spec's `fmt_key` / `fmt_type` /
+  `fmt_values` triplet, interleaved per field. We wrote every
+  key first, which htslib rejected with *"individuals
+  section malformed or too short"*.
+- GT is an integer allele vector on the wire.
+- INFO keys, FORMAT keys and FILTER values use the header
+  dictionary index.
+- The BCF header text is NUL-terminated and `l_text` counts
+  the terminator.
+- A missing ID is `0x07` (spec line 2196), not `0x00`; htslib
+  rejected `0x00` with *"Invalid ID type 0 (null)"*.
+- Integers use the narrowest legal width (int8, int16,
+  int32), which the spec allows and htslib does. Our output
+  is now the same size as htslib's.
+- A present Flag writes `0x00`, as htslib does.
+- An absent FORMAT value writes one MISSING element and then
+  END_OF_VECTOR padding, as htslib does.
+- BAM writes raw Phred quality bytes, not the ASCII `+33`
+  form. samtools read our Phred 40 as Phred 73.
+- SAM `RNEXT "="` is accepted and resolved to the record's
+  own reference, as htslib does.
+- The BAM-to-SAM conversion keeps the original header text, so
+  `M5`/`UR`/`SP` on `@SQ`, `PL`/`PU`/`CN` on `@RG` and
+  `VN`/`CL` on `@PG` survive the round trip.
+- The BAM header text ends with a newline; htslib warned
+  *"Missing trailing newline on SAM header. Possibly
+  truncated"*.
+
+### Verified
+
+- `bcftools view`, `bcftools query`, `bcftools index`,
+  `bcftools sort` and `htsfile` read our BCF with zero output
+  on stderr.
+- Our BCF records are byte-identical to `bcftools view -Ob`
+  output for the spec's worked example (5 of 5 records, both
+  the shared and the per-sample block).
+- `samtools view`, `samtools quickcheck` and `samtools
+  idxstats` read our BAM with zero output on stderr, and the
+  records match samtools' own BAM exactly.
+- `sam -> bam -> sam` is byte-identical to the input SAM.
+
 ## [0.22.0] — 2026-10-21
 
 The four BCF defects the §1.6.1 worked example surfaced
